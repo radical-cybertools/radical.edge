@@ -2,7 +2,7 @@
 Module Documentation
 ********************
 
-.. todo:: Intro to the RADICAL ###cname### module
+.. todo:: Intro to the RADICAL radical.edge module
 
 ..
     PluginManager -- :mod:`radical.utils.plugin_manager`

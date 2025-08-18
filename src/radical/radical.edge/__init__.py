@@ -1,5 +1,5 @@
 
-from ###lname###_module import *
+from radical.edge_module import *
 
 
 # ------------------------------------------------------------------------------

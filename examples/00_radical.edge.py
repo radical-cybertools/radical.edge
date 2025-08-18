@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-import radical.###lname###
+import radical.radical.edge
 
 
 # ------------------------------------------------------------------------------

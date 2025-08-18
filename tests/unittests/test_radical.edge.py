@@ -2,16 +2,16 @@
 
 __author__    = 'Radical Development Team'
 __email__     = 'radical@radical-project.org'
-__copyright__ = 'Copyright ###year###, RADICAL@Rutgers'
+__copyright__ = 'Copyright date +%Y, RADICAL@Rutgers'
 __license__   = 'MIT'
 
 
 import os
-import radical.###lname###
+import radical.radical.edge
 
 
 # ------------------------------------------------------------------------------
-def test_###lname###():
+def test_radical.edge():
     '''
     ###FIXME### test stub
     '''
@@ -23,7 +23,7 @@ def test_###lname###():
 #
 if __name__ == '__main__':
 
-    test_###lname###()
+    test_radical.edge()
 
 
 # ------------------------------------------------------------------------------
