@@ -9,27 +9,25 @@ the service will
 The service interface mirrors that of an rct driver application.  The
 supported `cmd` requests, their parameters and return values are as follows:
 
-    register_client(name: str = None) -> str
+    register_client() -> str
 
-        REST: GET /executor/{name}/
-        name: name of backend rct session to use for this client
-              defaults to `local`
+        REST: GET /rct_edge//
 
         returns: a unique UID to identify the client on further requests.
 
         Register client, configure the service's rct session to use for this
-        client, and return a unique client UID.  That UID is required for
-        all further requests.
+        client, and return a unique client UID (`cid`).  That UID is required
+        for all further requests.
 
 
-    submit(cid: str, spec: Dict[str, Any]) -> str
+    submit(cid: str, td: Dict[str, Any]) -> str
 
         REST: PUT /{cid}/
         cid : client UID obtained via `register_client`
-        spec: serialized psij.JobSepc
+        td  : serialized `rp.TaskDescription`
 
-        This method submits a task as described by the JobSpec to the backend rct
-        session and returns the task UID.
+        This method submits a task as described by the TaskDescription to the
+        backend rct session and returns the task UID.
 
 
     cancel(cid: str, uid: str) -> None
@@ -50,10 +48,12 @@ supported `cmd` requests, their parameters and return values are as follows:
 
         This method will return a list of task UIDs known to this service.
 
+
     FIXME:
       - use cookie instead of client id
       - add authorization and authentication
       - add data staging
+
 '''
 
 
@@ -80,7 +80,7 @@ class _Client(object):
     def __init__(self, session: rp.Session):):
 
         self.jex    : rp.Session          = session
-        self._tasks : Dict[str, psij.task] = dict()
+        self._tasks : Dict[str, rp.Task]  = dict()
         self.ws     : Optional[WebSocket] = None
         self._queue : queue.Queue         = queue.Queue()
 
@@ -94,7 +94,7 @@ class _Client(object):
 
     # --------------------------------------------------------------------------
     #
-    def get_task(self, uid: str) -> Optional[psij.task]:
+    def get_task(self, uid: str) -> Optional[rp.Task]:
 
         return self._tasks.get(uid)
 
@@ -131,8 +131,7 @@ class Service(object):
     def __init__(self, app: FastAPI) -> None:
 
         self._clients: Dict[str, _Client] = dict()
-        self._deserialize = psij.Import()
-        self._log = logging.getLogger('psij')
+        self._log = ru.Logger('radical.edge')
         self._cnt: int = 0
 
         # ----------------------------------------------------------------------
@@ -165,7 +164,7 @@ class Service(object):
 
     # --------------------------------------------------------------------------
     #
-    def _status_callback(self, cid: str, task: psij.task, status: psij.JobStatus) -> None:
+    def _status_callback(self, cid: str, task: rp.task, status: rp.state) -> None:
 
         client = self._clients.get(cid)
         if not client:
@@ -187,7 +186,7 @@ class Service(object):
     def _request_register(self, name: str, url: Optional[str] = None) -> str:
         '''
         parameters:
-            name:str: name of psij executor to use
+            name:str: name of rp executor to use
             url:str: optional URL to be passed to backend executor
 
         returns:
@@ -199,7 +198,7 @@ class Service(object):
         self._cnt += 1
 
         # create executor
-        jex = psij.JobExecutor.get_instance(name=name, url=url)
+        jex = rp.Session.get_instance(name=name, url=url)
 
         # register state callback for this cid
         cb = functools.partial(self._status_callback, cid)
@@ -214,11 +213,11 @@ class Service(object):
 
     # --------------------------------------------------------------------------
     #
-    def _request_submit(self, cid: str, spec: Dict[str, Any]) -> str:
+    def _request_submit(self, cid: str, td: Dict[str, Any]) -> str:
         '''
         parameters:
            cid:str   : client UID
-           spec:Dict : task description
+           td:Dict : task description
 
         returns:
            uid:str : task UID for submitted task
@@ -228,7 +227,7 @@ class Service(object):
         if not client:
             raise ValueError('unknown client cid %s' % cid)
 
-        task = rp.Task(self._deserialize.from_dict(spec))
+        task = rp.Task(self._deserialize.from_dict(td))
         client.add_task(task)
         client.jex.submit(task)
 
@@ -240,8 +239,8 @@ class Service(object):
     def _request_cancel(self, cid: str, uid: str) -> None:
         '''
         parameters:
-           cid:str   : client UID
-           uid:str : psij task UID for task to be canceled
+           cid:str : client UID
+           uid:str : rp task UID for task to be canceled
         '''
 
         client = self._clients.get(cid)
@@ -263,7 +262,7 @@ class Service(object):
            cid:str   : client UID
 
         returns:
-           uid:List[str] : all known psij task UIDs
+           uid:List[str] : all known rp task UIDs
         '''
 
         client = self._clients.get(cid)
@@ -309,15 +308,15 @@ if __name__ == '__main__':
         return service._request_register(name, url)
 
     @app.put("/{cid}")
-    def submit(cid: str, spec: Dict[str, Any]) -> str:
+    def submit(cid: str, td: Dict[str, Any]) -> str:
         """
         Submit a task.
         request: PUT /{cid}/
             cid: client UID as obtained by `register`
-            data: json serialized `psij.JobSpec` dictionary
+            data: json serialized `rp.TaskDescription` dictionary
         response: a new task UID (str) for the submitted task
         """
-        return service._request_submit(cid, spec)
+        return service._request_submit(cid, td)
 
     @app.delete("/{cid}/{uid}")
     def cancel(cid: str, uid: str) -> None:
