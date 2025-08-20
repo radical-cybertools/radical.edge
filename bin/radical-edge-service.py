@@ -1,349 +1,431 @@
 #!/usr/bin/env python3
 
-'''
-This file implements an rct edge service.  The service can be contacted via
-a REST API.
-
-the service will
-
-The service interface mirrors that of an rct driver application.  The
-supported `cmd` requests, their parameters and return values are as follows:
-
-    register_client() -> str
-
-        REST: GET /rct_edge//
-
-        returns: a unique UID to identify the client on further requests.
-
-        Register client, configure the service's rct session to use for this
-        client, and return a unique client UID (`cid`).  That UID is required
-        for all further requests.
-
-
-    submit(cid: str, td: Dict[str, Any]) -> str
-
-        REST: PUT /{cid}/
-        cid : client UID obtained via `register_client`
-        td  : serialized `rp.TaskDescription`
-
-        This method submits a task as described by the TaskDescription to the
-        backend rct session and returns the task UID.
-
-
-    cancel(cid: str, uid: str) -> None
-
-        REST : DELETE /{cid}/{uid}
-        cid  : client UID obtained via `register_client`
-        uid: task UID obtained via `submit` or `list`
-
-        This method will cancel the specified task.  The method returns without
-        waiting for the cancelation request to suceed, the callee should observe
-        state notifications to confirm successfull cancellation.
-
-
-    list(cid: str) -> List[str]
-
-        REST: GET /{cid}/jobs
-        cid : client UID obtained via `register_client`
-
-        This method will return a list of task UIDs known to this service.
-
-
-    FIXME:
-      - use cookie instead of client id
-      - add authorization and authentication
-      - add data staging
-
-'''
-
-
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-
-import sys
-import queue
+import os
 import asyncio
-import logging
-import uvicorn
-import functools
+import base64
+import json
+import httpx
+import websockets
+import pprint
 
-from typing import List, Dict, Any, Optional
+from typing  import Dict
+from fastapi import FastAPI, WebSocket, HTTPException
+
+from websockets import exceptions as ws_exc
+from starlette.websockets import WebSocketDisconnect
 
 import radical.pilot as rp
+import radical.utils as ru
+
+log = ru.Logger("radical.edge", targets=['-'])
+
+
+BRIDGE_URL = os.environ.get("BRIDGE_URL", "ws://localhost:8000/register")
+LOCAL_BASE = os.environ.get("LOCAL_BASE", "http://127.0.0.1:8001")
+
+app = FastAPI(title="Edge Service", debug=True)
 
 
 # ------------------------------------------------------------------------------
 #
-class _Client(object):
+class Client(object):
 
     # --------------------------------------------------------------------------
     #
-    def __init__(self, session: rp.Session):):
+    def __init__(self, cid: str):
 
-        self.jex    : rp.Session          = session
-        self._tasks : Dict[str, rp.Task]  = dict()
-        self.ws     : Optional[WebSocket] = None
-        self._queue : queue.Queue         = queue.Queue()
-
-
-    # --------------------------------------------------------------------------
-    #
-    def add_task(self, task: rp.Task) -> None:
-
-        self._tasks[task.uid] = task
+        self._cid     = cid
+        self._session = rp.Session()
+        self._pmgr   = rp.PilotManager(session=self._session)
+        self._tmgr   = rp.TaskManager(session=self._session)
 
 
     # --------------------------------------------------------------------------
     #
-    def get_task(self, uid: str) -> Optional[rp.Task]:
+    async def close(self):
 
-        return self._tasks.get(uid)
+        self._session.close()
 
-
-    # --------------------------------------------------------------------------
-    #
-    def list_tasks(self) -> List[str]:
-
-        return list(self._tasks.keys())
+        return {}
 
 
     # --------------------------------------------------------------------------
     #
-    def get_msg(self) -> Any:
+    async def pilot_submit(self, description: Dict) -> str:
+        """
+        Submit a pilot to the Pilot Manager and return its ID.
+        """
+        log.debug(pprint.pformat(description))
+        pilot = self._pmgr.submit_pilots(rp.PilotDescription(description))
+        self._tmgr.add_pilots(pilot)
+
+        return {'pid': pilot.uid}
+
+
+    # --------------------------------------------------------------------------
+    #
+    async def task_submit(self, description: Dict) -> str:
+        """
+        Submit a task to the Task Manager and return its ID.
+        """
+        log.debug(pprint.pformat(description))
+        task = self._tmgr.submit_tasks(rp.TaskDescription(description))
+        print(f"[Edge] Task submitted: {task.uid}")
+
+        return {"tid": task.uid}
+
+
+    # --------------------------------------------------------------------------
+    #
+    async def task_wait(self, tid: str) -> Dict:
+        """
+        Wait for a task to complete and return its result.
+        """
+        self._tmgr.wait_tasks(tid)
+        task = self._tmgr.get_tasks(tid)
+
+        return {"tid": tid, "task": task.as_dict()}
+
+
+    # --------------------------------------------------------------------------
+    #
+    async def request_echo(self, q: str = "hello") -> Dict:
+
+        return {"cid": self._cid, "echo": q}
+
+
+# --------------------------------------------------------------------------
+#
+clients  : Dict[str, Client] = {}
+_id_lock = asyncio.Lock()
+_next_id = 0
+
+
+# ------------------------------------------------------------------------------
+# local API (served on A; Bridge forwards to these)
+# ------------------------------------------------------------------------------
+
+async def _foward(cid, func, *args, **kwargs):
+
+    client = clients.get(cid)
+
+    log.debug(f"[Edge] Forward to client {cid} ({func.__name__})")
+
+    if not client:
+        raise HTTPException(status_code=404, detail=f"unknown client id: {cid}")
+
+    try:
+        return await func(client, *args, **kwargs)
+
+    except Exception as e:
+        log.exception(f"[Edge] Error in client {cid}: {e}")
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@app.post("/register_client")
+async def register_client():
+    global _next_id
+    cid = f"client.{_next_id:04d}"
+    _next_id += 1
+    clients[cid] = Client(cid)
+    return {"cid": cid}
+
+
+@app.post("/unregister_client/{cid}")
+async def unregister_client(cid: str):
+    inst = clients.pop(cid, None)
+    if not inst:
+        raise HTTPException(status_code=404, detail=f"unknown client id: {cid}")
+    await inst.close()
+    return {"ok": True}
+
+
+@app.get("/api/echo/{cid}")
+async def echo(cid: str, q: str = "hello"):
+    return await _foward(cid, Client.request_echo, q=q)
+
+
+@app.post("/api/pilot_submit/{cid}")
+async def pilot_submit(cid: str, description: Dict):
+    return await _foward(cid, Client.pilot_submit, description)
+
+
+@app.post("/api/task_submit/{cid}")
+async def task_submit(cid: str, description: Dict):
+    return await _foward(cid, Client.task_submit, description)
+
+
+@app.get("/api/task_wait/{cid}/{tid}")
+async def task_wait(cid: str, tid: str):
+    return await _foward(cid, Client.task_wait, tid)
+
+
+# ------------------------------------------------------------------------------
+# Bridge forwarding
+# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+#
+async def handle_request(ws       ,
+                         http     : httpx.AsyncClient,
+                         data     : dict,
+                         send_lock: asyncio.Lock) -> None:
+
+    if data.get("type") != "request":
+        return
+
+    req_id    = data["req_id"]
+    method    = data["method"]
+    path      = data["path"]
+    headers   = data.get("headers") or {}
+    is_binary = data.get("is_binary", False)
+    body      = data.get("body")
+
+    # Rehydrate body
+    content = None
+    if body is not None:
+        if is_binary:
+            content = base64.b64decode(body)
+        else:
+            content = body.encode("utf-8")
+
+    # Call the local Edge FastAPI server (loopback)
+    url = LOCAL_BASE + path
+    try:
+        resp = await http.request(method, url,
+                                  content=content,
+                                  headers=headers,
+                                  timeout=40.0)
+
+        resp_is_binary = False
         try:
-            return self._queue.get_nowait()
+            body_text = resp.text
+            out_body  = body_text
+
         except Exception:
-            pass
+            out_body = base64.b64encode(resp.content).decode("ascii")
+            resp_is_binary = True
 
+        message = {
+            "type"      : "response",
+            "req_id"    : req_id,
+            "status"    : resp.status_code,
+            "headers"   : dict(resp.headers),
+            "is_binary" : resp_is_binary,
+            "body"      : out_body
+        }
 
-    # --------------------------------------------------------------------------
-    #
-    def send(self, msg: Any) -> None:
-        self._queue.put(msg)
+        async with send_lock:
+            await ws.send(json.dumps(message))
+
+    except Exception as e:
+
+        log.exception(f"[Edge] Error handling request {req_id}")
+
+        body = {"error" : "edge-invoke-failed",
+                "detail": str(e)}
+
+        message = {
+            "type"      : "response",
+            "req_id"    : req_id,
+            "status"    : 502,
+            "headers"   : {"content-type": "application/json"},
+            "is_binary" : False,
+            "body"      : json.dumps(body)
+        }
+
+        async with send_lock:
+            await ws.send(json.dumps(message))
+
+# async def handle_request(ws  : WebSocket,
+#                          http: httpx.AsyncClient,
+#                          data: dict) -> None:
+#
+#     if data.get("type") == "ping":
+#         await ws.send(json.dumps({"type": "pong"}))
+#         return
+#
+#     if data.get("type") != "request":
+#         return
+#
+#     req_id    = data["req_id"]
+#     method    = data["method"]
+#     path      = data["path"]
+#     headers   = data.get("headers") or {}
+#     is_binary = data.get("is_binary", False)
+#     body      = data.get("body")
+#
+#     # Rehydrate body
+#     content = None
+#     if body is not None:
+#         if is_binary:
+#             content = base64.b64decode(body)
+#         else:
+#             content = body.encode("utf-8")
+#
+#     # Call the local Edge FastAPI server (loopback)
+#     url = LOCAL_BASE + path
+#     try:
+#         resp = await http.request(method, url,
+#                                   content=content,
+#                                   headers=headers,
+#                                   timeout=20.0)
+#         resp_is_binary = False
+#         try:
+#             # If not decodable, base64 it
+#             body_text = resp.text
+#             out_body  = body_text
+#
+#         except Exception:
+#             out_body = base64.b64encode(resp.content).decode("ascii")
+#             resp_is_binary = True
+#
+#         await ws.send(json.dumps({
+#             "type"      : "response",
+#             "req_id"    : req_id,
+#             "status"    : resp.status_code,
+#             "headers"   : dict(resp.headers),
+#             "is_binary" : resp_is_binary,
+#             "body"      : out_body
+#         }))
+#
+#     except Exception as e:
+#
+#         body = {"error" : "edge-invoke-failed",
+#                 "detail": str(e)}
+#
+#         await ws.send(json.dumps({
+#             "type"      : "response",
+#             "req_id"    : req_id,
+#             "status"    : 502,
+#             "headers"   : {"content-type": "application/json"},
+#             "is_binary" : False,
+#             "body"      : json.dumps(body)
+#         }))
+#
+
+# ------------------------------------------------------------------------------
+#
+async def bridge_loop():
+
+    PING_INTERVAL = 20
+    PING_TIMEOUT  = 120
+    WORKERS       = 2            # set to 1 if you want strict serial processing
+    QSIZE         = 100          # backpressure on incoming requests
+
+    backoff = 1
+    while True:
+
+        try:
+            async with websockets.connect(BRIDGE_URL,
+                                          ping_interval=PING_INTERVAL,
+                                          ping_timeout =PING_TIMEOUT,
+                                          close_timeout=10) as ws, \
+                       httpx.AsyncClient() as http:
+
+                log.debug("[Edge] Connected to Bridge")
+
+                send_lock = asyncio.Lock()
+                in_q      = asyncio.Queue(maxsize=QSIZE)
+
+                async def reader():
+                    while True:
+                        raw  = await ws.recv()
+                        data = json.loads(raw)
+
+                        # reply to app-level heartbeat immediately (optional)
+                        if data.get("type") == "ping":
+                            async with send_lock:
+                                await ws.send(json.dumps({"type": "pong"}))
+                            continue
+
+                        # enqueue requests for workers
+                        await in_q.put(data)
+
+                async def worker():
+                    while True:
+                        data = await in_q.get()
+                        try:
+                            await handle_request(ws, http, data, send_lock)
+                        finally:
+                            in_q.task_done()
+
+                reader_task = asyncio.create_task(reader())
+                workers     = [asyncio.create_task(worker()) for _ in range(WORKERS)]
+
+                # wait until reader ends (connection closed/error)
+                await reader_task
+
+                # cancel workers and drain
+                for w in workers:
+                    w.cancel()
+                await asyncio.gather(*workers, return_exceptions=True)
+
+        except (ws_exc.ConnectionClosed,
+                ws_exc.ConnectionClosedOK,
+                ws_exc.ConnectionClosedError,
+                OSError):
+
+            log.exception("[Edge] Bridge connection lost. Reconnecting...")
+
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 10)
+
+# async def bridge_loop():
+#
+#     backoff = 1
+#     while True:
+#
+#         try:
+#             async with websockets.connect(BRIDGE_URL) as ws, \
+#                        httpx.AsyncClient()            as http:
+#
+#                 log.info("[Edge] Connected to Bridge")
+#
+#                 async def ponger():
+#                     while True:
+#                         await asyncio.sleep(15)
+#                         # No-op: we only reply when ping is received
+#
+#                 pong_task = asyncio.create_task(ponger())
+#
+#                 try:
+#                     while True:
+#                         raw  = await ws.recv()
+#                         data = json.loads(raw)
+#
+#                         await handle_request(ws, http, data)
+#
+#                 finally:
+#                     pong_task.cancel()
+#
+#         except (OSError, ws_exc.ConnectionClosed,
+#                          ws_exc.ConnectionClosedOK,
+#                          ws_exc.ConnectionClosedError):
+#             log.exception("[Edge] Bridge connection lost. Reconnecting...")
+#             await asyncio.sleep(backoff)
+#             backoff = min(backoff * 2, 10)
 
 
 # ------------------------------------------------------------------------------
 #
-class Service(object):
+if __name__ == "__main__":
 
+    import uvicorn
 
-    # --------------------------------------------------------------------------
-    #
-    def __init__(self, app: FastAPI) -> None:
+    async def main():
 
-        self._clients: Dict[str, _Client] = dict()
-        self._log = ru.Logger('radical.edge')
-        self._cnt: int = 0
+        # Start local API server in-process
+        config = uvicorn.Config(app, host="127.0.0.1", port=8001, log_level="debug")
+        server = uvicorn.Server(config)
+        srv_task = asyncio.create_task(server.serve())
 
-        # ----------------------------------------------------------------------
-        # websocket endpoint at which client can regoister for state updates
-        @app.websocket("/ws/{cid}")
-        async def ws_endpoint(ws: WebSocket, cid: str) -> None:
+        # Give it a moment to bind
+        await asyncio.sleep(0.5)
 
-            await ws.accept()
+        # Start bridge loop
+        loop_task = asyncio.create_task(bridge_loop())
+        await asyncio.gather(srv_task, loop_task)
 
-            client = self._clients.get(cid)
-            if not client:
-                self._log.error("refuse ws for %s" % cid)
-                raise ValueError("unknown client cid %s" % cid)
-
-            self._log.info("accept ws for %s" % cid)
-            try:
-                # keep this async task alive as long as there are messages to
-                # send and the websocket is alive
-                while True:
-                    msg = client.get_msg()
-                    if msg:
-                        await ws.send_json(msg)
-                    else:
-                        await asyncio.sleep(0.1)
-
-            except WebSocketDisconnect:
-                self._log.info("dropped ws for %s" % cid)
-        # ----------------------------------------------------------------------
-
-
-    # --------------------------------------------------------------------------
-    #
-    def _status_callback(self, cid: str, task: rp.task, status: rp.state) -> None:
-
-        client = self._clients.get(cid)
-        if not client:
-            print("unknown client cid %s" % cid)
-            return
-
-        msg = {'uid': task.uid,
-               'time': status.time,
-               'message': status.message,
-               'state': str(status.state),
-               'metadata': status.metadata,
-               'exit_code': status.exit_code}
-        self._log.debug('cb: %s: %s', cid, msg)
-        client.send(msg)
-
-
-    # --------------------------------------------------------------------------
-    #
-    def _request_register(self, name: str, url: Optional[str] = None) -> str:
-        '''
-        parameters:
-            name:str: name of rp executor to use
-            url:str: optional URL to be passed to backend executor
-
-        returns:
-            str: unique UID identifying the registered client
-        '''
-
-        # register new client
-        cid = 'client.%04d' % self._cnt
-        self._cnt += 1
-
-        # create executor
-        jex = rp.Session.get_instance(name=name, url=url)
-
-        # register state callback for this cid
-        cb = functools.partial(self._status_callback, cid)
-        jex.set_task_status_callback(cb)
-
-        # store client information
-        self._clients[cid] = _Client(jex)
-
-        # client is now known and initialized
-        return cid
-
-
-    # --------------------------------------------------------------------------
-    #
-    def _request_submit(self, cid: str, td: Dict[str, Any]) -> str:
-        '''
-        parameters:
-           cid:str   : client UID
-           td:Dict : task description
-
-        returns:
-           uid:str : task UID for submitted task
-        '''
-
-        client = self._clients.get(cid)
-        if not client:
-            raise ValueError('unknown client cid %s' % cid)
-
-        task = rp.Task(self._deserialize.from_dict(td))
-        client.add_task(task)
-        client.jex.submit(task)
-
-        return task.uid
-
-
-    # --------------------------------------------------------------------------
-    #
-    def _request_cancel(self, cid: str, uid: str) -> None:
-        '''
-        parameters:
-           cid:str : client UID
-           uid:str : rp task UID for task to be canceled
-        '''
-
-        client = self._clients.get(cid)
-        if not client:
-            raise ValueError('unknown client cid %s' % cid)
-
-        task = client.get_task(uid)
-        if not task:
-            raise ValueError('unknown task id %s' % uid)
-
-        client.jex.cancel(task)
-
-
-    # --------------------------------------------------------------------------
-    #
-    def _request_list(self, cid: str) -> List[str]:
-        '''
-        parameters:
-           cid:str   : client UID
-
-        returns:
-           uid:List[str] : all known rp task UIDs
-        '''
-
-        client = self._clients.get(cid)
-        if not client:
-            raise ValueError('unknown client cid %s' % cid)
-
-        return client.list_tasks()
-
-
-    # --------------------------------------------------------------------------
-    #
-    def _request_stage_in(self, data: str, fname: str) -> None:
-
-        with open(fname, 'w') as fout:
-            fout.write(data)
-
-
-    # --------------------------------------------------------------------------
-    #
-    def _request_stage_out(self, fname: str) -> str:
-
-        with open(fname) as fin:
-            return fin.read()
-
+    asyncio.run(main())
 
 # ------------------------------------------------------------------------------
-#
-if __name__ == '__main__':
-
-    app = FastAPI()
-    service = Service(app)
-
-    @app.get("/executor/{name}")
-    def register(name: str, url: Optional[str] = None) -> str:
-        """
-        Register a new client and create an executor of type 'name'.
-        request: GET /executor/{name}/
-            name: type of executor to create for this client
-            url: optional url to pass to the backend executor
-        response: a new client UID (str)
-        """
-
-        return service._request_register(name, url)
-
-    @app.put("/{cid}")
-    def submit(cid: str, td: Dict[str, Any]) -> str:
-        """
-        Submit a task.
-        request: PUT /{cid}/
-            cid: client UID as obtained by `register`
-            data: json serialized `rp.TaskDescription` dictionary
-        response: a new task UID (str) for the submitted task
-        """
-        return service._request_submit(cid, td)
-
-    @app.delete("/{cid}/{uid}")
-    def cancel(cid: str, uid: str) -> None:
-        """
-        Cancel a task.
-        request: DELETE /{cid}/{uid}
-            cid: client UID as obtained by `register`
-            uid: UID of task to be canceled
-        response: None
-        """
-        return service._request_cancel(cid, uid)
-
-    @app.get("/{cid}/jobs")
-    def list_tasks(cid: str) -> List[str]:
-        """
-        List all known jobs.
-        request: GET /{cid}/jobs
-            cid: client UID as obtained by `register`
-        response: serialized json string containing a list of task UIDs (`List[str]`)
-        """
-        return service._request_list(cid)
-
-    port = int(sys.argv[1])
-    sys.stdout.write('url: http://localhost:%d/\n' % port)
-    sys.stdout.flush()
-    uvicorn.run(app, port=port, access_log=False)
-
-
-# ------------------------------------------------------------------------------
-

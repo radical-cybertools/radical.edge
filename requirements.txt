@@ -1,0 +1,7 @@
+
+requests
+websockets
+websocket-client
+fastapi
+uvicorn
+
