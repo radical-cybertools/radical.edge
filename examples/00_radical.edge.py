@@ -28,7 +28,6 @@ def main():
                             'runtime' : 10})
         print("POST /api/submit_pilot/{cid} ->", r.status_code, r.json())
 
-
         tids = list()
         for i in range(100):
             r = http.post(f"{BRIDGE_HTTP}/api/task_submit/{cid}",
