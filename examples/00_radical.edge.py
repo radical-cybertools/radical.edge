@@ -2,15 +2,15 @@
 
 import httpx
 
-BRIDGE_HTTP = "http://localhost:8000"
-BRIDGE_HTTP = "http://95.217.193.116:8000"
+BRIDGE_HTTP = "https://95.217.193.116:8000"
 
 
 # ------------------------------------------------------------------------------
 #
 def main():
 
-    with httpx.Client(timeout=60.0) as http:
+    with httpx.Client(timeout=60.0,
+                      verify='cert.pem') as http:
 
         # register client
         r = http.post(f"{BRIDGE_HTTP}/register_client")
