@@ -1,4 +1,5 @@
 
+httpx
 requests
 websockets
 websocket-client
