@@ -3,6 +3,7 @@
 import httpx
 
 BRIDGE_HTTP = "http://localhost:8000"
+BRIDGE_HTTP = "http://95.217.193.116:8000"
 
 
 # ------------------------------------------------------------------------------
@@ -29,7 +30,7 @@ def main():
         print("POST /api/submit_pilot/{cid} ->", r.status_code, r.json())
 
         tids = list()
-        for i in range(100):
+        for i in range(10):
             r = http.post(f"{BRIDGE_HTTP}/api/task_submit/{cid}",
                           json={'executable': 'date'})
             print("POST /api/submit_task/{cid} ->", r.status_code, r.json())
