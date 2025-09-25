@@ -6,18 +6,29 @@ from typing  import Dict, Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi import Request, Response, HTTPException
 
-from fastapi.responses    import JSONResponse
-from starlette.websockets import WebSocketState
+from fastapi.responses       import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+
+from starlette.websockets    import WebSocketState
 
 
 # ------------------------------------------------------------------------------
 #
 app = FastAPI(title="Bridge")
 
-# Single-edge demo. Extend to a dict if you need multiple services/tenants.
+origins = [
+    'https://dev-1.bv-brc.org'
+]
 
-# Consider capping in-flight requests and returning 503 when len(pending)
-# exceeds a threshold.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,            # or ["*"] to allow all origins
+    allow_credentials=True,
+    allow_methods=["*"],              # or ["GET", "POST", ...]
+    allow_headers=["*"],              # or a list of headers
+)
+
+# Single-edge demo. Extend to a dict if you need multiple services/tenants.
 edge_ws: Optional[WebSocket]       = None
 pending: Dict[str, asyncio.Future] = dict()
 pending_lock                       = asyncio.Lock()
@@ -205,13 +216,13 @@ async def proxy(full_path: str, request: Request):
 if __name__ == "__main__":
 
     import uvicorn
-    uvicorn.run(app, 
+    uvicorn.run(app,
                 host="0.0.0.0",
-                port=8000, 
-                reload=False, 
+                port=8000,
+                reload=False,
                 ssl_certfile="cert.pem",
                 ssl_keyfile="key.pem",
-                log_level="debug")
+                log_level="info")
 
 
 # ------------------------------------------------------------------------------
