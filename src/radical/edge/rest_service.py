@@ -80,6 +80,7 @@ class RadicalRestService(object):
             if state in self._final:
                 del self._jobs[jobid]
 
+
     # --------------------------------------------------------------------------
     #
     def submit(self, job: Job) -> None:
