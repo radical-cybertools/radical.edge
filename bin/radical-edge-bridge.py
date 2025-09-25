@@ -205,7 +205,13 @@ async def proxy(full_path: str, request: Request):
 if __name__ == "__main__":
 
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000, reload=False, log_level="debug")
+    uvicorn.run(app, 
+                host="0.0.0.0",
+                port=8000, 
+                reload=False, 
+                ssl_certfile="cert.pem",
+                ssl_keyfile="key.pem",
+                log_level="debug")
 
 
 # ------------------------------------------------------------------------------

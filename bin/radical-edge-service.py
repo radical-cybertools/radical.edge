@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import os
+import ssl
 import asyncio
 import base64
 import json
@@ -20,8 +21,8 @@ import radical.utils as ru
 log = ru.Logger("radical.edge", targets=['-'])
 
 
-BRIDGE_URL = os.environ.get("BRIDGE_URL", "ws://localhost:8000/register")
-LOCAL_BASE = os.environ.get("LOCAL_BASE", "http://127.0.0.1:8001")
+BRIDGE_URL = os.environ.get("BRIDGE_URL", "wss://95.217.193.116:8000/register")
+LOCAL_BASE = os.environ.get("LOCAL_BASE", "http://95.217.193.116:8001")
 
 app = FastAPI(title="Edge Service", debug=True)
 
@@ -236,72 +237,6 @@ async def handle_request(ws       ,
         async with send_lock:
             await ws.send(json.dumps(message))
 
-# async def handle_request(ws  : WebSocket,
-#                          http: httpx.AsyncClient,
-#                          data: dict) -> None:
-#
-#     if data.get("type") == "ping":
-#         await ws.send(json.dumps({"type": "pong"}))
-#         return
-#
-#     if data.get("type") != "request":
-#         return
-#
-#     req_id    = data["req_id"]
-#     method    = data["method"]
-#     path      = data["path"]
-#     headers   = data.get("headers") or {}
-#     is_binary = data.get("is_binary", False)
-#     body      = data.get("body")
-#
-#     # Rehydrate body
-#     content = None
-#     if body is not None:
-#         if is_binary:
-#             content = base64.b64decode(body)
-#         else:
-#             content = body.encode("utf-8")
-#
-#     # Call the local Edge FastAPI server (loopback)
-#     url = LOCAL_BASE + path
-#     try:
-#         resp = await http.request(method, url,
-#                                   content=content,
-#                                   headers=headers,
-#                                   timeout=20.0)
-#         resp_is_binary = False
-#         try:
-#             # If not decodable, base64 it
-#             body_text = resp.text
-#             out_body  = body_text
-#
-#         except Exception:
-#             out_body = base64.b64encode(resp.content).decode("ascii")
-#             resp_is_binary = True
-#
-#         await ws.send(json.dumps({
-#             "type"      : "response",
-#             "req_id"    : req_id,
-#             "status"    : resp.status_code,
-#             "headers"   : dict(resp.headers),
-#             "is_binary" : resp_is_binary,
-#             "body"      : out_body
-#         }))
-#
-#     except Exception as e:
-#
-#         body = {"error" : "edge-invoke-failed",
-#                 "detail": str(e)}
-#
-#         await ws.send(json.dumps({
-#             "type"      : "response",
-#             "req_id"    : req_id,
-#             "status"    : 502,
-#             "headers"   : {"content-type": "application/json"},
-#             "is_binary" : False,
-#             "body"      : json.dumps(body)
-#         }))
-#
 
 # ------------------------------------------------------------------------------
 #
@@ -316,7 +251,11 @@ async def bridge_loop():
     while True:
 
         try:
+            ssl_ctx = ssl.create_default_context()
+            ssl_ctx.load_verify_locations("cert.pem")
+
             async with websockets.connect(BRIDGE_URL,
+                                          ssl=ssl_ctx,  
                                           ping_interval=PING_INTERVAL,
                                           ping_timeout =PING_TIMEOUT,
                                           close_timeout=10) as ws, \
@@ -415,7 +354,7 @@ if __name__ == "__main__":
     async def main():
 
         # Start local API server in-process
-        config = uvicorn.Config(app, host="127.0.0.1", port=8001, log_level="debug")
+        config = uvicorn.Config(app, host="0.0.0.0", port=8001, log_level="debug")
         server = uvicorn.Server(config)
         srv_task = asyncio.create_task(server.serve())
 
