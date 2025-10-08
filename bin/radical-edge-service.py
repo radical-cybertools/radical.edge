@@ -164,7 +164,6 @@ async def task_wait(cid: str, tid: str):
 # ------------------------------------------------------------------------------
 # Bridge forwarding
 # ------------------------------------------------------------------------------
-# ------------------------------------------------------------------------------
 #
 async def handle_request(ws       ,
                          http     : httpx.AsyncClient,
@@ -255,7 +254,7 @@ async def bridge_loop():
             ssl_ctx.load_verify_locations("cert.pem")
 
             async with websockets.connect(BRIDGE_URL,
-                                          ssl=ssl_ctx,  
+                                          ssl=ssl_ctx,
                                           ping_interval=PING_INTERVAL,
                                           ping_timeout =PING_TIMEOUT,
                                           close_timeout=10) as ws, \
@@ -308,41 +307,6 @@ async def bridge_loop():
 
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 10)
-
-# async def bridge_loop():
-#
-#     backoff = 1
-#     while True:
-#
-#         try:
-#             async with websockets.connect(BRIDGE_URL) as ws, \
-#                        httpx.AsyncClient()            as http:
-#
-#                 log.info("[Edge] Connected to Bridge")
-#
-#                 async def ponger():
-#                     while True:
-#                         await asyncio.sleep(15)
-#                         # No-op: we only reply when ping is received
-#
-#                 pong_task = asyncio.create_task(ponger())
-#
-#                 try:
-#                     while True:
-#                         raw  = await ws.recv()
-#                         data = json.loads(raw)
-#
-#                         await handle_request(ws, http, data)
-#
-#                 finally:
-#                     pong_task.cancel()
-#
-#         except (OSError, ws_exc.ConnectionClosed,
-#                          ws_exc.ConnectionClosedOK,
-#                          ws_exc.ConnectionClosedError):
-#             log.exception("[Edge] Bridge connection lost. Reconnecting...")
-#             await asyncio.sleep(backoff)
-#             backoff = min(backoff * 2, 10)
 
 
 # ------------------------------------------------------------------------------
