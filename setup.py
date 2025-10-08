@@ -18,8 +18,8 @@ from setuptools import setup, Command, find_namespace_packages
 
 # ------------------------------------------------------------------------------
 #
-base     = 'utils'
-name     = 'radical.radical.edge'
+base     = 'edge'
+name     = 'radical.%s'      % base
 mod_root = 'src/radical/%s/' % base
 
 scripts  = list(glob('bin/*'))

@@ -1,5 +1,4 @@
 
-ssl
 httpx
 requests
 websockets
