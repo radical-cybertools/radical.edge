@@ -4,14 +4,16 @@ import requests
 import websocket
 import threading
 
-from typing import Optional, List, Dict
+from typing import Optional
 
 import radical.utils as ru
+
+Job = str
 
 
 # ------------------------------------------------------------------------------
 #
-class RadicalRestService(object):
+class RadicalEdgeRestService(object):
 
     # --------------------------------------------------------------------------
     #
@@ -30,8 +32,8 @@ class RadicalRestService(object):
         if self._url.path and self._url.path != '/':
             name = self._url.path.rstrip('/')
 
-        self._jobs: Dict[str, Job] = dict()
-        self._idmap: Dict[str, str] = dict()
+        self._jobs: dict[str, Job] = dict()
+        self._idmap: dict[str, str] = dict()
         self._serialize = Export()
 
         self._lock = threading.Lock()
@@ -103,7 +105,7 @@ class RadicalRestService(object):
 
     # --------------------------------------------------------------------------
     #
-    def list(self) -> List[str]:
+    def list(self) -> list[str]:
 
         rep = requests.get('%s/%s/jobs' % (self.url, self._cid))
         assert rep.ok

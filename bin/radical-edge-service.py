@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+from contextlib import asynccontextmanager
+
 import os
 import ssl
 import asyncio
@@ -7,6 +9,7 @@ import base64
 import json
 import httpx
 import websockets
+import uvicorn
 import pprint
 
 from typing  import Dict
@@ -18,147 +21,37 @@ from starlette.websockets import WebSocketDisconnect
 import radical.pilot as rp
 import radical.utils as ru
 
+import radical.edge as re
+
 log = ru.Logger("radical.edge", targets=['-'])
 
 
 BRIDGE_URL = os.environ.get("BRIDGE_URL", "wss://95.217.193.116:8000/register")
 LOCAL_BASE = os.environ.get("LOCAL_BASE", "http://95.217.193.116:8001")
 
+BRIDGE_URL = os.environ.get("BRIDGE_URL", "wss://localhost:8000/register")
+LOCAL_BASE = os.environ.get("LOCAL_BASE", "http://localhost:8001")
+
 app = FastAPI(title="Edge Service", debug=True)
-
-
-# ------------------------------------------------------------------------------
-#
-class Client(object):
-
-    # --------------------------------------------------------------------------
-    #
-    def __init__(self, cid: str):
-
-        self._cid     = cid
-        self._session = rp.Session()
-        self._pmgr   = rp.PilotManager(session=self._session)
-        self._tmgr   = rp.TaskManager(session=self._session)
-
-
-    # --------------------------------------------------------------------------
-    #
-    async def close(self):
-
-        self._session.close()
-
-        return {}
-
-
-    # --------------------------------------------------------------------------
-    #
-    async def pilot_submit(self, description: Dict) -> str:
-        """
-        Submit a pilot to the Pilot Manager and return its ID.
-        """
-        log.debug(pprint.pformat(description))
-        pilot = self._pmgr.submit_pilots(rp.PilotDescription(description))
-        self._tmgr.add_pilots(pilot)
-
-        return {'pid': pilot.uid}
-
-
-    # --------------------------------------------------------------------------
-    #
-    async def task_submit(self, description: Dict) -> str:
-        """
-        Submit a task to the Task Manager and return its ID.
-        """
-        log.debug(pprint.pformat(description))
-        task = self._tmgr.submit_tasks(rp.TaskDescription(description))
-        print(f"[Edge] Task submitted: {task.uid}")
-
-        return {"tid": task.uid}
-
-
-    # --------------------------------------------------------------------------
-    #
-    async def task_wait(self, tid: str) -> Dict:
-        """
-        Wait for a task to complete and return its result.
-        """
-        self._tmgr.wait_tasks(tid)
-        task = self._tmgr.get_tasks(tid)
-
-        return {"tid": tid, "task": task.as_dict()}
-
-
-    # --------------------------------------------------------------------------
-    #
-    async def request_echo(self, q: str = "hello") -> Dict:
-
-        return {"cid": self._cid, "echo": q}
-
-
-# --------------------------------------------------------------------------
-#
-clients  : Dict[str, Client] = {}
-_id_lock = asyncio.Lock()
-_next_id = 0
 
 
 # ------------------------------------------------------------------------------
 # local API (served on A; Bridge forwards to these)
 # ------------------------------------------------------------------------------
 
-async def _foward(cid, func, *args, **kwargs):
+@app.post("/load_plugin/{pname}")
+async def load_plugin(pname: str):
 
-    client = clients.get(cid)
+    if pname == "radical.lucid":
+        # keep instance?
+        plugin = re.PluginLucid(app)
 
-    log.debug(f"[Edge] Forward to client {cid} ({func.__name__})")
+    else:
 
-    if not client:
-        raise HTTPException(status_code=404, detail=f"unknown client id: {cid}")
+        raise HTTPException(status_code=404, detail=f"unknown plugin: {pname}")
 
-    try:
-        return await func(client, *args, **kwargs)
+    return {"namespace": plugin.namespace}
 
-    except Exception as e:
-        log.exception(f"[Edge] Error in client {cid}: {e}")
-        raise HTTPException(status_code=500, detail=str(e)) from e
-
-
-@app.post("/register_client")
-async def register_client():
-    global _next_id
-    cid = f"client.{_next_id:04d}"
-    _next_id += 1
-    clients[cid] = Client(cid)
-    return {"cid": cid}
-
-
-@app.post("/unregister_client/{cid}")
-async def unregister_client(cid: str):
-    inst = clients.pop(cid, None)
-    if not inst:
-        raise HTTPException(status_code=404, detail=f"unknown client id: {cid}")
-    await inst.close()
-    return {"ok": True}
-
-
-@app.get("/api/echo/{cid}")
-async def echo(cid: str, q: str = "hello"):
-    return await _foward(cid, Client.request_echo, q=q)
-
-
-@app.post("/api/pilot_submit/{cid}")
-async def pilot_submit(cid: str, description: Dict):
-    return await _foward(cid, Client.pilot_submit, description)
-
-
-@app.post("/api/task_submit/{cid}")
-async def task_submit(cid: str, description: Dict):
-    return await _foward(cid, Client.task_submit, description)
-
-
-@app.get("/api/task_wait/{cid}/{tid}")
-async def task_wait(cid: str, tid: str):
-    return await _foward(cid, Client.task_wait, tid)
 
 
 # ------------------------------------------------------------------------------
@@ -240,6 +133,14 @@ async def handle_request(ws       ,
 # ------------------------------------------------------------------------------
 #
 async def bridge_loop():
+    """
+    Connect to Bridge and forward requests to local Edge API server.
+    1. Connect to Bridge
+    2. Start reader task and worker tasks
+    3. Reader task receives requests and enqueues them
+    4. Worker tasks dequeue requests and process them via local Edge API server
+    5. On connection loss, cancel tasks and reconnect
+    """
 
     PING_INTERVAL = 20
     PING_TIMEOUT  = 120
@@ -247,18 +148,18 @@ async def bridge_loop():
     QSIZE         = 100          # backpressure on incoming requests
 
     backoff = 1
-    while True:
 
+    while True:
         try:
             ssl_ctx = ssl.create_default_context()
             ssl_ctx.load_verify_locations("cert.pem")
 
-            async with websockets.connect(BRIDGE_URL,
+            async with httpx.AsyncClient() as http, \
+                       websockets.connect(BRIDGE_URL,
                                           ssl=ssl_ctx,
                                           ping_interval=PING_INTERVAL,
                                           ping_timeout =PING_TIMEOUT,
-                                          close_timeout=10) as ws, \
-                       httpx.AsyncClient() as http:
+                                          close_timeout=10) as ws:
 
                 log.debug("[Edge] Connected to Bridge")
 
@@ -290,45 +191,106 @@ async def bridge_loop():
                 reader_task = asyncio.create_task(reader())
                 workers     = [asyncio.create_task(worker()) for _ in range(WORKERS)]
 
-                # wait until reader ends (connection closed/error)
-                await reader_task
+                try:
+                    await reader_task
+                finally:
+                    # ALWAYS cancel children (also on Ctrl-C)
+                    reader_task.cancel()
+                    for w in workers:
+                        w.cancel()
+                    await asyncio.gather(reader_task, *workers, return_exceptions=True)
 
-                # cancel workers and drain
-                for w in workers:
-                    w.cancel()
-                await asyncio.gather(*workers, return_exceptions=True)
+        except asyncio.CancelledError:
+            # important: stop reconnect loop on shutdown
+            raise
 
         except (ws_exc.ConnectionClosed,
                 ws_exc.ConnectionClosedOK,
                 ws_exc.ConnectionClosedError,
                 OSError):
-
             log.exception("[Edge] Bridge connection lost. Reconnecting...")
-
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 10)
+
+    # while True:
+
+    #     try:
+    #         ssl_ctx = ssl.create_default_context()
+    #         ssl_ctx.load_verify_locations("cert.pem")
+
+    #         async with websockets.connect(BRIDGE_URL,
+    #                                       ssl=ssl_ctx,
+    #                                       ping_interval=PING_INTERVAL,
+    #                                       ping_timeout =PING_TIMEOUT,
+    #                                       close_timeout=10) as ws, \
+    #                    httpx.AsyncClient() as http:
+
+    #             log.debug("[Edge] Connected to Bridge")
+
+    #             send_lock = asyncio.Lock()
+    #             in_q      = asyncio.Queue(maxsize=QSIZE)
+
+    #             async def reader():
+    #                 while True:
+    #                     raw  = await ws.recv()
+    #                     data = json.loads(raw)
+
+    #                     # reply to app-level heartbeat immediately (optional)
+    #                     if data.get("type") == "ping":
+    #                         async with send_lock:
+    #                             await ws.send(json.dumps({"type": "pong"}))
+    #                         continue
+
+    #                     # enqueue requests for workers
+    #                     await in_q.put(data)
+
+    #             async def worker():
+    #                 while True:
+    #                     data = await in_q.get()
+    #                     try:
+    #                         await handle_request(ws, http, data, send_lock)
+    #                     finally:
+    #                         in_q.task_done()
+
+    #             reader_task = asyncio.create_task(reader())
+    #             workers     = [asyncio.create_task(worker()) for _ in range(WORKERS)]
+
+    #             # wait until reader ends (connection closed/error)
+    #             await reader_task
+
+    #             # cancel workers and drain
+    #             for w in workers:
+    #                 w.cancel()
+    #             await asyncio.gather(*workers, return_exceptions=True)
+
+    #     except (ws_exc.ConnectionClosed,
+    #             ws_exc.ConnectionClosedOK,
+    #             ws_exc.ConnectionClosedError,
+    #             OSError):
+
+    #         log.exception("[Edge] Bridge connection lost. Reconnecting...")
+
+    #         await asyncio.sleep(backoff)
+    #         backoff = min(backoff * 2, 10)
 
 
 # ------------------------------------------------------------------------------
 #
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    task = asyncio.create_task(bridge_loop())
+    try:
+        yield
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+app.router.lifespan_context = lifespan   # attach to existing app
+
 if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8001, log_level="debug")
 
-    import uvicorn
-
-    async def main():
-
-        # Start local API server in-process
-        config = uvicorn.Config(app, host="0.0.0.0", port=8001, log_level="debug")
-        server = uvicorn.Server(config)
-        srv_task = asyncio.create_task(server.serve())
-
-        # Give it a moment to bind
-        await asyncio.sleep(0.5)
-
-        # Start bridge loop
-        loop_task = asyncio.create_task(bridge_loop())
-        await asyncio.gather(srv_task, loop_task)
-
-    asyncio.run(main())
 
 # ------------------------------------------------------------------------------
