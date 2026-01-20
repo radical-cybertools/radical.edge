@@ -19,6 +19,12 @@
 
 ---
 
+## System Architecture
+
+![System Architecture](./diagrams/system_architecture.svg)
+
+---
+
 ## Month 1: Foundation & Documentation (February 2026)
 
 ### Document Current State (24h)
