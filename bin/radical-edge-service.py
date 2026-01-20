@@ -49,11 +49,9 @@ class EdgeService(object):
         self._send_lock : asyncio.Lock = asyncio.Lock()
         self._plugins : dict[str, object] = dict()
 
-        app.add_api_route(
-            "/edge/load_plugin/{pname}",
-            self.load_plugin,
-            methods=["POST"]
-        )
+        app.add_api_route("/edge/load_plugin/{pname}",
+                          self.load_plugin,
+                          methods=["POST"])
 
 
     async def load_plugin(self, pname: str):
@@ -82,8 +80,9 @@ class EdgeService(object):
                                     "namespace": plugin.namespace}}
                 await self._ws.send(json.dumps(msg))
         except Exception as e:
-            print(f"[Edge] error registering plugin endpoint: {e}")
-            raise HTTPException(status_code=500, detail=f"error registering plugin endpoint: {e}")
+            print(f"[Edge] plugin registration failed: {e}")
+            raise HTTPException(status_code=500,
+                                detail=f"plugin registering failed: {e}")
 
         return {"namespace": plugin.namespace}
 
@@ -250,7 +249,8 @@ class EdgeService(object):
                         reader_task.cancel()
                         for w in workers:
                             w.cancel()
-                        await asyncio.gather(reader_task, *workers, return_exceptions=True)
+                        await asyncio.gather(reader_task, *workers,
+                                             return_exceptions=True)
 
             except asyncio.CancelledError:
                 # important: stop reconnect loop on shutdown

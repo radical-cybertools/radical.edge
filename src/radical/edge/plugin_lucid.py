@@ -37,6 +37,7 @@ class LucidClient(object):
     async def close(self) -> dict:
 
         self._session.close()
+        print(f"[Edge] Session closed for client {self._cid}")
 
         return {}
 
@@ -47,11 +48,9 @@ class LucidClient(object):
         """
         Submit a pilot to the Pilot Manager and return its ID.
         """
-        log.debug(pprint.pformat(description))
-        print('--------------------------------')
-        pprint.pprint(description)
         pilot = self._pmgr.submit_pilots(rp.PilotDescription(description))
         self._tmgr.add_pilots(pilot)
+        print(f"[Edge] Pilot submitted: {pilot.uid}")
 
         return {'pid': pilot.uid}
 
@@ -62,7 +61,6 @@ class LucidClient(object):
         """
         Submit a task to the Task Manager and return its ID.
         """
-        log.debug(pprint.pformat(description))
         task = self._tmgr.submit_tasks(rp.TaskDescription(description))
         print(f"[Edge] Task submitted: {task.uid}")
 
@@ -77,6 +75,7 @@ class LucidClient(object):
         """
         self._tmgr.wait_tasks(tid)
         task = self._tmgr.get_tasks(tid)
+        print(f"[Edge] Task {tid} completed with state {task.state}")
 
         return {"tid": tid, "task": task.as_dict()}
 
@@ -87,7 +86,7 @@ class LucidClient(object):
         """
         Echo service for testing.
         """
-
+        print(f"[Edge] Echo request from client {self._cid} with q={q}")
         return {"cid": self._cid, "echo": q}
 
 
@@ -181,8 +180,6 @@ class PluginLucid:
     async def pilot_submit(self, request: Request) -> JSONResponse:
         data = request.path_params
         json = await request.json()
-        pprint.pprint(data)
-        pprint.pprint(json)
         cid  = data['cid']
         desc = json['description']
         return await self._foward(cid, LucidClient.pilot_submit, desc)
@@ -190,8 +187,8 @@ class PluginLucid:
 
     async def task_submit(self, request: Request) -> JSONResponse:
         data = request.path_params
-        cid  = data['cid']
         json = await request.json()
+        cid  = data['cid']
         desc = json['description']
         return await self._foward(cid, LucidClient.task_submit, desc)
 
