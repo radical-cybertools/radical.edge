@@ -86,7 +86,7 @@ async def register(ws: WebSocket):
         while True:
             msg = await ws.receive_text()
             data = json.loads(msg)
-            print(f"[Bridge] Message received: {data}")
+            # print(f"[Bridge] Message received: {data}")
 
             if data.get("type") == "pong":
                 # print('[Bridge] Pong received')

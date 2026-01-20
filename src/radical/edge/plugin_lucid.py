@@ -9,6 +9,7 @@ from starlette.responses import JSONResponse
 
 import asyncio
 import pprint
+import uuid
 
 import radical.pilot as rp
 import radical.utils as ru
@@ -96,34 +97,41 @@ class PluginLucid:
 
     def __init__(self, app: FastAPI):
 
+        self._uid : str = str(uuid.uuid4())
         self._clients : dict[str, LucidClient] = {}
         self._id_lock = asyncio.Lock()
         self._next_id = 0
 
+        self._namespace = f"lucid/{self._uid}"
+
         routes = app.router.routes
 
-        routes.append(Route("/lucid/register_client",
+        routes.append(Route(f"/{self._namespace}" + "/register_client",
                             self.register_client,
                             methods=["POST"]))
-        routes.append(Route("/lucid/unregister_client/{cid}",
+        routes.append(Route(f"/{self._namespace}" + "/unregister_client/{cid}",
                             self.unregister_client,
                             methods=["POST"]))
-        routes.append(Route("/lucid/echo/{cid}",
+        routes.append(Route(f"/{self._namespace}" + "/echo/{cid}",
                             self.echo,
                             methods=["GET"]))
-        routes.append(Route("/lucid/pilot_submit/{cid}",
+        routes.append(Route(f"/{self._namespace}" + "/pilot_submit/{cid}",
                             self.pilot_submit,
                             methods=["POST"]))
-        routes.append(Route("/lucid/task_submit/{cid}",
+        routes.append(Route(f"/{self._namespace}" + "/task_submit/{cid}",
                             self.task_submit,
                             methods=["POST"]))
-        routes.append(Route("/lucid/task_wait/{cid}/{tid}",
+        routes.append(Route(f"/{self._namespace}" + "/task_wait/{cid}/{tid}",
                             self.task_wait,
                             methods=["GET"]))
 
     @property
+    def uid(self) -> str:
+        return self._uid
+
+    @property
     def namespace(self) -> str:
-        return "lucid"
+        return "lucid/%s" % self._uid
 
 
     async def _foward(self, cid, func, *args, **kwargs) -> JSONResponse:

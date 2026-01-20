@@ -36,7 +36,7 @@ def main():
         data = check_response(r)
         pprint.pprint(data)
 
-        # register client
+        # load lucid plugin on the edge service
         r = http.post(f"{BRIDGE_HTTP}/edge/load_plugin/radical.lucid")
         print('---------------------------------')
         print("load_plugin")
@@ -48,8 +48,6 @@ def main():
         print("list")
         data = check_response(r)
         pprint.pprint(data)
-
-        sys.exit(0)
 
         # register client
         r = http.post(f"{BRIDGE_HTTP}/{ns}/register_client")

@@ -77,8 +77,9 @@ class EdgeService(object):
                 print(f"[Edge] registering plugin endpoint: {pname}")
                 msg = {"type": "register",
                        "edge_uid": self._uuid,
-                       "ep_uid": str(uuid.uuid4()),
-                       "endpoint": {"type": pname}}
+                       "ep_uid": plugin.uid,
+                       "endpoint": {"type": pname,
+                                    "namespace": plugin.namespace}}
                 await self._ws.send(json.dumps(msg))
         except Exception as e:
             print(f"[Edge] error registering plugin endpoint: {e}")
