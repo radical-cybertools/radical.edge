@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import sys
 import httpx
 import pprint
 
@@ -27,12 +28,28 @@ def main():
     with httpx.Client(timeout=60.0,
                       verify='cert.pem') as http:
 
+        print('=================================')
+
+        r = http.post(f"{BRIDGE_HTTP}/edge/list")
+        print('---------------------------------')
+        print("list")
+        data = check_response(r)
+        pprint.pprint(data)
+
         # register client
-        r = http.post(f"{BRIDGE_HTTP}/load_plugin/radical.lucid")
+        r = http.post(f"{BRIDGE_HTTP}/edge/load_plugin/radical.lucid")
         print('---------------------------------')
         print("load_plugin")
         data = check_response(r)
         ns   = data["namespace"]
+
+        r = http.post(f"{BRIDGE_HTTP}/edge/list")
+        print('---------------------------------')
+        print("list")
+        data = check_response(r)
+        pprint.pprint(data)
+
+        sys.exit(0)
 
         # register client
         r = http.post(f"{BRIDGE_HTTP}/{ns}/register_client")

@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 
-import asyncio, base64, json, uuid
+import asyncio
+import base64
+import json
+import uuid
 
 from typing  import Dict, Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -32,12 +35,17 @@ app.add_middleware(
 edge_ws: Optional[WebSocket]       = None
 pending: Dict[str, asyncio.Future] = dict()
 pending_lock                       = asyncio.Lock()
+endpoints: Dict[str, dict]         = dict()
 
 HEARTBEAT_INTERVAL = 20
 REQUEST_TIMEOUT    = 45
 
+# register this endpoint
+bridge_id = str(uuid.uuid4())
+endpoints[bridge_id] = {"type": "radical.edge.brige"}
 
-# --------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
 #
 async def _send_to_edge(message: dict):
 
@@ -48,7 +56,7 @@ async def _send_to_edge(message: dict):
 
 
 
-# --------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 #
 @app.websocket("/register")
 async def register(ws: WebSocket):
@@ -56,6 +64,7 @@ async def register(ws: WebSocket):
     global edge_ws
     await ws.accept()
     edge_ws = ws
+    edge_uid = None
     print("[Bridge] Edge connected")
 
     # Heartbeat
@@ -69,34 +78,61 @@ async def register(ws: WebSocket):
             except Exception:
                 return
 
-    ping_task = asyncio.create_task(pinger())
-
     try:
+
+        # start the ping task - it will run as long as the endpoint is connected
+        ping_task = asyncio.create_task(pinger())
+
         while True:
             msg = await ws.receive_text()
             data = json.loads(msg)
+            print(f"[Bridge] Message received: {data}")
 
             if data.get("type") == "pong":
-                continue
+                # print('[Bridge] Pong received')
+                pass
 
-            if data.get("type") != "response":
+            elif data.get("type") == "register":
+                edge_uid = data['edge_uid']
+                ep_uid = data.get('ep_uid')
+                if edge_uid == bridge_id:
+                    print(f"[Bridge] Ignoring self-registration: {edge_uid}")
+                    continue
+                if edge_uid not in endpoints:
+                    print(f"[Bridge] Registering edge: {edge_uid}")
+                    endpoints[edge_uid] = {}
+                if ep_uid:
+                    print(f"[Bridge] Registering ep: {ep_uid} : {edge_uid}")
+                    endpoints[edge_uid][ep_uid] = data['endpoint']
+
+            elif data.get("type") == "response":
+                req_id = data["req_id"]
+                # print(f"[Bridge] Response received {req_id}")
+                async with pending_lock:
+                    fut = pending.pop(req_id, None)
+
+                if fut and not fut.done():
+                    fut.set_result(data)
+
+            else:
                 # ignore unknown frames
-                continue
+                print(f"[Bridge] Unknown message type received: {data}")
 
-            req_id = data["req_id"]
-            async with pending_lock:
-                fut = pending.pop(req_id, None)
-
-            if fut and not fut.done():
-                fut.set_result(data)
 
     except WebSocketDisconnect:
         pass
+
+    except Exception as e:
+        print(f"[Bridge] Edge connection error: {e}")
 
     finally:
 
         print("[Bridge] Edge disconnected")
         ping_task.cancel()
+
+        if edge_uid and edge_uid in endpoints:
+            print(f"[Bridge] Unregistering edge: {edge_uid}")
+            del endpoints[edge_uid]
 
         if edge_ws is ws:
             edge_ws = None
@@ -109,7 +145,7 @@ async def register(ws: WebSocket):
             pending.clear()
 
 
-# --------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 #
 def _strip_headers(request: Request) -> dict:
 
@@ -122,12 +158,22 @@ def _strip_headers(request: Request) -> dict:
     return ret
 
 
+# ------------------------------------------------------------------------------
+# define edge-specific methods first
+# some routes are handles here:
+@app.post("/edge/list")
+async def edge_list(request: Request):
+    return JSONResponse({"data": endpoints})
 
-# --------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# all other edge routes are forwarded
 #
 @app.api_route("/{full_path:path}",
                methods=["GET","POST","PUT","PATCH","DELETE","OPTIONS","HEAD"])
 async def proxy(full_path: str, request: Request):
+
+    # print('[Bridge] Proxy request:', request.method, full_path)
 
     # Prepare body (binary-safe)
     body_bytes = await request.body()
@@ -164,6 +210,7 @@ async def proxy(full_path: str, request: Request):
         pending[req_id] = fut
 
     try:
+        # print('[Bridge] Sending to edge:', message)
         await _send_to_edge(message)
 
     except HTTPException:
@@ -216,6 +263,13 @@ async def proxy(full_path: str, request: Request):
 if __name__ == "__main__":
 
     import uvicorn
+
+    for route in app.routes:
+        if hasattr(route, 'methods'):
+            print(f"{route.path} {route.methods}")
+        else:
+            print(f"{route.path} [no methods - {type(route).__name__}]")
+
     uvicorn.run(app,
                 host="0.0.0.0",
                 port=8000,

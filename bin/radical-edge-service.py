@@ -2,15 +2,16 @@
 
 from contextlib import asynccontextmanager
 
-import os
-import ssl
 import asyncio
 import base64
-import json
 import httpx
-import websockets
-import uvicorn
+import json
+import os
 import pprint
+import ssl
+import uuid
+import uvicorn
+import websockets
 
 from typing  import Dict
 from fastapi import FastAPI, WebSocket, HTTPException
@@ -39,257 +40,249 @@ app = FastAPI(title="Edge Service", debug=True)
 # local API (served on A; Bridge forwards to these)
 # ------------------------------------------------------------------------------
 
-@app.post("/load_plugin/{pname}")
-async def load_plugin(pname: str):
+class EdgeService(object):
 
-    if pname == "radical.lucid":
-        # keep instance?
-        plugin = re.PluginLucid(app)
+    def __init__(self):
+        self._ws : WebSocket = None
+        self._http : httpx.AsyncClient = None
+        self._uuid : str = str(uuid.uuid4())
+        self._send_lock : asyncio.Lock = asyncio.Lock()
+        self._plugins : dict[str, object] = dict()
 
-    else:
+        app.add_api_route(
+            "/edge/load_plugin/{pname}",
+            self.load_plugin,
+            methods=["POST"]
+        )
 
-        raise HTTPException(status_code=404, detail=f"unknown plugin: {pname}")
 
-    return {"namespace": plugin.namespace}
+    async def load_plugin(self, pname: str):
 
+        if pname in self._plugins:
+            return {"namespace": self._plugins[pname].namespace}
 
+        # FIXME: registry of available plugins
+        plugin = None
+        if pname == "radical.lucid":
+            plugin = re.PluginLucid(app)
 
-# ------------------------------------------------------------------------------
-# Bridge forwarding
-# ------------------------------------------------------------------------------
-#
-async def handle_request(ws       ,
-                         http     : httpx.AsyncClient,
-                         data     : dict,
-                         send_lock: asyncio.Lock) -> None:
+        if not plugin:
+            print(f"[Edge] unknown plugin: {pname}")
+            raise HTTPException(status_code=404, detail=f"unknown plugin: {pname}")
 
-    if data.get("type") != "request":
-        return
-
-    req_id    = data["req_id"]
-    method    = data["method"]
-    path      = data["path"]
-    headers   = data.get("headers") or {}
-    is_binary = data.get("is_binary", False)
-    body      = data.get("body")
-
-    # Rehydrate body
-    content = None
-    if body is not None:
-        if is_binary:
-            content = base64.b64decode(body)
-        else:
-            content = body.encode("utf-8")
-
-    # Call the local Edge FastAPI server (loopback)
-    url = LOCAL_BASE + path
-    try:
-        resp = await http.request(method, url,
-                                  content=content,
-                                  headers=headers,
-                                  timeout=40.0)
-
-        resp_is_binary = False
+        self._plugins[pname] = plugin
         try:
-            body_text = resp.text
-            out_body  = body_text
+            print('==== ws: ', self._ws)
+            async with self._send_lock:
+                print(f"[Edge] registering plugin endpoint: {pname}")
+                msg = {"type": "register",
+                       "edge_uid": self._uuid,
+                       "ep_uid": str(uuid.uuid4()),
+                       "endpoint": {"type": pname}}
+                await self._ws.send(json.dumps(msg))
+        except Exception as e:
+            print(f"[Edge] error registering plugin endpoint: {e}")
+            raise HTTPException(status_code=500, detail=f"error registering plugin endpoint: {e}")
 
-        except Exception:
-            out_body = base64.b64encode(resp.content).decode("ascii")
-            resp_is_binary = True
-
-        message = {
-            "type"      : "response",
-            "req_id"    : req_id,
-            "status"    : resp.status_code,
-            "headers"   : dict(resp.headers),
-            "is_binary" : resp_is_binary,
-            "body"      : out_body
-        }
-
-        async with send_lock:
-            await ws.send(json.dumps(message))
-
-    except Exception as e:
-
-        log.exception(f"[Edge] Error handling request {req_id}")
-
-        body = {"error" : "edge-invoke-failed",
-                "detail": str(e)}
-
-        message = {
-            "type"      : "response",
-            "req_id"    : req_id,
-            "status"    : 502,
-            "headers"   : {"content-type": "application/json"},
-            "is_binary" : False,
-            "body"      : json.dumps(body)
-        }
-
-        async with send_lock:
-            await ws.send(json.dumps(message))
+        return {"namespace": plugin.namespace}
 
 
-# ------------------------------------------------------------------------------
-#
-async def bridge_loop():
-    """
-    Connect to Bridge and forward requests to local Edge API server.
-    1. Connect to Bridge
-    2. Start reader task and worker tasks
-    3. Reader task receives requests and enqueues them
-    4. Worker tasks dequeue requests and process them via local Edge API server
-    5. On connection loss, cancel tasks and reconnect
-    """
+    # ------------------------------------------------------------------------------
+    #
+    async def handle_request(self, data: dict):
+        """
+        forward messages received from Bridge to local Edge API server
+        """
 
-    PING_INTERVAL = 20
-    PING_TIMEOUT  = 120
-    WORKERS       = 2            # set to 1 if you want strict serial processing
-    QSIZE         = 100          # backpressure on incoming requests
-
-    backoff = 1
-
-    while True:
         try:
-            ssl_ctx = ssl.create_default_context()
-            ssl_ctx.load_verify_locations("cert.pem")
 
-            async with httpx.AsyncClient() as http, \
-                       websockets.connect(BRIDGE_URL,
-                                          ssl=ssl_ctx,
-                                          ping_interval=PING_INTERVAL,
-                                          ping_timeout =PING_TIMEOUT,
-                                          close_timeout=10) as ws:
+            if data.get("type") != "request":
+                print(f"[Edge] unknown message type: {data.get('type')}")
+                raise ValueError(f"unknown message type")
 
-                log.debug("[Edge] Connected to Bridge")
+            req_id    = data["req_id"]
+            method    = data["method"]
+            path      = data["path"]
+            headers   = data.get("headers") or {}
+            is_binary = data.get("is_binary", False)
+            body      = data.get("body")
 
-                send_lock = asyncio.Lock()
-                in_q      = asyncio.Queue(maxsize=QSIZE)
+            # Rehydrate body
+            content = None
+            if body is not None:
+                if is_binary:
+                    content = base64.b64decode(body)
+                else:
+                    content = body.encode("utf-8")
 
-                async def reader():
-                    while True:
-                        raw  = await ws.recv()
-                        data = json.loads(raw)
+            # Call the local Edge FastAPI server (loopback)
+            url = LOCAL_BASE + path
+            resp = await self._http.request(method, url,
+                                            content=content,
+                                            headers=headers,
+                                            timeout=40.0)
 
-                        # reply to app-level heartbeat immediately (optional)
-                        if data.get("type") == "ping":
-                            async with send_lock:
-                                await ws.send(json.dumps({"type": "pong"}))
-                            continue
+            resp_is_binary = False
+            try:
+                body_text = resp.text
+                out_body  = body_text
 
-                        # enqueue requests for workers
-                        await in_q.put(data)
+            except Exception:
+                out_body = base64.b64encode(resp.content).decode("ascii")
+                resp_is_binary = True
 
-                async def worker():
-                    while True:
-                        data = await in_q.get()
-                        try:
-                            await handle_request(ws, http, data, send_lock)
-                        finally:
-                            in_q.task_done()
+            message = {
+                "type"      : "response",
+                "req_id"    : req_id,
+                "status"    : resp.status_code,
+                "headers"   : dict(resp.headers),
+                "is_binary" : resp_is_binary,
+                "body"      : out_body
+            }
 
-                reader_task = asyncio.create_task(reader())
-                workers     = [asyncio.create_task(worker()) for _ in range(WORKERS)]
+            async with self._send_lock:
+                await self._ws.send(json.dumps(message))
 
-                try:
-                    await reader_task
-                finally:
-                    # ALWAYS cancel children (also on Ctrl-C)
-                    reader_task.cancel()
-                    for w in workers:
-                        w.cancel()
-                    await asyncio.gather(reader_task, *workers, return_exceptions=True)
+        except Exception as e:
 
-        except asyncio.CancelledError:
-            # important: stop reconnect loop on shutdown
-            raise
+            log.exception(f"[Edge] Error handling request {req_id}")
 
-        except (ws_exc.ConnectionClosed,
-                ws_exc.ConnectionClosedOK,
-                ws_exc.ConnectionClosedError,
-                OSError):
-            log.exception("[Edge] Bridge connection lost. Reconnecting...")
-            await asyncio.sleep(backoff)
-            backoff = min(backoff * 2, 10)
+            body = {"error" : "edge-invoke-failed",
+                    "detail": str(e)}
 
-    # while True:
+            message = {
+                "type"      : "response",
+                "req_id"    : req_id,
+                "status"    : 502,
+                "headers"   : {"content-type": "application/json"},
+                "is_binary" : False,
+                "body"      : json.dumps(body)
+            }
 
-    #     try:
-    #         ssl_ctx = ssl.create_default_context()
-    #         ssl_ctx.load_verify_locations("cert.pem")
+            async with self._send_lock:
+                await self._ws.send(json.dumps(message))
 
-    #         async with websockets.connect(BRIDGE_URL,
-    #                                       ssl=ssl_ctx,
-    #                                       ping_interval=PING_INTERVAL,
-    #                                       ping_timeout =PING_TIMEOUT,
-    #                                       close_timeout=10) as ws, \
-    #                    httpx.AsyncClient() as http:
 
-    #             log.debug("[Edge] Connected to Bridge")
+    # ------------------------------------------------------------------------------
+    #
+    async def main_loop(self):
+        """
+        Connect to Bridge and forward requests to local Edge API server.
+        1. Connect to Bridge
+        2. Start reader task and worker tasks
+        3. Reader task receives requests and enqueues them
+        4. Worker tasks dequeue requests and process them via local Edge API server
+        5. On connection loss, cancel tasks and reconnect
+        """
 
-    #             send_lock = asyncio.Lock()
-    #             in_q      = asyncio.Queue(maxsize=QSIZE)
+        PING_INTERVAL = 20
+        PING_TIMEOUT  = 120
+        WORKERS       = 2            # set to 1 if you want strict serial processing
+        QSIZE         = 100          # backpressure on incoming requests
 
-    #             async def reader():
-    #                 while True:
-    #                     raw  = await ws.recv()
-    #                     data = json.loads(raw)
+        backoff = 1
 
-    #                     # reply to app-level heartbeat immediately (optional)
-    #                     if data.get("type") == "ping":
-    #                         async with send_lock:
-    #                             await ws.send(json.dumps({"type": "pong"}))
-    #                         continue
+        while True:
+            try:
+                ssl_ctx = ssl.create_default_context()
+                ssl_ctx.load_verify_locations("cert.pem")
 
-    #                     # enqueue requests for workers
-    #                     await in_q.put(data)
+                async with httpx.AsyncClient() as http, \
+                           websockets.connect(BRIDGE_URL,
+                                              ssl=ssl_ctx,
+                                              ping_interval=PING_INTERVAL,
+                                              ping_timeout =PING_TIMEOUT,
+                                              close_timeout=10) as ws:
 
-    #             async def worker():
-    #                 while True:
-    #                     data = await in_q.get()
-    #                     try:
-    #                         await handle_request(ws, http, data, send_lock)
-    #                     finally:
-    #                         in_q.task_done()
+                    # make client and ws visible to all class methods
+                    self._http = http
+                    self._ws = ws
 
-    #             reader_task = asyncio.create_task(reader())
-    #             workers     = [asyncio.create_task(worker()) for _ in range(WORKERS)]
+                    log.debug("[Edge] Connected to Bridge")
 
-    #             # wait until reader ends (connection closed/error)
-    #             await reader_task
+                    async with self._send_lock:
+                        msg = {"type": "register",
+                               "edge_uid": self._uuid,
+                               "ep_uid": str(uuid.uuid4()),
+                               "endpoint": {"type": "radical.edge"}}
+                        await self._ws.send(json.dumps(msg))
+                    in_q = asyncio.Queue(maxsize=QSIZE)
 
-    #             # cancel workers and drain
-    #             for w in workers:
-    #                 w.cancel()
-    #             await asyncio.gather(*workers, return_exceptions=True)
+                    async def reader():
+                        # receive messages from Bridge and enqueue them
+                        while True:
+                            raw  = await self._ws.recv()
+                            # print(f"[Edge] received: {raw}")
+                            data = json.loads(raw)
+                            # print(f"[Edge] decoded : {data}")
 
-    #     except (ws_exc.ConnectionClosed,
-    #             ws_exc.ConnectionClosedOK,
-    #             ws_exc.ConnectionClosedError,
-    #             OSError):
+                            # reply to app-level heartbeat immediately (optional)
+                            if data.get("type") == "ping":
+                                async with self._send_lock:
+                                    await self._ws.send(json.dumps({"type": "pong"}))
+                                continue
 
-    #         log.exception("[Edge] Bridge connection lost. Reconnecting...")
+                            # enqueue requests for workers
+                            await in_q.put(data)
 
-    #         await asyncio.sleep(backoff)
-    #         backoff = min(backoff * 2, 10)
+                    async def worker():
+                        # dequeue requests and handle them
+                        while True:
+                            data = await in_q.get()
+                            # print(f"[Edge] handling: {data}")
+                            try:
+                                await self.handle_request(data)
+                            except Exception as e:
+                                print(f"[Edge] error handling: {e}")
+                                # print(f"[Edge] data was: {data}")
+                            finally:
+                                # print(f"[Edge] done with: {data}")
+                                in_q.task_done()
+
+                    reader_task = asyncio.create_task(reader())
+                    workers     = [asyncio.create_task(worker()) for _ in range(WORKERS)]
+
+                    try:
+                        await reader_task
+                    finally:
+                        # ALWAYS cancel children (also on Ctrl-C)
+                        reader_task.cancel()
+                        for w in workers:
+                            w.cancel()
+                        await asyncio.gather(reader_task, *workers, return_exceptions=True)
+
+            except asyncio.CancelledError:
+                # important: stop reconnect loop on shutdown
+                raise
+
+            except (ws_exc.ConnectionClosed,
+                    ws_exc.ConnectionClosedOK,
+                    ws_exc.ConnectionClosedError,
+                    OSError):
+                log.exception("[Edge] Bridge connection lost. Reconnecting...")
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 10)
 
 
 # ------------------------------------------------------------------------------
 #
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    task = asyncio.create_task(bridge_loop())
-    try:
-        yield
-    finally:
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
-
-app.router.lifespan_context = lifespan   # attach to existing app
-
 if __name__ == "__main__":
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        serv = EdgeService()
+        task = asyncio.create_task(serv.main_loop())
+        try:
+            yield
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    app.router.lifespan_context = lifespan   # attach to existing app
+
+    for route in app.routes:
+        print(route.path, route.methods)
+
     uvicorn.run(app, host="0.0.0.0", port=8001, log_level="debug")
 
 
