@@ -21,7 +21,7 @@
 
 ## System Architecture
 
-![System Architecture](./diagrams/system_architecture.svg)
+![System Architecture](./system_architecture.svg)
 
 ---
 

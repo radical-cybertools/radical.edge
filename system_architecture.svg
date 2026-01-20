@@ -1,0 +1,208 @@
+<svg viewBox="0 0 1700 1000" xmlns="http://www.w3.org/2000/svg">
+  <!-- Define styles -->
+  <defs>
+    <style>
+      .node-box { fill: #f0f0f0; stroke: #333; stroke-width: 2; }
+      .component-box { fill: #e3f2fd; stroke: #1976d2; stroke-width: 2; }
+      .info-box { fill: #e8f5e9; stroke: #4caf50; stroke-width: 2; }
+      .firewall { fill: #ffebee; stroke: #c62828; stroke-width: 3; stroke-dasharray: 10,5; }
+      .connection { stroke: #2196f3; stroke-width: 2.5; fill: none; marker-end: url(#arrowblue); }
+      .ws-connection { stroke: #4caf50; stroke-width: 3; fill: none; marker-end: url(#arrowgreen); stroke-dasharray: 5,5; }
+      .ws-bi-connection { stroke: #4caf50; stroke-width: 3; fill: none; marker-start: url(#arrowgreen-start); marker-end: url(#arrowgreen); stroke-dasharray: 5,5; }
+      .title-text { font-family: Arial, sans-serif; font-size: 20px; font-weight: bold; fill: #333; }
+      .label-text { font-family: Arial, sans-serif; font-size: 16px; fill: #555; }
+      .small-text { font-family: Arial, sans-serif; font-size: 14px; fill: #666; }
+      .protocol-text { font-family: Arial, sans-serif; font-size: 13px; fill: #1976d2; font-style: italic; }
+      .mono-text { font-family: 'Courier New', monospace; font-size: 13px; fill: #333; }
+    </style>
+    
+    <!-- Arrow markers -->
+    <marker id="arrowblue" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#2196f3" />
+    </marker>
+    <marker id="arrowgreen" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#4caf50" />
+    </marker>
+    <marker id="arrowgreen-start" markerWidth="10" markerHeight="10" refX="0" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M9,0 L9,6 L0,3 z" fill="#4caf50" />
+    </marker>
+    <marker id="arrowblue-left" markerWidth="10" markerHeight="10" refX="0" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M9,0 L9,6 L0,3 z" fill="#2196f3" />
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <text x="800" y="40" class="title-text" text-anchor="middle" font-size="24">Radical Edge System Architecture</text>
+
+  <!-- ============ PORTAL NODE ============ -->
+  <g id="portal-node">
+    <rect x="50" y="100" width="380" height="280" class="node-box" rx="10"/>
+    <text x="70" y="135" class="title-text">Portal</text>
+    
+    <!-- Client Component -->
+    <rect x="80" y="160" width="320" height="200" class="component-box" rx="5"/>
+    <text x="100" y="190" class="label-text" font-weight="bold">Python Client</text>
+    <text x="100" y="215" class="small-text">Runtime: httpx.Client</text>
+    <text x="100" y="240" class="small-text">Operations:</text>
+    <text x="120" y="265" class="small-text">• Makes HTTP/HTTPS requests</text>
+    <text x="120" y="290" class="small-text">• Calls /edge/load_plugin/{pname}</text>
+    <text x="120" y="315" class="small-text">• Calls /edge/list</text>
+    <text x="120" y="340" class="small-text">• Uses cert.pem for TLS verification</text>
+  </g>
+
+  <!-- ============ EDGE HOST NODE ============ -->
+  <g id="bridge-node">
+    <rect x="570" y="100" width="420" height="520" class="node-box" rx="10"/>
+    <text x="590" y="135" class="title-text">Open Edge Host</text>
+    
+    <!-- Bridge Component -->
+    <rect x="600" y="160" width="360" height="440" class="component-box" rx="5"/>
+    <text x="620" y="190" class="label-text" font-weight="bold">Bridge Service</text>
+    <text x="620" y="215" class="small-text">Runtime: FastAPI (uvicorn), Port 8000 (HTTPS)</text>
+    
+    <text x="620" y="245" class="small-text" font-weight="bold">HTTP Endpoints:</text>
+    <text x="640" y="270" class="small-text">POST /edge/list</text>
+    <text x="640" y="295" class="small-text">/{full_path:path} → proxy to Edge via WebSocket</text>
+    
+    <text x="620" y="325" class="small-text" font-weight="bold">WebSocket Endpoint:</text>
+    <text x="640" y="350" class="small-text">/register (accepts connections from Edge)</text>
+    
+    <text x="620" y="380" class="small-text" font-weight="bold">State:</text>
+    <text x="640" y="405" class="small-text">endpoints: Dict[edge_uid, Dict[ep_uid, endpoint]]</text>
+    <text x="640" y="430" class="small-text">edge_ws: WebSocket connection to Edge</text>
+    <text x="640" y="455" class="small-text">pending: Dict[req_id, Future] for responses</text>
+    
+    <text x="620" y="485" class="small-text" font-weight="bold">Functions:</text>
+    <text x="640" y="510" class="small-text">• Receives client requests via HTTPS</text>
+    <text x="640" y="535" class="small-text">• Wraps as JSON messages with req_id</text>
+    <text x="640" y="560" class="small-text">• Sends via WebSocket to Edge Service</text>
+    <text x="640" y="585" class="small-text">• Returns responses to client</text>
+  </g>
+
+  <!-- ============ FIREWALL (between Portal and Bridge) ============ -->
+  <rect x="470" y="100" width="50" height="520" class="firewall" rx="5"/>
+  <text x="495" y="570" class="label-text" text-anchor="middle" transform="rotate(90 495 570)" font-weight="bold">FIREWALL</text>
+
+  <!-- ============ FIREWALL (between Bridge and HPC) ============ -->
+  <rect x="1070" y="100" width="50" height="780" class="firewall" rx="5"/>
+  <text x="1095" y="825" class="label-text" text-anchor="middle" transform="rotate(90 1095 825)" font-weight="bold">FIREWALL</text>
+
+  <!-- ============ HPC CLUSTER NODE ============ -->
+  <g id="hpc-node">
+    <rect x="1170" y="100" width="380" height="780" class="node-box" rx="10"/>
+    <text x="1190" y="135" class="title-text">HPC Cluster (Compute Node)</text>
+    
+    <!-- Edge Service Component -->
+    <rect x="1200" y="160" width="320" height="400" class="component-box" rx="5"/>
+    <text x="1220" y="190" class="label-text" font-weight="bold">Edge Service</text>
+    <text x="1220" y="215" class="small-text">Runtime: FastAPI (uvicorn), Port 8001 (local)</text>
+    
+    <text x="1220" y="245" class="small-text" font-weight="bold">Components:</text>
+    <text x="1240" y="270" class="small-text">EdgeService class</text>
+    <text x="1240" y="295" class="small-text">main_loop() - manages WebSocket</text>
+    <text x="1240" y="320" class="small-text">handle_request() - processes requests</text>
+    
+    <text x="1220" y="350" class="small-text" font-weight="bold">Endpoints:</text>
+    <text x="1240" y="375" class="small-text">POST /edge/load_plugin/{pname}</text>
+    <text x="1240" y="400" class="small-text">(Plugins add additional endpoints)</text>
+    
+    <text x="1220" y="430" class="small-text" font-weight="bold">State:</text>
+    <text x="1240" y="455" class="small-text">_ws: WebSocket to Bridge</text>
+    <text x="1240" y="480" class="small-text">_http: httpx.AsyncClient (loopback)</text>
+    <text x="1240" y="505" class="small-text">_uuid: edge_uid (unique identifier)</text>
+    <text x="1240" y="530" class="small-text">_plugins: Dict[pname, plugin_instance]</text>
+    
+    <!-- Plugins -->
+    <rect x="1200" y="590" width="320" height="270" class="component-box" rx="5"/>
+    <text x="1220" y="620" class="label-text" font-weight="bold">Loaded Plugins</text>
+    <text x="1220" y="650" class="small-text" font-weight="bold">Example: radical.lucid</text>
+    <text x="1240" y="675" class="small-text">Type: PluginLucid instance</text>
+    <text x="1240" y="700" class="small-text">Properties:</text>
+    <text x="1260" y="725" class="small-text">• namespace: API namespace</text>
+    <text x="1260" y="750" class="small-text">• Additional routes registered to app</text>
+    <text x="1260" y="775" class="small-text">• Plugin-specific functionality</text>
+    <text x="1220" y="805" class="small-text" font-style="italic">Plugins are dynamically loaded via</text>
+    <text x="1220" y="830" class="small-text" font-style="italic">/edge/load_plugin/{pname} endpoint</text>
+  </g>
+
+  <!-- ============ CONNECTIONS ============ -->
+  
+  <!-- Portal to Bridge HTTPS Request -->
+  <line x1="430" y1="240" x2="570" y2="240" class="connection"/>
+  <text x="500" y="225" class="protocol-text" text-anchor="middle">HTTPS Request</text>
+  
+  <!-- Bridge to Portal HTTPS Response (arrow pointing left to Portal) -->
+  <line x1="430" y1="260" x2="570" y2="260" stroke="#2196f3" stroke-width="2.5" fill="none" marker-start="url(#arrowblue-left)"/>
+  <text x="500" y="280" class="protocol-text" text-anchor="middle">HTTPS Response</text>
+  
+  <!-- Portal to Bridge bidirectional WebSocket for notifications -->
+  <line x1="430" y1="300" x2="570" y2="300" class="ws-bi-connection"/>
+  <text x="500" y="320" class="protocol-text" text-anchor="middle">WebSocket (Notifications)</text>
+  
+  <!-- HPC to Bridge HTTP connection establishment (arrow pointing left to Bridge) -->
+  <line x1="990" y1="320" x2="1170" y2="320" class="connection" marker-end="" marker-start="url(#arrowblue-left)"/>
+  <text x="1080" y="310" class="protocol-text" text-anchor="middle">1. HTTPS/WebSocket Upgrade</text>
+  <text x="1080" y="340" class="protocol-text" text-anchor="middle">(Initiated from HPC → Bridge)</text>
+  
+  <!-- Bridge to HPC bidirectional WebSocket communication -->
+  <line x1="990" y1="380" x2="1170" y2="380" class="ws-bi-connection"/>
+  <text x="1080" y="365" class="protocol-text" text-anchor="middle">2. Bidirectional Messages</text>
+  <text x="1080" y="400" class="protocol-text" text-anchor="middle">(Requests ↔ Responses via WS)</text>
+  
+  <!-- Request flow -->
+  <g id="flow-labels">
+    <rect x="50" y="430" width="380" height="320" class="info-box" rx="5"/>
+    <text x="70" y="460" class="label-text" font-weight="bold">Communication Flow:</text>
+    <text x="70" y="490" class="small-text" font-weight="bold">Connection Establishment:</text>
+    <text x="90" y="515" class="small-text">1. Edge Service connects to Bridge via WSS</text>
+    <text x="90" y="540" class="small-text">2. Sends register message with edge_uid</text>
+    <text x="90" y="565" class="small-text">3. WebSocket remains open (persistent tunnel)</text>
+    
+    <text x="70" y="600" class="small-text" font-weight="bold">Request Processing:</text>
+    <text x="90" y="625" class="small-text">4. Client sends HTTPS request to Bridge</text>
+    <text x="90" y="650" class="small-text">5. Bridge wraps in JSON message with req_id</text>
+    <text x="90" y="675" class="small-text">6. Bridge sends message via WebSocket to Edge</text>
+    <text x="90" y="700" class="small-text">7. Edge forwards to local FastAPI (loopback)</text>
+    <text x="90" y="725" class="small-text">8. Response flows back via WebSocket to Bridge</text>
+  </g>
+
+  <!-- Key Features -->
+  <g id="features">
+    <rect x="50" y="780" width="380" height="200" class="info-box" rx="5"/>
+    <text x="70" y="810" class="label-text" font-weight="bold">Key Features:</text>
+    <text x="90" y="840" class="small-text">• Reverse tunnel bypasses firewall</text>
+    <text x="90" y="865" class="small-text">• Request/response matching via req_id (UUID)</text>
+    <text x="90" y="890" class="small-text">• Binary-safe (base64 encoding for binary data)</text>
+    <text x="90" y="915" class="small-text">• TLS encryption: Client↔Bridge, Bridge↔Edge</text>
+    <text x="90" y="940" class="small-text">• Dynamic plugin loading and registration</text>
+    <text x="90" y="965" class="small-text">• Concurrent request processing (queue + workers)</text>
+  </g>
+
+  <!-- Message format -->
+  <g id="message-format">
+    <rect x="570" y="700" width="420" height="280" class="info-box" rx="5"/>
+    <text x="590" y="730" class="label-text" font-weight="bold">WebSocket Message Format</text>
+    
+    <text x="590" y="760" class="small-text" font-weight="bold">Request Message:</text>
+    <text x="610" y="785" class="mono-text">{ "type": "request",</text>
+    <text x="625" y="810" class="mono-text">"req_id": "uuid-string",</text>
+    <text x="625" y="835" class="mono-text">"method": "POST",</text>
+    <text x="625" y="860" class="mono-text">"path": "/edge/load_plugin/radical.lucid",</text>
+    <text x="625" y="885" class="mono-text">"headers": {...},</text>
+    <text x="625" y="910" class="mono-text">"is_binary": false,</text>
+    <text x="625" y="935" class="mono-text">"body": "..." }</text>
+    
+    <text x="590" y="965" class="small-text" font-style="italic">Response has similar structure with "status" and "headers"</text>
+  </g>
+
+  <!-- Legend -->
+  <g id="legend">
+    <text x="1170" y="920" class="label-text" font-weight="bold">Legend:</text>
+    <line x1="1170" y1="940" x2="1240" y2="940" class="connection"/>
+    <text x="1250" y="945" class="small-text">HTTPS</text>
+    
+    <line x1="1170" y1="965" x2="1240" y2="965" class="ws-connection"/>
+    <text x="1250" y="970" class="small-text">WebSocket (persistent)</text>
+  </g>
+
+</svg>
