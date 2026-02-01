@@ -5,8 +5,6 @@ from starlette.routing   import Route
 from starlette.requests  import Request
 from starlette.responses import JSONResponse
 
-
-
 import asyncio
 import pprint
 import uuid
@@ -15,34 +13,6 @@ import radical.pilot as rp
 import radical.utils as ru
 
 log = ru.Logger("radical.edge", targets=['-'])
-
-# ------------------------------------------------------------------------------
-#
-class Plugin(object):
-
-    def __init__(self, app: FastAPI, name: str):
-        self._name     : str  = name
-        self._uid      : str  = str(uuid.uuid4())
-        self._routes   : list = app.router.routes
-        self._namespace: str  = f"/{self._name}/{self._uid}/"
-
-    @property
-    def uid(self) -> str:
-        return self._uid
-
-    @property
-    def namespace(self) -> str:
-        return "lucid/%s" % self._uid
-
-    def add_route_post(self, path, method):
-        full_path = self._namespace + path
-        full_path = full_path.replace('//', '/')
-        self._routes.append(Route(full_path, method, methods=["POST"]))
-
-    def add_route_get(self, path, method):
-        full_path = self._namespace + path
-        full_path = full_path.replace('//', '/')
-        self._routes.append(Route(full_path, method, methods=["GET"]))
 
 
 # ------------------------------------------------------------------------------
