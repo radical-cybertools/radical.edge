@@ -10,7 +10,7 @@
 
 | Month   | Focus Area            | Deliverables                                       |
 |---------|-----------------------|----------------------------------------------------|
-| 1 (Feb) | Foundation            | Documentation, testing, stabilization, CI/CD       |
+| 1 (Feb) | Foundation            | Documentation, testing, stabilization, CI/CD, performance char. |
 | 2 (Mar) | Scaling               | Multi-edge, multi-client, monitoring               |
 | 3 (Apr) | Framework             | Plugin base class, developer tools, Lucid refactor |
 | 4 (May) | Core Plugins          | Lucid refinement, Rhapsody implementation          |

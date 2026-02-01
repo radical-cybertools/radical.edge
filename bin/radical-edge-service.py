@@ -210,34 +210,44 @@ class EdgeService(object):
 
                     async def reader():
                         # receive messages from Bridge and enqueue them
-                        while True:
-                            raw  = await self._ws.recv()
-                            # print(f"[Edge] received: {raw}")
-                            data = json.loads(raw)
-                            # print(f"[Edge] decoded : {data}")
+                        try:
+                            while True:
+                                raw  = await self._ws.recv()
+                                print(f"[Reader] received: {raw}")
+                                data = json.loads(raw)
+                                print(f"[Reader] decoded : {data}")
 
-                            # reply to app-level heartbeat immediately (optional)
-                            if data.get("type") == "ping":
-                                async with self._send_lock:
-                                    await self._ws.send(json.dumps({"type": "pong"}))
-                                continue
+                                # reply to app-level heartbeat immediately (optional)
+                                if data.get("type") == "ping":
+                                    async with self._send_lock:
+                                        ret = {"type": "pong"}
+                                        print(f"[Reader] sends : {ret}")
+                                        await self._ws.send(json.dumps(ret))
+                                    continue
 
-                            # enqueue requests for workers
-                            await in_q.put(data)
+                                # enqueue requests for workers
+                                await in_q.put(data)
+                        except Exception as e:
+                            log.exception("Reader failed")
+                            print(f"Reader failed with {e}")
 
                     async def worker():
-                        # dequeue requests and handle them
-                        while True:
-                            data = await in_q.get()
-                            # print(f"[Edge] handling: {data}")
-                            try:
-                                await self.handle_request(data)
-                            except Exception as e:
-                                print(f"[Edge] error handling: {e}")
-                                # print(f"[Edge] data was: {data}")
-                            finally:
-                                # print(f"[Edge] done with: {data}")
-                                in_q.task_done()
+                        try:
+                            # dequeue requests and handle them
+                            while True:
+                                data = await in_q.get()
+                                print(f"[Worker] handling: {data}")
+                                try:
+                                    await self.handle_request(data)
+                                except Exception as e:
+                                    print(f"[Worker] error handling: {e}")
+                                    print(f"[Worker] data was: {data}")
+                                finally:
+                                    print(f"[Worker] done with: {data}")
+                                    in_q.task_done()
+                        except Exception as e:
+                            log.exception("Worker failed")
+                            print(f"Worker failed with {e}")
 
                     reader_task = asyncio.create_task(reader())
                     workers     = [asyncio.create_task(worker()) for _ in range(WORKERS)]

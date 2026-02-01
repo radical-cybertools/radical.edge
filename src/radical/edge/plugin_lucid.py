@@ -16,6 +16,33 @@ import radical.utils as ru
 
 log = ru.Logger("radical.edge", targets=['-'])
 
+# ------------------------------------------------------------------------------
+#
+class Plugin(object):
+
+    def __init__(self, app: FastAPI, name: str):
+        self._name     : str  = name
+        self._uid      : str  = str(uuid.uuid4())
+        self._routes   : list = app.router.routes
+        self._namespace: str  = f"/{self._name}/{self._uid}/"
+
+    @property
+    def uid(self) -> str:
+        return self._uid
+
+    @property
+    def namespace(self) -> str:
+        return "lucid/%s" % self._uid
+
+    def add_route_post(self, path, method):
+        full_path = self._namespace + path
+        full_path = full_path.replace('//', '/')
+        self._routes.append(Route(full_path, method, methods=["POST"]))
+
+    def add_route_get(self, path, method):
+        full_path = self._namespace + path
+        full_path = full_path.replace('//', '/')
+        self._routes.append(Route(full_path, method, methods=["GET"]))
 
 
 # ------------------------------------------------------------------------------
@@ -92,51 +119,26 @@ class LucidClient(object):
 
 # --------------------------------------------------------------------------
 #
-class PluginLucid:
+class PluginLucid(Plugin):
 
     def __init__(self, app: FastAPI):
 
-        self._uid : str = str(uuid.uuid4())
+        super().__init__(app, 'lucid')
+
         self._clients : dict[str, LucidClient] = {}
         self._id_lock = asyncio.Lock()
         self._next_id = 0
 
-        self._namespace = f"lucid/{self._uid}"
+        self.add_route_post('register_client', self.register_client)
+        self.add_route_post('unregister_client/{cid}', self.unregister_client)
+        self.add_route_post('pilot_submit/{cid}', self.pilot_submit)
+        self.add_route_post('task_submit/{cid}', self.task_submit)
+        self.add_route_get('task_wait/{cid}/{tid}', self.task_wait)
+        self.add_route_get('echo/{cid}', self.echo)
 
-        routes = app.router.routes
-
-        routes.append(Route(f"/{self._namespace}" + "/register_client",
-                            self.register_client,
-                            methods=["POST"]))
-        routes.append(Route(f"/{self._namespace}" + "/unregister_client/{cid}",
-                            self.unregister_client,
-                            methods=["POST"]))
-        routes.append(Route(f"/{self._namespace}" + "/echo/{cid}",
-                            self.echo,
-                            methods=["GET"]))
-        routes.append(Route(f"/{self._namespace}" + "/pilot_submit/{cid}",
-                            self.pilot_submit,
-                            methods=["POST"]))
-        routes.append(Route(f"/{self._namespace}" + "/task_submit/{cid}",
-                            self.task_submit,
-                            methods=["POST"]))
-        routes.append(Route(f"/{self._namespace}" + "/task_wait/{cid}/{tid}",
-                            self.task_wait,
-                            methods=["GET"]))
-
-    @property
-    def uid(self) -> str:
-        return self._uid
-
-    @property
-    def namespace(self) -> str:
-        return "lucid/%s" % self._uid
-
-
-    async def _foward(self, cid, func, *args, **kwargs) -> JSONResponse:
+    async def _forward(self, cid, func, *args, **kwargs) -> JSONResponse:
 
         client = self._clients.get(cid)
-
         log.debug(f"[Edge] Forward to client {cid} ({func.__name__})")
 
         if not client:
@@ -174,7 +176,7 @@ class PluginLucid:
         cid = data['cid']
         q   = data.get('q', 'hello')
         print(f"[Edge] echo from client {cid} with q={q}")
-        return await self._foward(cid, LucidClient.request_echo, q=q)
+        return await self._forward(cid, LucidClient.request_echo, q=q)
 
 
     async def pilot_submit(self, request: Request) -> JSONResponse:
@@ -182,7 +184,7 @@ class PluginLucid:
         json = await request.json()
         cid  = data['cid']
         desc = json['description']
-        return await self._foward(cid, LucidClient.pilot_submit, desc)
+        return await self._forward(cid, LucidClient.pilot_submit, desc)
 
 
     async def task_submit(self, request: Request) -> JSONResponse:
@@ -190,12 +192,14 @@ class PluginLucid:
         json = await request.json()
         cid  = data['cid']
         desc = json['description']
-        return await self._foward(cid, LucidClient.task_submit, desc)
+        return await self._forward(cid, LucidClient.task_submit, desc)
 
 
     async def task_wait(self, request: Request) -> JSONResponse:
         data = request.path_params
         cid  = data['cid']
         tid  = data['tid']
-        return await self._foward(cid, LucidClient.task_wait, tid)
+        ret = await self._forward(cid, LucidClient.task_wait, tid)
+        print("returning task: %s" % ret)
+        return ret
 
