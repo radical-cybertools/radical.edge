@@ -33,17 +33,20 @@ class LucidClient(object):
           cid (str): The unique client ID.
         """
 
-        self._cid     = cid
-        self._session = rp.Session()
-        self._pmgr    = rp.PilotManager(session=self._session)
-        self._tmgr    = rp.TaskManager(session=self._session)
+        self._cid     : str = cid
+        self._session : rp.Session = rp.Session()
+        self._pmgr    : rp.PilotManager = rp.PilotManager(session=self._session)
+        self._tmgr    : rp.TaskManager = rp.TaskManager(session=self._session)
 
 
     # --------------------------------------------------------------------------
     #
-    async def close(self) -> dict:
+    async def close(self) -> dict[str, str]:
         """
         Close the Radical Pilot session for this client.
+
+        Returns:
+          dict: An empty dictionary indicating successful closure.
         """
 
         self._session.close()
@@ -61,6 +64,12 @@ class LucidClient(object):
     async def pilot_submit(self, description: dict) -> dict:
         """
         Submit a pilot to the Pilot Manager and return its ID.
+
+        Args:
+          description (dict): The pilot description dictionary.
+
+        Returns:
+          dict: A dictionary containing the pilot ID ('pid').
         """
         if not self._session:
             raise RuntimeError("session is closed")
@@ -77,6 +86,12 @@ class LucidClient(object):
     async def task_submit(self, description: dict) -> dict:
         """
         Submit a task to the Task Manager and return its ID.
+
+        Args:
+          description (dict): The task description dictionary.
+
+        Returns:
+          dict: A dictionary containing the task ID ('tid').
         """
         if not self._session:
             raise RuntimeError("session is closed")
@@ -92,6 +107,12 @@ class LucidClient(object):
     async def task_wait(self, tid: str) -> dict:
         """
         Wait for a task to complete and return its result.
+
+        Args:
+          tid (str): The task ID to wait for.
+
+        Returns:
+          dict: A dictionary containing the task ID ('tid') and task details ('task').
         """
         if not self._session:
             raise RuntimeError("session is closed")
@@ -105,9 +126,15 @@ class LucidClient(object):
 
     # --------------------------------------------------------------------------
     #
-    async def request_echo(self, q: str = "hello") -> dict():
+    async def request_echo(self, q: str = "hello") -> dict:
         """
         Echo service for testing.
+
+        Args:
+          q (str): The string to echo. Defaults to "hello".
+
+        Returns:
+          dict: A dictionary containing the client ID ('cid') and the echoed string ('echo').
         """
         if not self._session:
             raise RuntimeError("session is closed")
@@ -165,6 +192,9 @@ class PluginLucid(Plugin):
           func (callable): The LucidClient method to call.
           *args: Positional arguments for the method.
           **kwargs: Keyword arguments for the method.
+
+        Returns:
+          JSONResponse: A JSON response containing the result from the client method.
         """
 
         client = self._clients.get(cid)
@@ -184,12 +214,15 @@ class PluginLucid(Plugin):
 
     # --------------------------------------------------------------------------
     #
-    async def register_client(self, _request: Request) -> JSONResponse:
+    async def register_client(self, request: Request) -> JSONResponse:
         """
         Register a new Lucid client and return its unique client ID.
 
+        Args:
+          request (Request): The incoming HTTP request (unused).
+
         Returns:
-          JSONResponse: A JSON response containing the client ID.
+          JSONResponse: A JSON response containing the client ID ('cid').
         """
 
         async with self._id_lock:
@@ -207,10 +240,10 @@ class PluginLucid(Plugin):
         Unregister a Lucid client by its client ID and close its session.
 
         Args:
-          data (dict): The path parameters from the request. Must contain 'cid'.
+          request (Request): The incoming HTTP request. Path parameters must contain 'cid'.
 
         Returns:
-          JSONResponse: A JSON response indicating success.
+          JSONResponse: A JSON response indicating success ('ok': True).
 
         """
 
@@ -231,11 +264,11 @@ class PluginLucid(Plugin):
         specified LucidClient instance.
 
         Args:
-          data (dict): The path parameters from the request. Must contain 'cid'.
-                        May contain 'q' as a query parameter.
+          request (Request): The incoming HTTP request. Path parameters must contain 'cid'.
+                             May contain 'q' as a query parameter.
 
         Returns:
-          JSONResponse: A JSON response containing the echo result.
+          JSONResponse: A JSON response containing the client ID ('cid') and echo result ('echo').
         """
 
         data = request.path_params
@@ -253,12 +286,11 @@ class PluginLucid(Plugin):
         Submit a pilot to the specified LucidClient instance's session.
 
         Args:
-          data (dict): The path parameters from the request. Must contain 'cid'.
-          json (dict): The JSON body of the request. Must contain 'description'
-                       as a pilot description.
+          request (Request): The incoming HTTP request. Path parameters must contain 'cid'.
+                             JSON body must contain 'description' as a pilot description.
 
         Returns:
-          JSONResponse: A JSON response containing the pilot ID.
+          JSONResponse: A JSON response containing the pilot ID ('pid').
         """
 
         data = request.path_params
@@ -276,12 +308,11 @@ class PluginLucid(Plugin):
         Submit a task to the specified LucidClient instance's session.
 
         Args:
-          data (dict): The path parameters from the request. Must contain 'cid'.
-          json (dict): The JSON body of the request. Must contain 'description'
-                       as a task description.
+          request (Request): The incoming HTTP request. Path parameters must contain 'cid'.
+                             JSON body must contain 'description' as a task description.
 
         Returns:
-          JSONResponse: A JSON response containing the task ID.
+          JSONResponse: A JSON response containing the task ID ('tid').
         """
 
         data = request.path_params
@@ -300,11 +331,12 @@ class PluginLucid(Plugin):
         session.
 
         Args:
-          data (dict): The path parameters from the request. Must contain 'cid'
-                       and 'tid'.
+          request (Request): The incoming HTTP request. Path parameters must contain 'cid'
+                             and 'tid'.
+
         Returns:
-          JSONResponse: A JSON response containing the task id (`tid`) and
-                        task dictionary (`task`).
+          JSONResponse: A JSON response containing the task ID ('tid') and
+                        task dictionary ('task').
         """
 
         data = request.path_params
