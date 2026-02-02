@@ -12,6 +12,8 @@ import uuid
 import radical.pilot as rp
 import radical.utils as ru
 
+from .plugin_base import Plugin
+
 log = ru.Logger("radical.edge", targets=['-'])
 
 
@@ -182,7 +184,7 @@ class PluginLucid(Plugin):
 
     # --------------------------------------------------------------------------
     #
-    async def register_client(self, request: Request) -> JSONResponse:
+    async def register_client(self, _request: Request) -> JSONResponse:
         """
         Register a new Lucid client and return its unique client ID.
 
