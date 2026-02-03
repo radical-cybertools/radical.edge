@@ -34,7 +34,7 @@ class Plugin(object):
 
         self._name     : str = name
         self._uid      : str = str(uuid.uuid4())
-        self._namespace: str = f"/{self._name}/{self._uid}/"
+        self._namespace: str = f"/{self._name}/{self._uid}"
         self._routes   : list[BaseRoute] = app.router.routes
 
 
@@ -59,8 +59,9 @@ class Plugin(object):
 
         Returns:
           str: The namespace of the plugin.
-  
-        return "%s/%s" % 
+        """
+
+        return self._namespace
 
 
     # --------------------------------------------------------------------------
@@ -76,7 +77,7 @@ class Plugin(object):
         Returns:
             None
         """
-        full_path = self._namespace + path
+        full_path = self._namespace + '/' + path
         full_path = full_path.replace('//', '/')
         self._routes.append(Route(full_path, method, methods=["POST"]))
 
@@ -94,7 +95,7 @@ class Plugin(object):
         Returns:
             None
         """
-        full_path = self._namespace + path
+        full_path = self._namespace + '/' + path
         full_path = full_path.replace('//', '/')
         self._routes.append(Route(full_path, method, methods=["GET"]))
 

@@ -42,6 +42,9 @@ def main():
         print("load_plugin")
         data = check_response(r)
         ns   = data["namespace"]
+        base = f"{BRIDGE_HTTP}{ns}"
+        print(f"namespace: {ns}")
+        print(f"base url : {base}")
 
         r = http.post(f"{BRIDGE_HTTP}/edge/list")
         print('---------------------------------')
@@ -50,20 +53,20 @@ def main():
         pprint.pprint(data)
 
         # register client
-        r = http.post(f"{BRIDGE_HTTP}/{ns}/register_client")
+        r = http.post(f"{base}/register_client")
         print('---------------------------------')
         print("register_client")
         data = check_response(r)
         cid  = data["cid"]
 
         # GET example (echo)
-        r = http.get(f"{BRIDGE_HTTP}/{ns}/echo/{cid}", params={"q": "from-client"})
+        r = http.get(f"{base}/echo/{cid}", params={"q": "from-client"})
         print('---------------------------------')
         print("GET /echo/{cid}")
         check_response(r)
 
         # submit a pilot
-        r = http.post(f"{BRIDGE_HTTP}/{ns}/pilot_submit/{cid}",
+        r = http.post(f"{base}/pilot_submit/{cid}",
                       json={'description': {'resource': 'local.localhost',
                                             'nodes'   : 10,
                                             'runtime' : 10}})
@@ -73,7 +76,7 @@ def main():
 
         tids = list()
         for i in range(10):
-            r = http.post(f"{BRIDGE_HTTP}/{ns}/task_submit/{cid}",
+            r = http.post(f"{base}/task_submit/{cid}",
                           json={'description': {'executable': 'date'}})
             print('---------------------------------')
             print("POST /task_submit/{cid}")
@@ -82,7 +85,7 @@ def main():
             tids.append(tid)
 
         for tid in tids:
-            r = http.get(f"{BRIDGE_HTTP}/{ns}/task_wait/{cid}/{tid}")
+            r = http.get(f"{base}/task_wait/{cid}/{tid}")
             print('---------------------------------')
             print("GET /task_wait/{cid}/{tid}")
             data = check_response(r)
@@ -90,7 +93,7 @@ def main():
             print(f"task {tid} returned: {ret}")
 
         # unregister client
-        r = http.post(f"{BRIDGE_HTTP}/{ns}/unregister_client/{cid}")
+        r = http.post(f"{base}/unregister_client/{cid}")
         print('---------------------------------')
         print("unregister_client")
         check_response(r)

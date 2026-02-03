@@ -49,7 +49,7 @@ class LucidClient(object):
           dict: An empty dictionary indicating successful closure.
         """
 
-        self._session.close()
+        await asyncio.to_thread(self._session.close)
         self._session = None
         self._pmgr    = None
         self._tmgr    = None
@@ -74,8 +74,9 @@ class LucidClient(object):
         if not self._session:
             raise RuntimeError("session is closed")
 
-        pilot = self._pmgr.submit_pilots(rp.PilotDescription(description))
-        self._tmgr.add_pilots(pilot)
+        pd    = rp.PilotDescription(description)
+        pilot = await asyncio.to_thread(self._pmgr.submit_pilots, pd)
+        await asyncio.to_thread(self._tmgr.add_pilots, pilot)
         print(f"[Edge] Pilot submitted: {pilot.uid}")
 
         return {'pid': pilot.uid}
@@ -96,7 +97,8 @@ class LucidClient(object):
         if not self._session:
             raise RuntimeError("session is closed")
 
-        task = self._tmgr.submit_tasks(rp.TaskDescription(description))
+        td   = rp.TaskDescription(description)
+        task = await asyncio.to_thread(self._tmgr.submit_tasks, td)
         print(f"[Edge] Task submitted: {task.uid}")
 
         return {"tid": task.uid}
@@ -117,8 +119,8 @@ class LucidClient(object):
         if not self._session:
             raise RuntimeError("session is closed")
 
-        self._tmgr.wait_tasks(tid)
-        task = self._tmgr.get_tasks(tid)
+        await asyncio.to_thread(self._tmgr.wait_tasks, tid)
+        task = await asyncio.to_thread(self._tmgr.get_tasks, tid)
         print(f"[Edge] Task {tid} completed with state {task.state}")
 
         return {"tid": tid, "task": task.as_dict()}
@@ -178,6 +180,12 @@ class PluginLucid(Plugin):
         self.add_route_post('task_submit/{cid}', self.task_submit)
         self.add_route_get('task_wait/{cid}/{tid}', self.task_wait)
         self.add_route_get('echo/{cid}', self.echo)
+
+        # list all routes
+        log.debug(f"[Edge] Lucid plugin routes:")
+        for route in self._routes:
+            if isinstance(route, Route):
+                log.debug(f"[Edge]   {route.path} -> {route.endpoint.__name__}")
 
 
     # --------------------------------------------------------------------------
