@@ -1,0 +1,109 @@
+# RADICAL-Edge Q1 2026 Work Plan
+
+This document maps the **Q1 2026 GitHub milestones and issues** for **RADICAL‑Edge (RD)** to the
+existing roadmap and to the broader RHAPSODY / ROSE / xGFabric context.
+It is intentionally limited to **Q1 only** and reflects **single‑developer realism** with
+selective support from additional contributors.
+
+---
+
+## Scope and Positioning
+
+Q1 focuses on establishing **service infrastructure, plugin baselines, and first integrations**
+that enable later work on RHAPSODY, ROSE, and xGFabric without committing to full implementations.
+
+RADICAL‑Edge acts as the **enabling substrate**:
+- secure Bridge/Edge communication,
+- plugin‑based service exposure,
+- protocol stability,
+- early integration paths.
+
+---
+
+## Milestones Overview (Q1)
+
+| Milestone | Dates | Focus |
+|---------|------|------|
+| **M1** | Feb 9 – Mar 8 | Plugin baseline, protocol clarity, early RHAPSODY/ROSE paths |
+| **M2** | Mar 9 – Apr 5 | xGFabric path, plugin hardening, error semantics |
+| **M3** | Apr 6 – Apr 30 | Multi‑edge consolidation, concurrency, robustness |
+
+---
+
+## Milestone M1 — Foundations & Early Integration
+
+**Roadmap alignment:**  
+- RD: “Plugin framework”, “Service exposure”, “Protocol stabilization”  
+- RHAPSODY: “Service interface preparation”  
+- ROSE: “Service skeleton / control‑plane preparation”
+
+### Issues
+
+- **Audit & document plugin base**
+- **Edge/Bridge protocol specification**
+- **RHAPSODY request/response mapping**
+- **RHAPSODY plugin skeleton**
+- **ROSE integration prep (control‑plane stubs)**
+- **Integration test harness (Edge ↔ mock backend)**
+- **CI baseline (lint/typecheck/tests)**
+- **xGFabric usage walkthrough (client‑driven)**
+
+**Outcome:**  
+A documented, testable plugin framework with a stable protocol and first service‑shaped
+integration paths for RHAPSODY and ROSE.
+
+---
+
+## Milestone M2 — xGFabric Path & Robustness
+
+**Roadmap alignment:**  
+- RD: “Plugin hardening”, “Error handling”, “Auth plumbing”  
+- xGFabric: “Resource‑centric API exposure”
+
+### Issues
+
+- **Plugin manager hardening**
+- **xGFabric API skeleton as RD plugin**
+- **xGFabric end‑to‑end scripted demo**
+- **Error propagation & status normalization**
+- **Bridge auth hook points**
+- **ROSE plugin skeleton**
+
+**Outcome:**  
+xGFabric‑shaped APIs are exposed through RD with consistent error semantics and a repeatable
+end‑to‑end demo path.
+
+---
+
+## Milestone M3 — Consolidation & Multi‑Edge Readiness
+
+**Roadmap alignment:**  
+- RD: “Multi‑edge support”, “Routing”, “Concurrency control”  
+- RHAPSODY / ROSE: “Concurrent service interaction readiness”
+
+### Issues
+
+- **Multi‑edge registry & heartbeat tracking**
+- **Routing policy v1 (capabilities + failover)**
+- **RHAPSODY plugin concurrency handling**
+- **xGFabric multi‑resource example**
+- **ROSE orchestration scaffolding**
+- **Security & robustness sweep**
+
+**Outcome:**  
+RADICAL‑Edge is prepared for multi‑edge operation, concurrent service use, and downstream
+production hardening in later quarters.
+
+---
+
+## Notes
+
+- This plan intentionally **does not cover full RHAPSODY, ROSE, or xGFabric roadmaps**.
+- All Q1 work results in **infrastructure, integration paths, and validation artifacts**.
+- Execution, scheduling semantics, and full orchestration logic are explicitly deferred.
+
+---
+
+*This document is meant to accompany the GitHub milestones and issues created for Q1 2026
+and should be read together with the RADICAL‑Edge roadmap.*
+

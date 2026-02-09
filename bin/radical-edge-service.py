@@ -63,6 +63,8 @@ class EdgeService(object):
         plugin = None
         if pname == "radical.lucid":
             plugin = re.PluginLucid(app)
+        elif pname == "radical.xgfabric":
+            plugin = re.PluginXGFabric(app)
 
         if not plugin:
             print(f"[Edge] unknown plugin: {pname}")
