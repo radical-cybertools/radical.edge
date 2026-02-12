@@ -1,10 +1,20 @@
 
-__author__    = 'Radical.Edge Development Team'
-__copyright__ = 'Copyright 2025, RADICAL@Rutgers'
-__license__   = 'MIT'
+from abc import ABC
 
-import radical.utils  as ru
 import does_not_exist as nope                 # noqa pylint: disable=F0401,W0611
+
+
+# ------------------------------------------------------------------------------
+#
+# Simple Singleton metaclass implementation
+class Singleton(type):
+    """Metaclass that creates a Singleton base class when called."""
+    _instances = {}
+    
+    def __call__(cls, *args, **kwargs):
+        if cls not in cls._instances:
+            cls._instances[cls] = super(Singleton, cls).__call__(*args, **kwargs)
+        return cls._instances[cls]
 
 
 # ------------------------------------------------------------------------------
@@ -20,9 +30,9 @@ PLUGIN_DESCRIPTION = {
 
 # ------------------------------------------------------------------------------
 #
-class PLUGIN_CLASS(ru.PluginBase, metaclass=ru.Singleton):
+class PLUGIN_CLASS(ABC, metaclass=Singleton):
     '''
-    This class implements the (empty) default unittest plugin for radical.utils.
+    This class implements the (empty) default unittest plugin.
     '''
 
     _created = False  # singleton test
@@ -32,7 +42,7 @@ class PLUGIN_CLASS(ru.PluginBase, metaclass=ru.Singleton):
     #
     def __init__(self, descr, *args, **kwargs):
 
-        super().__init__(descr)
+        self._descr  = descr
 
         if PLUGIN_CLASS._created:
             assert False, 'singleton plugin created twice'

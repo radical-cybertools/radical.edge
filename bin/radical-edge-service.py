@@ -6,6 +6,7 @@ import asyncio
 import base64
 import httpx
 import json
+import logging
 import os
 import pprint
 import ssl
@@ -20,11 +21,10 @@ from websockets import exceptions as ws_exc
 from starlette.websockets import WebSocketDisconnect
 
 import radical.pilot as rp
-import radical.utils as ru
 
 import radical.edge as re
 
-log = ru.Logger("radical.edge", targets=['-'])
+log = logging.getLogger("radical.edge")
 
 
 BRIDGE_URL = os.environ.get("BRIDGE_URL", "wss://95.217.193.116:8000/register")

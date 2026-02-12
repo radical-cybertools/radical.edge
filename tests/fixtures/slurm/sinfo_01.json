@@ -1,0 +1,193 @@
+{
+  "sinfo": [
+    {
+      "node": {"state": ["IDLE", "PLANNED"]},
+      "nodes": {"allocated": 0, "idle": 50, "other": 0, "total": 50,
+                "nodes": ["node001", "node002"]},
+      "cpus": {"allocated": 0, "idle": 6400, "other": 0, "total": 6400,
+               "minimum": 128, "maximum": 128},
+      "memory": {"minimum": 1, "maximum": 1,
+                 "free": {"minimum": {"set": true, "infinite": false, "number": 500000},
+                          "maximum": {"set": true, "infinite": false, "number": 512000}},
+                 "allocated": 0},
+      "features": {"total": "nvme,skylake", "active": "nvme,skylake"},
+      "gres": {"total": "gpu:8(S:0-7)", "used": "gpu:(null):0(IDX:N/A)"},
+      "partition": {
+        "name": "compute",
+        "nodes": {"total": 200},
+        "partition": {"state": ["UP"]},
+        "maximums": {
+          "time": {"set": true, "infinite": false, "number": 1440}
+        }
+      }
+    },
+    {
+      "node": {"state": ["ALLOCATED"]},
+      "nodes": {"allocated": 100, "idle": 0, "other": 0, "total": 100,
+                "nodes": ["node010", "node011"]},
+      "cpus": {"allocated": 12800, "idle": 0, "other": 0, "total": 12800,
+               "minimum": 128, "maximum": 128},
+      "memory": {"minimum": 1, "maximum": 1,
+                 "free": {"minimum": {"set": true, "infinite": false, "number": 100000},
+                          "maximum": {"set": true, "infinite": false, "number": 200000}},
+                 "allocated": 0},
+      "features": {"total": "nvme,skylake", "active": "nvme,skylake"},
+      "gres": {"total": "gpu:8(S:0-7)", "used": "gpu:8(S:0-7)"},
+      "partition": {
+        "name": "compute",
+        "nodes": {"total": 200},
+        "partition": {"state": ["UP"]},
+        "maximums": {
+          "time": {"set": true, "infinite": false, "number": 1440}
+        }
+      }
+    },
+    {
+      "node": {"state": ["DOWN", "DRAIN"]},
+      "nodes": {"allocated": 0, "idle": 0, "other": 10, "total": 10,
+                "nodes": ["node050"]},
+      "cpus": {"allocated": 0, "idle": 0, "other": 1280, "total": 1280,
+               "minimum": 128, "maximum": 128},
+      "memory": {"minimum": 1, "maximum": 1,
+                 "free": {"minimum": {"set": true, "infinite": false, "number": 0},
+                          "maximum": {"set": true, "infinite": false, "number": 0}},
+                 "allocated": 0},
+      "features": {"total": "nvme,skylake", "active": "nvme,skylake"},
+      "gres": {"total": "gpu:8(S:0-7)", "used": "gpu:(null):0(IDX:N/A)"},
+      "partition": {
+        "name": "compute",
+        "nodes": {"total": 200},
+        "partition": {"state": ["UP"]},
+        "maximums": {
+          "time": {"set": true, "infinite": false, "number": 1440}
+        }
+      }
+    },
+    {
+      "node": {"state": ["MAINT"]},
+      "nodes": {"allocated": 0, "idle": 0, "other": 5, "total": 5,
+                "nodes": ["node060"]},
+      "cpus": {"allocated": 0, "idle": 0, "other": 640, "total": 640,
+               "minimum": 128, "maximum": 128},
+      "memory": {"minimum": 1, "maximum": 1,
+                 "free": {"minimum": {"set": true, "infinite": false, "number": 0},
+                          "maximum": {"set": true, "infinite": false, "number": 0}},
+                 "allocated": 0},
+      "features": {"total": "nvme,skylake", "active": "nvme,skylake"},
+      "gres": {"total": "gpu:8(S:0-7)", "used": "gpu:(null):0(IDX:N/A)"},
+      "partition": {
+        "name": "compute",
+        "nodes": {"total": 200},
+        "partition": {"state": ["UP"]},
+        "maximums": {
+          "time": {"set": true, "infinite": false, "number": 1440}
+        }
+      }
+    },
+    {
+      "node": {"state": ["MIXED"]},
+      "nodes": {"allocated": 20, "idle": 15, "other": 0, "total": 35,
+                "nodes": ["node070"]},
+      "cpus": {"allocated": 2000, "idle": 2480, "other": 0, "total": 4480,
+               "minimum": 128, "maximum": 128},
+      "memory": {"minimum": 1, "maximum": 1,
+                 "free": {"minimum": {"set": true, "infinite": false, "number": 300000},
+                          "maximum": {"set": true, "infinite": false, "number": 400000}},
+                 "allocated": 0},
+      "features": {"total": "nvme,skylake", "active": "nvme,skylake"},
+      "gres": {"total": "gpu:8(S:0-7)", "used": "gpu:4(S:0-3)"},
+      "partition": {
+        "name": "compute",
+        "nodes": {"total": 200},
+        "partition": {"state": ["UP"]},
+        "maximums": {
+          "time": {"set": true, "infinite": false, "number": 1440}
+        }
+      }
+    },
+    {
+      "node": {"state": ["IDLE"]},
+      "nodes": {"allocated": 0, "idle": 8, "other": 0, "total": 8,
+                "nodes": ["gpu001", "gpu002"]},
+      "cpus": {"allocated": 0, "idle": 512, "other": 0, "total": 512,
+               "minimum": 64, "maximum": 64},
+      "memory": {"minimum": 1, "maximum": 1,
+                 "free": {"minimum": {"set": true, "infinite": false, "number": 900000},
+                          "maximum": {"set": true, "infinite": false, "number": 1000000}},
+                 "allocated": 0},
+      "features": {"total": "nvme,a100", "active": "nvme,a100"},
+      "gres": {"total": "gpu:mi250:4(S:0-3)", "used": "gpu:(null):0(IDX:N/A)"},
+      "partition": {
+        "name": "gpu",
+        "nodes": {"total": 16},
+        "partition": {"state": ["UP"]},
+        "maximums": {
+          "time": {"set": true, "infinite": false, "number": 720}
+        }
+      }
+    },
+    {
+      "node": {"state": ["ALLOCATED"]},
+      "nodes": {"allocated": 6, "idle": 0, "other": 0, "total": 6,
+                "nodes": ["gpu010"]},
+      "cpus": {"allocated": 384, "idle": 0, "other": 0, "total": 384,
+               "minimum": 64, "maximum": 64},
+      "memory": {"minimum": 1, "maximum": 1,
+                 "free": {"minimum": {"set": true, "infinite": false, "number": 100000},
+                          "maximum": {"set": true, "infinite": false, "number": 200000}},
+                 "allocated": 0},
+      "features": {"total": "nvme,a100", "active": "nvme,a100"},
+      "gres": {"total": "gpu:mi250:4(S:0-3)", "used": "gpu:mi250:4(S:0-3)"},
+      "partition": {
+        "name": "gpu",
+        "nodes": {"total": 16},
+        "partition": {"state": ["UP"]},
+        "maximums": {
+          "time": {"set": true, "infinite": false, "number": 720}
+        }
+      }
+    },
+    {
+      "node": {"state": ["DOWN", "NOT_RESPONDING"]},
+      "nodes": {"allocated": 0, "idle": 0, "other": 2, "total": 2,
+                "nodes": ["gpu015"]},
+      "cpus": {"allocated": 0, "idle": 0, "other": 128, "total": 128,
+               "minimum": 64, "maximum": 64},
+      "memory": {"minimum": 1, "maximum": 1,
+                 "free": {"minimum": {"set": true, "infinite": false, "number": 0},
+                          "maximum": {"set": true, "infinite": false, "number": 0}},
+                 "allocated": 0},
+      "features": {"total": "nvme,a100", "active": "nvme,a100"},
+      "gres": {"total": "gpu:mi250:4(S:0-3)", "used": "gpu:(null):0(IDX:N/A)"},
+      "partition": {
+        "name": "gpu",
+        "nodes": {"total": 16},
+        "partition": {"state": ["UP"]},
+        "maximums": {
+          "time": {"set": true, "infinite": false, "number": 720}
+        }
+      }
+    },
+    {
+      "node": {"state": ["IDLE"]},
+      "nodes": {"allocated": 0, "idle": 4, "other": 0, "total": 4,
+                "nodes": ["dbg001"]},
+      "cpus": {"allocated": 0, "idle": 512, "other": 0, "total": 512,
+               "minimum": 128, "maximum": 128},
+      "memory": {"minimum": 1, "maximum": 1,
+                 "free": {"minimum": {"set": true, "infinite": false, "number": 500000},
+                          "maximum": {"set": true, "infinite": false, "number": 512000}},
+                 "allocated": 0},
+      "features": {"total": "nvme", "active": "nvme"},
+      "gres": {"total": "", "used": ""},
+      "partition": {
+        "name": "debug",
+        "nodes": {"total": 4},
+        "partition": {"state": ["UP"]},
+        "maximums": {
+          "time": {"set": false, "infinite": true, "number": 0}
+        }
+      }
+    }
+  ]
+}

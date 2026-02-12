@@ -6,12 +6,12 @@ __copyright__ = 'Copyright date +%Y, RADICAL@Rutgers'
 __license__   = 'MIT'
 
 
+import radical.edge
 import os
-import radical.radical.edge
 
 
 # ------------------------------------------------------------------------------
-def test_radical.edge():
+def test_radical_edge():
     '''
     ###FIXME### test stub
     '''
@@ -23,7 +23,7 @@ def test_radical.edge():
 #
 if __name__ == '__main__':
 
-    test_radical.edge()
+    test_radical_edge()
 
 
 # ------------------------------------------------------------------------------
