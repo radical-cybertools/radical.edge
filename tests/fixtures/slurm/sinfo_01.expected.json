@@ -1,0 +1,46 @@
+{
+  "queues": {
+    "compute": {
+      "name"             : "compute",
+      "state"            : "UP",
+      "time_limit"       : 1440,
+      "default"          : null,
+      "nodes_total"      : 200,
+      "nodes_available"  : 185,
+      "nodes_idle"       : 65,
+      "cpus_per_node"    : 128,
+      "mem_per_node_mb"  : 524288,
+      "gpus_per_node"    : 8,
+      "max_jobs_per_user": null,
+      "features"         : ["nvme", "skylake"]
+    },
+    "gpu": {
+      "name"             : "gpu",
+      "state"            : "UP",
+      "time_limit"       : 720,
+      "default"          : null,
+      "nodes_total"      : 16,
+      "nodes_available"  : 14,
+      "nodes_idle"       : 8,
+      "cpus_per_node"    : 64,
+      "mem_per_node_mb"  : 1048576,
+      "gpus_per_node"    : 4,
+      "max_jobs_per_user": null,
+      "features"         : ["nvme", "a100"]
+    },
+    "debug": {
+      "name"             : "debug",
+      "state"            : "UP",
+      "time_limit"       : "UNLIMITED",
+      "default"          : null,
+      "nodes_total"      : 4,
+      "nodes_available"  : 4,
+      "nodes_idle"       : 4,
+      "cpus_per_node"    : 128,
+      "mem_per_node_mb"  : 524288,
+      "gpus_per_node"    : 0,
+      "max_jobs_per_user": null,
+      "features"         : ["nvme"]
+    }
+  }
+}

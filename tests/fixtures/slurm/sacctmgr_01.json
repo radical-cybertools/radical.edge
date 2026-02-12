@@ -1,0 +1,76 @@
+{
+  "associations": [
+    {
+      "account": "proj_alpha",
+      "user": "",
+      "shares_raw": {"set": true, "infinite": false, "number": 100},
+      "qos": ["normal", "high"],
+      "max": {
+        "jobs": {
+          "active": {"set": true, "infinite": false, "number": 500},
+          "per": {
+            "submitted": {"set": true, "infinite": false, "number": 1000},
+            "wall_clock": {"set": false, "infinite": false, "number": 0}
+          }
+        },
+        "tres": {
+          "total": "cpu=50000,node=200"
+        }
+      }
+    },
+    {
+      "account": "proj_alpha",
+      "user": "alice",
+      "shares_raw": {"set": true, "infinite": false, "number": 50},
+      "qos": ["normal", "high"],
+      "max": {
+        "jobs": {
+          "active": {"set": true, "infinite": false, "number": 100},
+          "per": {
+            "submitted": {"set": true, "infinite": false, "number": 200},
+            "wall_clock": {"set": true, "infinite": false, "number": 1440}
+          }
+        },
+        "tres": {
+          "total": null
+        }
+      }
+    },
+    {
+      "account": "proj_beta",
+      "user": "",
+      "shares_raw": {"set": true, "infinite": false, "number": 50},
+      "qos": ["normal"],
+      "max": {
+        "jobs": {
+          "active": {"set": false, "infinite": false, "number": 0},
+          "per": {
+            "submitted": {"set": false, "infinite": false, "number": 0},
+            "wall_clock": {"set": false, "infinite": false, "number": 0}
+          }
+        },
+        "tres": {
+          "total": null
+        }
+      }
+    },
+    {
+      "account": "proj_beta",
+      "user": "bob",
+      "shares_raw": {"set": true, "infinite": false, "number": 25},
+      "qos": ["normal"],
+      "max": {
+        "jobs": {
+          "active": {"set": false, "infinite": false, "number": 0},
+          "per": {
+            "submitted": {"set": false, "infinite": false, "number": 0},
+            "wall_clock": {"set": true, "infinite": false, "number": 720}
+          }
+        },
+        "tres": {
+          "total": "cpu=10000"
+        }
+      }
+    }
+  ]
+}

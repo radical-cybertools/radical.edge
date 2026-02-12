@@ -1,0 +1,64 @@
+{
+  "jobs": [
+    {
+      "job_id": 100001,
+      "name": "simulation_01",
+      "user_name": "alice",
+      "partition": "compute",
+      "job_state": ["RUNNING"],
+      "node_count": {"set": true, "infinite": false, "number": 10},
+      "cpus": {"set": true, "infinite": false, "number": 1280},
+      "time_limit": {"set": true, "infinite": false, "number": 60},
+      "start_time": {"set": true, "infinite": false, "number": 1700000000},
+      "submit_time": {"set": true, "infinite": false, "number": 1699999000},
+      "priority": {"set": true, "infinite": false, "number": 50000},
+      "account": "proj_alpha",
+      "nodes": "node010-node019"
+    },
+    {
+      "job_id": 100002,
+      "name": "analysis_02",
+      "user_name": "bob",
+      "partition": "compute",
+      "job_state": ["PENDING"],
+      "node_count": {"set": true, "infinite": false, "number": 5},
+      "cpus": {"set": true, "infinite": false, "number": 640},
+      "time_limit": {"set": true, "infinite": false, "number": 120},
+      "start_time": {"set": false, "infinite": false, "number": 0},
+      "submit_time": {"set": true, "infinite": false, "number": 1700001000},
+      "priority": {"set": true, "infinite": false, "number": 30000},
+      "account": "proj_beta",
+      "nodes": ""
+    },
+    {
+      "job_id": 100003,
+      "name": "training_gpu",
+      "user_name": "alice",
+      "partition": "compute",
+      "job_state": ["RUNNING"],
+      "node_count": {"set": true, "infinite": false, "number": 20},
+      "cpus": {"set": true, "infinite": false, "number": 2560},
+      "time_limit": {"set": true, "infinite": true, "number": 0},
+      "start_time": {"set": true, "infinite": false, "number": 1700000500},
+      "submit_time": {"set": true, "infinite": false, "number": 1699998000},
+      "priority": {"set": true, "infinite": false, "number": 40000},
+      "account": "proj_alpha",
+      "nodes": "node020-node039"
+    },
+    {
+      "job_id": 100004,
+      "name": "debug_job",
+      "user_name": "charlie",
+      "partition": "compute",
+      "job_state": ["COMPLETING"],
+      "node_count": {"set": true, "infinite": false, "number": 1},
+      "cpus": {"set": true, "infinite": false, "number": 128},
+      "time_limit": {"set": true, "infinite": false, "number": 30},
+      "start_time": {"set": true, "infinite": false, "number": 1699990000},
+      "submit_time": {"set": true, "infinite": false, "number": 1699989000},
+      "priority": {"set": true, "infinite": false, "number": 10000},
+      "account": "proj_alpha",
+      "nodes": "node050"
+    }
+  ]
+}

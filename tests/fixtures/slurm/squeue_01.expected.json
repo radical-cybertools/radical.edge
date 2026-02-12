@@ -1,0 +1,68 @@
+{
+  "jobs": [
+    {
+      "job_id"     : "100001",
+      "job_name"   : "simulation_01",
+      "user"       : "alice",
+      "partition"  : "compute",
+      "state"      : "RUNNING",
+      "nodes"      : 10,
+      "cpus"       : 1280,
+      "time_limit" : 60,
+      "time_used"  : "__DYNAMIC__",
+      "submit_time": 1699999000,
+      "start_time" : 1700000000,
+      "priority"   : 50000,
+      "account"    : "proj_alpha",
+      "node_list"  : "node010-node019"
+    },
+    {
+      "job_id"     : "100002",
+      "job_name"   : "analysis_02",
+      "user"       : "bob",
+      "partition"  : "compute",
+      "state"      : "PENDING",
+      "nodes"      : 5,
+      "cpus"       : 640,
+      "time_limit" : 120,
+      "time_used"  : 0,
+      "submit_time": 1700001000,
+      "start_time" : 0,
+      "priority"   : 30000,
+      "account"    : "proj_beta",
+      "node_list"  : ""
+    },
+    {
+      "job_id"     : "100003",
+      "job_name"   : "training_gpu",
+      "user"       : "alice",
+      "partition"  : "compute",
+      "state"      : "RUNNING",
+      "nodes"      : 20,
+      "cpus"       : 2560,
+      "time_limit" : null,
+      "time_used"  : "__DYNAMIC__",
+      "submit_time": 1699998000,
+      "start_time" : 1700000500,
+      "priority"   : 40000,
+      "account"    : "proj_alpha",
+      "node_list"  : "node020-node039"
+    },
+    {
+      "job_id"     : "100004",
+      "job_name"   : "debug_job",
+      "user"       : "charlie",
+      "partition"  : "compute",
+      "state"      : "COMPLETING",
+      "nodes"      : 1,
+      "cpus"       : 128,
+      "time_limit" : 30,
+      "time_used"  : 0,
+      "submit_time": 1699989000,
+      "start_time" : 1699990000,
+      "priority"   : 10000,
+      "account"    : "proj_alpha",
+      "node_list"  : "node050"
+    }
+  ]
+}

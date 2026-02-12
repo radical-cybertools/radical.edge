@@ -1,0 +1,56 @@
+{
+  "allocations": [
+    {
+      "account"             : "proj_alpha",
+      "user"                : "",
+      "fairshare"           : 100,
+      "qos"                 : "normal,high",
+      "max_jobs"            : 500,
+      "max_submit"          : 1000,
+      "max_wall"            : null,
+      "grp_tres"            : "cpu=50000,node=200",
+      "allocated_node_hours": null,
+      "used_node_hours"     : null,
+      "remaining_node_hours": null
+    },
+    {
+      "account"             : "proj_alpha",
+      "user"                : "alice",
+      "fairshare"           : 50,
+      "qos"                 : "normal,high",
+      "max_jobs"            : 100,
+      "max_submit"          : 200,
+      "max_wall"            : 1440,
+      "grp_tres"            : null,
+      "allocated_node_hours": null,
+      "used_node_hours"     : null,
+      "remaining_node_hours": null
+    },
+    {
+      "account"             : "proj_beta",
+      "user"                : "",
+      "fairshare"           : 50,
+      "qos"                 : "normal",
+      "max_jobs"            : null,
+      "max_submit"          : null,
+      "max_wall"            : null,
+      "grp_tres"            : null,
+      "allocated_node_hours": null,
+      "used_node_hours"     : null,
+      "remaining_node_hours": null
+    },
+    {
+      "account"             : "proj_beta",
+      "user"                : "bob",
+      "fairshare"           : 25,
+      "qos"                 : "normal",
+      "max_jobs"            : null,
+      "max_submit"          : null,
+      "max_wall"            : 720,
+      "grp_tres"            : "cpu=10000",
+      "allocated_node_hours": null,
+      "used_node_hours"     : null,
+      "remaining_node_hours": null
+    }
+  ]
+}
