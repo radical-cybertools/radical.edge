@@ -6,25 +6,26 @@ import asyncio
 import base64
 import httpx
 import json
+import logging
 import os
 import pprint
+import re as _re
 import ssl
 import uuid
 import uvicorn
 import websockets
 
 from typing  import Dict
-from fastapi import FastAPI, WebSocket, HTTPException
+from fastapi import FastAPI, WebSocket, HTTPException, Request
 
 from websockets import exceptions as ws_exc
 from starlette.websockets import WebSocketDisconnect
 
 import radical.pilot as rp
-import radical.utils as ru
 
 import radical.edge as re
 
-log = ru.Logger("radical.edge", targets=['-'])
+log = logging.getLogger("radical.edge")
 
 
 BRIDGE_URL = os.environ.get("BRIDGE_URL", "wss://95.217.193.116:8000/register")
@@ -54,10 +55,16 @@ class EdgeService(object):
                           methods=["POST"])
 
 
-    async def load_plugin(self, pname: str):
+    async def load_plugin(self, pname: str, request: Request):
 
-        if pname in self._plugins:
-            return {"namespace": self._plugins[pname].namespace}
+        label = request.query_params.get('name', pname.split('.')[-1])
+
+        if not _re.match(r'^[A-Za-z0-9_-]+$', label):
+            raise HTTPException(status_code=400,
+                                detail=f"invalid plugin name: {label}")
+
+        if label in self._plugins:
+            return {"namespace": self._plugins[label].namespace}
 
         # FIXME: registry of available plugins
         plugin = None
@@ -65,12 +72,17 @@ class EdgeService(object):
             plugin = re.PluginLucid(app)
         elif pname == "radical.xgfabric":
             plugin = re.PluginXGFabric(app)
+        elif pname == "radical.queue_info":
+            slurm_conf = request.query_params.get('slurm_conf')
+            plugin     = re.PluginQueueInfo(app, name=label,
+                                            slurm_conf=slurm_conf)
 
         if not plugin:
             print(f"[Edge] unknown plugin: {pname}")
-            raise HTTPException(status_code=404, detail=f"unknown plugin: {pname}")
+            raise HTTPException(status_code=404,
+                                detail=f"unknown plugin: {pname}")
 
-        self._plugins[pname] = plugin
+        self._plugins[label] = plugin
         try:
             print('==== ws: ', self._ws)
             async with self._send_lock:

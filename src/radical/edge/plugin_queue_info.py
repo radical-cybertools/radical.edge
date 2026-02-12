@@ -6,6 +6,7 @@ from starlette.requests  import Request
 from starlette.responses import JSONResponse
 
 import asyncio
+<<<<<<< HEAD
 
 import radical.utils as ru
 
@@ -13,6 +14,15 @@ from .plugin_base import Plugin
 from .queue_info  import QueueInfoSlurm
 
 log = ru.Logger("radical.edge", targets=['-'])
+||||||| d4ce0fe
+=======
+import logging
+
+from .plugin_base import Plugin
+from .queue_info  import QueueInfoSlurm
+
+log = logging.getLogger("radical.edge")
+>>>>>>> b91c96e281320a4fd62366ae1217ce40ba235df6
 
 
 # ------------------------------------------------------------------------------
