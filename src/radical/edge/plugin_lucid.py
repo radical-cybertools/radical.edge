@@ -6,15 +6,15 @@ from starlette.requests  import Request
 from starlette.responses import JSONResponse
 
 import asyncio
+import logging
 import pprint
 import uuid
 
 import radical.pilot as rp
-import radical.utils as ru
 
 from .plugin_base import Plugin
 
-log = ru.Logger("radical.edge", targets=['-'])
+log = logging.getLogger("radical.edge")
 
 
 # ------------------------------------------------------------------------------

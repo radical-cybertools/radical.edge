@@ -4,10 +4,9 @@ from fastapi import FastAPI
 from starlette.routing   import Route, BaseRoute
 
 import uuid
+import logging
 
-import radical.utils as ru
-
-log = ru.Logger("radical.edge", targets=['-'])
+log = logging.getLogger("radical.edge")
 
 
 # ------------------------------------------------------------------------------

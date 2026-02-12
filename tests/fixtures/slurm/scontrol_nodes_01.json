@@ -1,0 +1,16 @@
+{
+  "nodes": [
+    {"name": "node001", "real_memory": 524288},
+    {"name": "node002", "real_memory": 524288},
+    {"name": "node010", "real_memory": 524288},
+    {"name": "node011", "real_memory": 524288},
+    {"name": "node050", "real_memory": 524288},
+    {"name": "node060", "real_memory": 524288},
+    {"name": "node070", "real_memory": 524288},
+    {"name": "gpu001",  "real_memory": 1048576},
+    {"name": "gpu002",  "real_memory": 1048576},
+    {"name": "gpu010",  "real_memory": 1048576},
+    {"name": "gpu015",  "real_memory": 1048576},
+    {"name": "dbg001",  "real_memory": 524288}
+  ]
+}
