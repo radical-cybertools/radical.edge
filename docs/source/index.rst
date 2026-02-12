@@ -26,6 +26,7 @@ Contents:
    :maxdepth: 3
 
    module_radical.edge.rst
+   plugin_queue_info.rst
 
 
 ##################
