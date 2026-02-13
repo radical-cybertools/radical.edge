@@ -11,7 +11,6 @@ from .plugin_client_managed import ClientManagedPlugin
 from .service           import EdgeService
 
 
-# ------------------------------------------------------------------------------
 # Read version from VERSION file
 _mod_root = os.path.dirname(__file__)
 _version_path = os.path.join(_mod_root, 'VERSION')
@@ -25,4 +24,3 @@ except FileNotFoundError:
     __version__ = 'unknown'
 
 
-# ------------------------------------------------------------------------------

@@ -15,8 +15,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.websockets    import WebSocketState
 
 
-# ------------------------------------------------------------------------------
-#
 app = FastAPI(title="Bridge")
 
 origins = [
@@ -47,8 +45,6 @@ HEARTBEAT_INTERVAL = 20
 REQUEST_TIMEOUT    = 45
 
 
-# ------------------------------------------------------------------------------
-#
 async def _send_to_edge(edge_name: str, message: dict):
 
     ws = edge_connections.get(edge_name)
@@ -58,8 +54,6 @@ async def _send_to_edge(edge_name: str, message: dict):
     await ws.send_text(json.dumps(message))
 
 
-# ------------------------------------------------------------------------------
-#
 @app.websocket("/register")
 async def register(ws: WebSocket):
 
@@ -181,8 +175,6 @@ async def register(ws: WebSocket):
             pending.clear()
 
 
-# ------------------------------------------------------------------------------
-#
 def _strip_headers(request: Request) -> dict:
 
     to_strip = {"connection", "keep-alive", "proxy-authenticate",
@@ -194,7 +186,6 @@ def _strip_headers(request: Request) -> dict:
     return ret
 
 
-# ------------------------------------------------------------------------------
 # define edge-specific methods first
 # some routes are handles here:
 @app.post("/edge/list")
@@ -202,9 +193,7 @@ async def edge_list(request: Request):
     return JSONResponse({"data": endpoints})
 
 
-# ------------------------------------------------------------------------------
 # all other edge routes are forwarded
-#
 @app.api_route("/{full_path:path}",
                methods=["GET","POST","PUT","PATCH","DELETE","OPTIONS","HEAD"])
 async def proxy(full_path: str, request: Request):
@@ -308,7 +297,6 @@ async def proxy(full_path: str, request: Request):
         return Response(content=content, status_code=status, headers=headers)
 
 
-# ------------------------------------------------------------------------------
 
 if __name__ == "__main__":
 
@@ -339,5 +327,4 @@ if __name__ == "__main__":
                 log_level="info")
 
 
-# ------------------------------------------------------------------------------
 

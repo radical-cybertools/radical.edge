@@ -16,7 +16,6 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 
-# ------------------------------------------------------------------------------
 def test_xgfabric_client_initialization():
     '''
     Test XGFabricClient initialization.
@@ -27,7 +26,6 @@ def test_xgfabric_client_initialization():
     assert client._active is True
 
 
-# ------------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_xgfabric_client_close():
     '''
@@ -41,7 +39,6 @@ async def test_xgfabric_client_close():
     assert client._active is False
 
 
-# ------------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_xgfabric_client_echo():
     '''
@@ -55,7 +52,6 @@ async def test_xgfabric_client_echo():
     assert result["echo"] == "hello world"
 
 
-# ------------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_xgfabric_client_echo_default():
     '''
@@ -69,7 +65,6 @@ async def test_xgfabric_client_echo_default():
     assert result["echo"] == "hello"
 
 
-# ------------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_xgfabric_client_echo_after_close():
     '''
@@ -82,7 +77,6 @@ async def test_xgfabric_client_echo_after_close():
         await client.request_echo()
 
 
-# ------------------------------------------------------------------------------
 def test_plugin_xgfabric_initialization():
     '''
     Test PluginXGFabric initialization.
@@ -102,7 +96,6 @@ def test_plugin_xgfabric_initialization():
     assert any("echo" in path for path in route_paths)
 
 
-# ------------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_plugin_xgfabric_register_client():
     '''
@@ -121,7 +114,6 @@ async def test_plugin_xgfabric_register_client():
     assert plugin._next_id == 1
 
 
-# ------------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_plugin_xgfabric_register_multiple_clients():
     '''
@@ -142,7 +134,6 @@ async def test_plugin_xgfabric_register_multiple_clients():
     assert plugin._next_id == 3
 
 
-# ------------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_plugin_xgfabric_unregister_client():
     '''
@@ -163,7 +154,6 @@ async def test_plugin_xgfabric_unregister_client():
     assert "client.0000" not in plugin._clients
 
 
-# ------------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_plugin_xgfabric_unregister_unknown_client():
     '''
@@ -182,7 +172,6 @@ async def test_plugin_xgfabric_unregister_unknown_client():
     assert "unknown client id" in exc_info.value.detail
 
 
-# ------------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_plugin_xgfabric_echo():
     '''
@@ -202,7 +191,6 @@ async def test_plugin_xgfabric_echo():
     assert isinstance(response, JSONResponse)
 
 
-# ------------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_plugin_xgfabric_echo_unknown_client():
     '''
@@ -220,7 +208,6 @@ async def test_plugin_xgfabric_echo_unknown_client():
     assert exc_info.value.status_code == 404
 
 
-# ------------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_plugin_xgfabric_forward_success():
     '''
@@ -239,7 +226,6 @@ async def test_plugin_xgfabric_forward_success():
     assert isinstance(response, JSONResponse)
 
 
-# ------------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_plugin_xgfabric_forward_client_error():
     '''
@@ -260,7 +246,6 @@ async def test_plugin_xgfabric_forward_client_error():
     assert exc_info.value.status_code == 500
 
 
-# ------------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_plugin_xgfabric_concurrent_registration():
     '''
@@ -282,12 +267,9 @@ async def test_plugin_xgfabric_concurrent_registration():
     assert plugin._next_id == 10
 
 
-# ------------------------------------------------------------------------------
-#
 if __name__ == '__main__':
 
     pytest.main([__file__, '-v'])
 
 
-# ------------------------------------------------------------------------------
 

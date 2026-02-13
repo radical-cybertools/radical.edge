@@ -12,10 +12,8 @@ import radical.edge.logging_config  # noqa: F401
 
 log = logging.getLogger("radical.edge")
 
-# ------------------------------------------------------------------------------
 
 
-#
 async def main():
     """
     Main entry point for the standalone Radical Edge Service.
@@ -47,8 +45,6 @@ async def main():
     finally:
         log.info("Service stopped")
 
-# ------------------------------------------------------------------------------
-#
 if __name__ == "__main__":
     try:
         asyncio.run(main())

@@ -16,7 +16,6 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 
-# ------------------------------------------------------------------------------
 def test_queue_info_client_initialization():
     '''
     Test QueueInfoClient initialization.
@@ -33,7 +32,6 @@ def test_queue_info_client_initialization():
         MockSlurm.assert_called_once_with(slurm_conf=None)
 
 
-# ------------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_queue_info_client_close():
     '''
@@ -52,7 +50,6 @@ async def test_queue_info_client_close():
         assert client._backend is None
 
 
-# ------------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_queue_info_client_echo():
     '''
@@ -66,7 +63,6 @@ async def test_queue_info_client_echo():
         assert result["echo"] == "test message"
 
 
-# ------------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_queue_info_client_echo_default():
     '''
@@ -80,7 +76,6 @@ async def test_queue_info_client_echo_default():
         assert result["echo"] == "hello"
 
 
-# ------------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_queue_info_client_echo_after_close():
     '''
@@ -94,7 +89,6 @@ async def test_queue_info_client_echo_after_close():
             await client.request_echo()
 
 
-# ------------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_queue_info_client_get_info():
     '''
@@ -113,7 +107,6 @@ async def test_queue_info_client_get_info():
         mock_backend.get_info.assert_called_once_with(False)
 
 
-# ------------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_queue_info_client_get_info_force():
     '''
@@ -131,7 +124,6 @@ async def test_queue_info_client_get_info_force():
         mock_backend.get_info.assert_called_once_with(True)
 
 
-# ------------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_queue_info_client_get_info_closed_session():
     '''
@@ -145,7 +137,6 @@ async def test_queue_info_client_get_info_closed_session():
             await client.get_info()
 
 
-# ------------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_queue_info_client_list_jobs():
     '''
@@ -164,7 +155,6 @@ async def test_queue_info_client_list_jobs():
         mock_backend.list_jobs.assert_called_once_with("test_queue", None, False)
 
 
-# ------------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_queue_info_client_list_jobs_with_user():
     '''
@@ -182,7 +172,6 @@ async def test_queue_info_client_list_jobs_with_user():
         mock_backend.list_jobs.assert_called_once_with("test_queue", "testuser", True)
 
 
-# ------------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_queue_info_client_list_allocations():
     '''
@@ -201,7 +190,6 @@ async def test_queue_info_client_list_allocations():
         mock_backend.list_allocations.assert_called_once_with(None, False)
 
 
-# ------------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_queue_info_client_list_allocations_with_user():
     '''
@@ -219,7 +207,6 @@ async def test_queue_info_client_list_allocations_with_user():
         mock_backend.list_allocations.assert_called_once_with("testuser", True)
 
 
-# ------------------------------------------------------------------------------
 @patch('radical.edge.plugin_queue_info.QueueInfoSlurm')
 def test_plugin_queue_info_initialization(mock_slurm):
     '''
@@ -246,7 +233,6 @@ def test_plugin_queue_info_initialization(mock_slurm):
     assert any("list_allocations" in path for path in route_paths)
 
 
-# ------------------------------------------------------------------------------
 @patch('radical.edge.plugin_queue_info.QueueInfoSlurm')
 def test_plugin_queue_info_custom_name_and_conf(mock_slurm):
     '''
@@ -260,7 +246,6 @@ def test_plugin_queue_info_custom_name_and_conf(mock_slurm):
     mock_slurm.assert_not_called()
 
 
-# ------------------------------------------------------------------------------
 @pytest.mark.asyncio
 @patch('radical.edge.plugin_queue_info.QueueInfoSlurm')
 async def test_plugin_queue_info_register_client(mock_slurm):
@@ -282,7 +267,6 @@ async def test_plugin_queue_info_register_client(mock_slurm):
     mock_slurm.assert_called_once()
 
 
-# ------------------------------------------------------------------------------
 @pytest.mark.asyncio
 @patch('radical.edge.plugin_queue_info.QueueInfoSlurm')
 async def test_plugin_queue_info_unregister_client(mock_slurm):
@@ -304,7 +288,6 @@ async def test_plugin_queue_info_unregister_client(mock_slurm):
     assert "client.0000" not in plugin._clients
 
 
-# ------------------------------------------------------------------------------
 @pytest.mark.asyncio
 @patch('radical.edge.plugin_queue_info.QueueInfoSlurm')
 async def test_plugin_queue_info_echo(mock_slurm):
@@ -327,7 +310,6 @@ async def test_plugin_queue_info_echo(mock_slurm):
     assert isinstance(response, JSONResponse)
 
 
-# ------------------------------------------------------------------------------
 @pytest.mark.asyncio
 @patch('radical.edge.plugin_queue_info.QueueInfoSlurm')
 async def test_plugin_queue_info_get_info(mock_slurm):
@@ -354,7 +336,6 @@ async def test_plugin_queue_info_get_info(mock_slurm):
     assert isinstance(response, JSONResponse)
 
 
-# ------------------------------------------------------------------------------
 @pytest.mark.asyncio
 @patch('radical.edge.plugin_queue_info.QueueInfoSlurm')
 async def test_plugin_queue_info_list_jobs(mock_slurm):
@@ -381,7 +362,6 @@ async def test_plugin_queue_info_list_jobs(mock_slurm):
     assert isinstance(response, JSONResponse)
 
 
-# ------------------------------------------------------------------------------
 @pytest.mark.asyncio
 @patch('radical.edge.plugin_queue_info.QueueInfoSlurm')
 async def test_plugin_queue_info_list_allocations(mock_slurm):
@@ -408,7 +388,6 @@ async def test_plugin_queue_info_list_allocations(mock_slurm):
     assert isinstance(response, JSONResponse)
 
 
-# ------------------------------------------------------------------------------
 @pytest.mark.asyncio
 @patch('radical.edge.plugin_queue_info.QueueInfoSlurm')
 async def test_plugin_queue_info_unknown_client_error(mock_slurm):
@@ -428,7 +407,5 @@ async def test_plugin_queue_info_unknown_client_error(mock_slurm):
     assert exc_info.value.status_code == 404
 
 
-# ------------------------------------------------------------------------------
-#
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

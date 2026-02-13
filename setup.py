@@ -16,8 +16,6 @@ from glob       import glob
 from setuptools import setup, Command, find_namespace_packages
 
 
-# ------------------------------------------------------------------------------
-#
 base     = 'edge'
 name     = 'radical.%s'      % base
 mod_root = 'src/radical/%s/' % base
@@ -36,8 +34,6 @@ data     = [('%s/examples'      % share, glob('examples/*.{py,cfg,json,sh}')),
 ]
 
 
-# ------------------------------------------------------------------------------
-#
 def sh_callout(cmd):
     p = sp.Popen(cmd, stdout=sp.PIPE, stderr=sp.PIPE, shell=True)
     stdout, stderr = p.communicate()
@@ -45,8 +41,6 @@ def sh_callout(cmd):
     return stdout, stderr, ret
 
 
-# ------------------------------------------------------------------------------
-#
 def get_version(_mod_root):
     '''
     a VERSION file containes the version strings is created in mod_root,
@@ -122,13 +116,10 @@ def get_version(_mod_root):
         raise RuntimeError(_msg) from e
 
 
-# ------------------------------------------------------------------------------
 # get version info -- this will create VERSION and srcroot/VERSION
 version, version_path = get_version(mod_root)
 
 
-# ------------------------------------------------------------------------------
-#
 class RunTwine(Command):
     user_options = []
     def initialize_options(self): pass
@@ -138,14 +129,10 @@ class RunTwine(Command):
         raise SystemExit(_ret)
 
 
-# ------------------------------------------------------------------------------
-#
 with open('%s/requirements.txt' % root, encoding='utf-8') as freq:
     requirements = freq.readlines()
 
 
-# ------------------------------------------------------------------------------
-#
 setup_args = {
     'name'               : name,
     'version'            : version,
@@ -192,16 +179,12 @@ setup_args = {
 }
 
 
-# ------------------------------------------------------------------------------
-#
 setup(**setup_args)
 
 
-# ------------------------------------------------------------------------------
 # clean temporary files from source tree
 os.system('rm -vrf src/%s.egg-info' % name)
 os.system('rm -vf  %s'              % version_path)
 
 
-# ------------------------------------------------------------------------------
 

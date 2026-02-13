@@ -17,8 +17,6 @@ from .plugin_client_managed import ClientManagedPlugin
 from .queue_info import QueueInfoSlurm
 
 
-# ------------------------------------------------------------------------------
-#
 class QueueInfoClient(PluginClient):
     """
     QueueInfo client with per-client backend.
@@ -26,8 +24,6 @@ class QueueInfoClient(PluginClient):
     Each client creates its own QueueInfoSlurm backend instance.
     """
 
-    # --------------------------------------------------------------------------
-    #
     def __init__(self, cid: str, slurm_conf=None):
         """
         Initialize a QueueInfoClient instance.
@@ -39,9 +35,6 @@ class QueueInfoClient(PluginClient):
         super().__init__(cid)
         self._backend = QueueInfoSlurm(slurm_conf=slurm_conf)
 
-
-    # --------------------------------------------------------------------------
-    #
     async def close(self) -> dict:
         """
         Close this client session and clean up backend.
@@ -52,9 +45,6 @@ class QueueInfoClient(PluginClient):
         self._backend = None
         return await super().close()
 
-
-    # --------------------------------------------------------------------------
-    #
     async def get_info(self, force=False):
         """
         Return queue/partition info.
@@ -68,9 +58,6 @@ class QueueInfoClient(PluginClient):
         self._check_active()
         return await asyncio.to_thread(self._backend.get_info, force)
 
-
-    # --------------------------------------------------------------------------
-    #
     async def list_jobs(self, queue, user=None, force=False):
         """
         List jobs in a queue.
@@ -87,9 +74,6 @@ class QueueInfoClient(PluginClient):
         return await asyncio.to_thread(self._backend.list_jobs,
                                       queue, user, force)
 
-
-    # --------------------------------------------------------------------------
-    #
     async def list_allocations(self, user=None, force=False):
         """
         List allocations/projects.
@@ -106,8 +90,6 @@ class QueueInfoClient(PluginClient):
                                       user, force)
 
 
-# ------------------------------------------------------------------------------
-#
 class PluginQueueInfo(ClientManagedPlugin):
     """
     QueueInfo plugin for Radical Edge.
@@ -130,9 +112,6 @@ class PluginQueueInfo(ClientManagedPlugin):
     client_class = QueueInfoClient
     version = '0.0.1'
 
-
-    # --------------------------------------------------------------------------
-    #
     def __init__(self, app, name='queue_info', slurm_conf=None):
         """
         Initialize the QueueInfo plugin.
@@ -146,7 +125,6 @@ class PluginQueueInfo(ClientManagedPlugin):
         """
         super().__init__(app, name)
 
-
         self._slurm_conf = slurm_conf
 
         # Register QueueInfo-specific routes
@@ -154,12 +132,8 @@ class PluginQueueInfo(ClientManagedPlugin):
         self.add_route_get('list_jobs/{cid}/{queue}', self.list_jobs)
         self.add_route_get('list_allocations/{cid}', self.list_allocations)
 
-
         self._log_routes()
 
-
-    # --------------------------------------------------------------------------
-    #
     def _create_client(self, cid: str, **kwargs):
         """
         Override to pass slurm_conf to each client.
@@ -173,9 +147,6 @@ class PluginQueueInfo(ClientManagedPlugin):
         """
         return self.client_class(cid, slurm_conf=self._slurm_conf)
 
-
-    # --------------------------------------------------------------------------
-    #
     async def get_info(self, request):
         """Return queue/partition information."""
         data = request.path_params
@@ -185,9 +156,6 @@ class PluginQueueInfo(ClientManagedPlugin):
         return await self._forward(cid, QueueInfoClient.get_info,
                                    force=force)
 
-
-    # --------------------------------------------------------------------------
-    #
     async def list_jobs(self, request):
         """List jobs in a specified queue/partition."""
         data = request.path_params
@@ -199,9 +167,6 @@ class PluginQueueInfo(ClientManagedPlugin):
         return await self._forward(cid, QueueInfoClient.list_jobs,
                                    queue, user=user, force=force)
 
-
-    # --------------------------------------------------------------------------
-    #
     async def list_allocations(self, request):
         """List allocations/projects."""
         data = request.path_params
@@ -211,7 +176,4 @@ class PluginQueueInfo(ClientManagedPlugin):
 
         return await self._forward(cid, QueueInfoClient.list_allocations,
                                    user=user, force=force)
-
-
-# ------------------------------------------------------------------------------
 

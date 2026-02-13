@@ -16,7 +16,6 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 
-# ------------------------------------------------------------------------------
 @patch('radical.edge.plugin_lucid.rp')
 def test_lucid_client_initialization(mock_rp):
     '''
@@ -43,7 +42,6 @@ def test_lucid_client_initialization(mock_rp):
     mock_rp.TaskManager.assert_called_once_with(session=mock_session)
 
 
-# ------------------------------------------------------------------------------
 @pytest.mark.asyncio
 @patch('radical.edge.plugin_lucid.rp')
 async def test_lucid_client_close(mock_rp):
@@ -67,7 +65,6 @@ async def test_lucid_client_close(mock_rp):
     assert client._tmgr is None
 
 
-# ------------------------------------------------------------------------------
 @pytest.mark.asyncio
 @patch('radical.edge.plugin_lucid.rp')
 async def test_lucid_client_pilot_submit(mock_rp):
@@ -99,7 +96,6 @@ async def test_lucid_client_pilot_submit(mock_rp):
     mock_rp.PilotDescription.assert_called_once_with(description)
 
 
-# ------------------------------------------------------------------------------
 @pytest.mark.asyncio
 @patch('radical.edge.plugin_lucid.rp')
 async def test_lucid_client_pilot_submit_closed_session(mock_rp):
@@ -117,7 +113,6 @@ async def test_lucid_client_pilot_submit_closed_session(mock_rp):
         await client.pilot_submit({})
 
 
-# ------------------------------------------------------------------------------
 @pytest.mark.asyncio
 @patch('radical.edge.plugin_lucid.rp')
 async def test_lucid_client_task_submit(mock_rp):
@@ -146,7 +141,6 @@ async def test_lucid_client_task_submit(mock_rp):
     mock_rp.TaskDescription.assert_called_once_with(description)
 
 
-# ------------------------------------------------------------------------------
 @pytest.mark.asyncio
 @patch('radical.edge.plugin_lucid.rp')
 async def test_lucid_client_task_wait(mock_rp):
@@ -176,7 +170,6 @@ async def test_lucid_client_task_wait(mock_rp):
     assert result["task"]["state"] == "DONE"
 
 
-# ------------------------------------------------------------------------------
 @pytest.mark.asyncio
 @patch('radical.edge.plugin_lucid.rp')
 async def test_lucid_client_echo(mock_rp):
@@ -195,7 +188,6 @@ async def test_lucid_client_echo(mock_rp):
     assert result["echo"] == "test message"
 
 
-# ------------------------------------------------------------------------------
 @patch('radical.edge.plugin_lucid.rp')
 def test_plugin_lucid_initialization(mock_rp):
     '''
@@ -219,7 +211,6 @@ def test_plugin_lucid_initialization(mock_rp):
     assert any("echo" in path for path in route_paths)
 
 
-# ------------------------------------------------------------------------------
 @pytest.mark.asyncio
 @patch('radical.edge.plugin_lucid.rp')
 async def test_plugin_lucid_register_client(mock_rp):
@@ -242,7 +233,6 @@ async def test_plugin_lucid_register_client(mock_rp):
     assert plugin._next_id == 1
 
 
-# ------------------------------------------------------------------------------
 @pytest.mark.asyncio
 @patch('radical.edge.plugin_lucid.rp')
 async def test_plugin_lucid_unregister_client(mock_rp):
@@ -268,7 +258,6 @@ async def test_plugin_lucid_unregister_client(mock_rp):
     assert "client.0000" not in plugin._clients
 
 
-# ------------------------------------------------------------------------------
 @pytest.mark.asyncio
 @patch('radical.edge.plugin_lucid.rp')
 async def test_plugin_lucid_echo(mock_rp):
@@ -293,7 +282,6 @@ async def test_plugin_lucid_echo(mock_rp):
     assert isinstance(response, JSONResponse)
 
 
-# ------------------------------------------------------------------------------
 @pytest.mark.asyncio
 @patch('radical.edge.plugin_lucid.rp')
 async def test_plugin_lucid_pilot_submit(mock_rp):
@@ -332,7 +320,6 @@ async def test_plugin_lucid_pilot_submit(mock_rp):
     assert isinstance(response, JSONResponse)
 
 
-# ------------------------------------------------------------------------------
 @pytest.mark.asyncio
 @patch('radical.edge.plugin_lucid.rp')
 async def test_plugin_lucid_task_submit(mock_rp):
@@ -368,7 +355,6 @@ async def test_plugin_lucid_task_submit(mock_rp):
     assert isinstance(response, JSONResponse)
 
 
-# ------------------------------------------------------------------------------
 @pytest.mark.asyncio
 @patch('radical.edge.plugin_lucid.rp')
 async def test_plugin_lucid_unknown_client_error(mock_rp):
@@ -387,12 +373,9 @@ async def test_plugin_lucid_unknown_client_error(mock_rp):
     assert exc_info.value.status_code == 404
 
 
-# ------------------------------------------------------------------------------
-#
 if __name__ == '__main__':
 
     pytest.main([__file__, '-v'])
 
 
-# ------------------------------------------------------------------------------
 

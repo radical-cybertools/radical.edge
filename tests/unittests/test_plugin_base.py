@@ -14,7 +14,6 @@ from starlette.routing import Route
 import uuid
 
 
-# ------------------------------------------------------------------------------
 def test_plugin_initialization():
     '''
     Test that Plugin initializes correctly with app and name.
@@ -30,7 +29,6 @@ def test_plugin_initialization():
     assert plugin._routes is app.router.routes
 
 
-# ------------------------------------------------------------------------------
 def test_plugin_uid_property():
     '''
     Test that the uid property returns the correct UUID.
@@ -44,7 +42,6 @@ def test_plugin_uid_property():
     uuid.UUID(plugin.uid)
 
 
-# ------------------------------------------------------------------------------
 def test_plugin_namespace_property():
     '''
     Test that the namespace property returns the correct namespace.
@@ -56,7 +53,6 @@ def test_plugin_namespace_property():
     assert plugin.namespace == expected_namespace
 
 
-# ------------------------------------------------------------------------------
 def test_plugin_add_route_post():
     '''
     Test adding a POST route to the plugin.
@@ -80,7 +76,6 @@ def test_plugin_add_route_post():
     assert "POST" in new_route.methods
 
 
-# ------------------------------------------------------------------------------
 def test_plugin_add_route_get():
     '''
     Test adding a GET route to the plugin.
@@ -104,7 +99,6 @@ def test_plugin_add_route_get():
     assert "GET" in new_route.methods
 
 
-# ------------------------------------------------------------------------------
 def test_plugin_route_path_normalization():
     '''
     Test that double slashes in paths are normalized.
@@ -130,7 +124,6 @@ def test_plugin_route_path_normalization():
     assert "//" not in route2.path
 
 
-# ------------------------------------------------------------------------------
 def test_plugin_multiple_routes():
     '''
     Test adding multiple routes to the same plugin.
@@ -161,7 +154,6 @@ def test_plugin_multiple_routes():
         assert route.path.startswith(plugin.namespace)
 
 
-# ------------------------------------------------------------------------------
 def test_plugin_unique_uids():
     '''
     Test that each plugin instance gets a unique UID.
@@ -182,8 +174,6 @@ def test_plugin_unique_uids():
     assert plugin2.namespace != plugin3.namespace
 
 
-# ------------------------------------------------------------------------------
-#
 if __name__ == '__main__':
 
     test_plugin_initialization()
@@ -198,5 +188,4 @@ if __name__ == '__main__':
     print("All tests passed!")
 
 
-# ------------------------------------------------------------------------------
 

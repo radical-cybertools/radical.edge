@@ -18,8 +18,6 @@ from .plugin_client_base import PluginClient
 from .plugin_client_managed import ClientManagedPlugin
 
 
-# ------------------------------------------------------------------------------
-#
 class LucidClient(PluginClient):
     """
     Lucid client with Radical Pilot session management.
@@ -27,8 +25,6 @@ class LucidClient(PluginClient):
     Each client maintains its own RP Session, Pilot Manager, and Task Manager.
     """
 
-    # --------------------------------------------------------------------------
-    #
     def __init__(self, cid: str):
         """
         Initialize a LucidClient instance with a unique client ID.
@@ -44,9 +40,6 @@ class LucidClient(PluginClient):
         self._pmgr: rp.PilotManager = rp.PilotManager(session=self._session)
         self._tmgr: rp.TaskManager = rp.TaskManager(session=self._session)
 
-
-    # --------------------------------------------------------------------------
-    #
     async def close(self) -> dict:
         """
         Close the Radical Pilot session for this client.
@@ -61,9 +54,6 @@ class LucidClient(PluginClient):
 
         return await super().close()
 
-
-    # --------------------------------------------------------------------------
-    #
     async def pilot_submit(self, description: dict) -> dict:
         """
         Submit a pilot to the Pilot Manager and return its ID.
@@ -79,13 +69,8 @@ class LucidClient(PluginClient):
         pd = rp.PilotDescription(description)
         pilot = await asyncio.to_thread(self._pmgr.submit_pilots, pd)
         await asyncio.to_thread(self._tmgr.add_pilots, pilot)
-        print(f"[Edge] Pilot submitted: {pilot.uid}")
-
         return {'pid': pilot.uid}
 
-
-    # --------------------------------------------------------------------------
-    #
     async def task_submit(self, description: dict) -> dict:
         """
         Submit a task to the Task Manager and return its ID.
@@ -100,13 +85,9 @@ class LucidClient(PluginClient):
 
         td = rp.TaskDescription(description)
         task = await asyncio.to_thread(self._tmgr.submit_tasks, td)
-        print(f"[Edge] Task submitted: {task.uid}")
-
         return {"tid": task.uid}
 
 
-    # --------------------------------------------------------------------------
-    #
     async def task_wait(self, tid: str) -> dict:
         """
         Wait for a task to complete and return its result.
@@ -121,13 +102,9 @@ class LucidClient(PluginClient):
 
         await asyncio.to_thread(self._tmgr.wait_tasks, tid)
         task = await asyncio.to_thread(self._tmgr.get_tasks, tid)
-        print(f"[Edge] Task {tid} completed with state {task.state}")
-
         return {"tid": tid, "task": task.as_dict()}
 
 
-# ------------------------------------------------------------------------------
-#
 class PluginLucid(ClientManagedPlugin):
     """
     Lucid plugin for Radical Edge.
@@ -151,9 +128,6 @@ class PluginLucid(ClientManagedPlugin):
     client_class = LucidClient
     version = '0.0.1'
 
-
-    # --------------------------------------------------------------------------
-    #
     def __init__(self, app: FastAPI):
         """
         Initialize the Lucid plugin with the FastAPI app. Set up routes for
@@ -171,9 +145,6 @@ class PluginLucid(ClientManagedPlugin):
 
         self._log_routes()
 
-
-    # --------------------------------------------------------------------------
-    #
     async def pilot_submit(self, request: Request) -> JSONResponse:
         """
         Submit a pilot to the specified LucidClient instance's session.
@@ -192,9 +163,6 @@ class PluginLucid(ClientManagedPlugin):
 
         return await self._forward(cid, LucidClient.pilot_submit, desc)
 
-
-    # --------------------------------------------------------------------------
-    #
     async def task_submit(self, request: Request) -> JSONResponse:
         """
         Submit a task to the specified LucidClient instance's session.
@@ -213,9 +181,6 @@ class PluginLucid(ClientManagedPlugin):
 
         return await self._forward(cid, LucidClient.task_submit, desc)
 
-
-    # --------------------------------------------------------------------------
-    #
     async def task_wait(self, request: Request) -> JSONResponse:
         """
         Wait for a task to complete in the specified LucidClient instance's
@@ -233,10 +198,6 @@ class PluginLucid(ClientManagedPlugin):
         cid = data['cid']
         tid = data['tid']
         ret = await self._forward(cid, LucidClient.task_wait, tid)
-        print("returning task: %s" % ret)
 
         return ret
-
-
-# ------------------------------------------------------------------------------
 

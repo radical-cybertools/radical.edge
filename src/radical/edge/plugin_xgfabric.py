@@ -14,8 +14,6 @@ from .plugin_client_base import PluginClient
 from .plugin_client_managed import ClientManagedPlugin
 
 
-# ------------------------------------------------------------------------------
-#
 class XGFabricClient(PluginClient):
     """
     XGFabric client.
@@ -31,8 +29,6 @@ class XGFabricClient(PluginClient):
     # No additional methods needed for this simple client
 
 
-# ------------------------------------------------------------------------------
-#
 class PluginXGFabric(ClientManagedPlugin):
     """
     XGFabric plugin for Radical Edge.
@@ -46,9 +42,6 @@ class PluginXGFabric(ClientManagedPlugin):
     client_class = XGFabricClient
     version = '0.0.1'
 
-
-    # --------------------------------------------------------------------------
-    #
     def __init__(self, app: FastAPI):
         """
         Initialize the XGFabric plugin with the FastAPI app.
@@ -64,7 +57,4 @@ class PluginXGFabric(ClientManagedPlugin):
         super().__init__(app, 'xgfabric')
 
         self._log_routes()
-
-
-# ------------------------------------------------------------------------------
 

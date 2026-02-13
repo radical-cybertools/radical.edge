@@ -8,8 +8,6 @@ import logging
 log = logging.getLogger("radical.edge")
 
 
-# ------------------------------------------------------------------------------
-#
 class Plugin(object):
     """
     Base class for Edge plugins.
@@ -19,8 +17,6 @@ class Plugin(object):
     methods.
     """
 
-    # --------------------------------------------------------------------------
-    #
     def __init__(self, app: FastAPI, name: str):
         """
         Initialize the Plugin with a FastAPI app and a name.
@@ -35,8 +31,6 @@ class Plugin(object):
         self._routes   : list[BaseRoute] = app.router.routes
 
 
-    # --------------------------------------------------------------------------
-    #
     @property
     def namespace(self) -> str:
         """
@@ -49,8 +43,6 @@ class Plugin(object):
         return self._namespace
 
 
-    # --------------------------------------------------------------------------
-    #
     @property
     def name(self) -> str:
         """
@@ -62,9 +54,7 @@ class Plugin(object):
         return self._name
 
 
-    # --------------------------------------------------------------------------
 
-    #
     def add_route_post(self, path : str, method : callable):
         """
         Add a POST route to the plugin's namespace.
@@ -81,8 +71,6 @@ class Plugin(object):
         self._routes.append(Route(full_path, method, methods=["POST"]))
 
 
-    # --------------------------------------------------------------------------
-    #
     def add_route_get(self, path : str, method : callable):
         """
         Add a GET route to the plugin's namespace.
@@ -99,5 +87,4 @@ class Plugin(object):
         self._routes.append(Route(full_path, method, methods=["GET"]))
 
 
-# ------------------------------------------------------------------------------
 

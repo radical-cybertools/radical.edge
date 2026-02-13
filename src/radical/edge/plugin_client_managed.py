@@ -21,8 +21,6 @@ from .plugin_client_base import PluginClient
 log = logging.getLogger("radical.edge")
 
 
-# ------------------------------------------------------------------------------
-#
 class ClientManagedPlugin(Plugin):
     """
     Base class for plugins that manage multiple clients.
@@ -43,9 +41,6 @@ class ClientManagedPlugin(Plugin):
     client_class = None  # Override in subclass
     version = '0.0.1'    # Override in subclass
 
-
-    # --------------------------------------------------------------------------
-    #
     def __init__(self, app: FastAPI, name: str):
         """
         Initialize the client-managed plugin.
@@ -56,20 +51,15 @@ class ClientManagedPlugin(Plugin):
         """
         super().__init__(app, name)
 
-
         self._clients: dict[str, PluginClient] = {}
         self._id_lock = asyncio.Lock()
         self._next_id = 0
-
 
         self.add_route_post('register_client', self.register_client)
         self.add_route_post('unregister_client/{cid}', self.unregister_client)
         self.add_route_get('echo/{cid}', self.echo)
         self.add_route_get('version', self.get_version)
 
-
-    # --------------------------------------------------------------------------
-    #
     def _create_client(self, cid: str, **kwargs) -> PluginClient:
         """
         Factory method to create a client instance.
@@ -92,9 +82,6 @@ class ClientManagedPlugin(Plugin):
                 "Subclass must define client_class attribute")
         return self.client_class(cid, **kwargs)
 
-
-    # --------------------------------------------------------------------------
-    #
     async def register_client(self, request: Request) -> JSONResponse:
         """
         Register a new client and return its unique client ID.
@@ -112,9 +99,6 @@ class ClientManagedPlugin(Plugin):
         self._clients[cid] = self._create_client(cid)
         return JSONResponse({"cid": cid})
 
-
-    # --------------------------------------------------------------------------
-    #
     async def unregister_client(self, request: Request) -> JSONResponse:
         """
         Unregister a client by its client ID and close its session.
@@ -139,9 +123,6 @@ class ClientManagedPlugin(Plugin):
         await inst.close()
         return JSONResponse({"ok": True})
 
-
-    # --------------------------------------------------------------------------
-    #
     async def echo(self, request: Request) -> JSONResponse:
         """
         Echo service for testing/debugging.
@@ -163,9 +144,6 @@ class ClientManagedPlugin(Plugin):
         q = request.path_params.get('q', 'hello')
         return await self._forward(cid, PluginClient.request_echo, q=q)
 
-
-    # --------------------------------------------------------------------------
-    #
     async def get_version(self, request: Request) -> JSONResponse:
         """
         Return the plugin version.
@@ -178,9 +156,6 @@ class ClientManagedPlugin(Plugin):
         """
         return JSONResponse({"version": self.version})
 
-
-    # --------------------------------------------------------------------------
-    #
     async def _forward(self, cid: str, func: callable,
                       *args, **kwargs) -> JSONResponse:
         """
@@ -216,9 +191,6 @@ class ClientManagedPlugin(Plugin):
             log.exception(f"[Edge] Error in client {cid}: {e}")
             raise HTTPException(status_code=500, detail=str(e)) from e
 
-
-    # --------------------------------------------------------------------------
-    #
     def _log_routes(self):
         """
         Log all registered routes for debugging.
@@ -230,7 +202,4 @@ class ClientManagedPlugin(Plugin):
         for route in self._routes:
             if isinstance(route, Route):
                 log.debug(f"[Edge]   {route.path} -> {route.endpoint.__name__}")
-
-
-# ------------------------------------------------------------------------------
 

@@ -9,18 +9,13 @@ import subprocess
 from abc import ABC, abstractmethod
 
 
-# ------------------------------------------------------------------------------
-#
 # Node states considered unavailable for scheduling
-#
 _UNAVAIL_STATES = {'DOWN',    'DRAIN',   'DRAINING',
                    'FAIL',    'FAILING', 'MAINT',
                    'FUTURE',  'POWER_DOWN', 'POWERED_DOWN',
                    'NOT_RESPONDING', 'REBOOT_ISSUED'}
 
 
-# ------------------------------------------------------------------------------
-#
 def _unwrap(obj):
     """
     Extract a value from SLURM's {set, infinite, number} wrapper.
@@ -40,8 +35,6 @@ def _unwrap(obj):
     return obj.get('number')
 
 
-# ------------------------------------------------------------------------------
-#
 def _parse_gpus(gres_str):
     """
     Parse GPU count from a SLURM GRES string.
@@ -81,8 +74,6 @@ def _parse_gpus(gres_str):
     return total
 
 
-# ------------------------------------------------------------------------------
-#
 class QueueInfo(ABC):
     """
     Abstract base class for batch system queue information backends.
@@ -94,8 +85,6 @@ class QueueInfo(ABC):
 
     _cache_ttl = 3600   # class attribute — 1-hour default, tweakable
 
-    # --------------------------------------------------------------------------
-    #
     def __init__(self):
 
         self._cache      : dict        = {}
@@ -103,8 +92,6 @@ class QueueInfo(ABC):
         self._cache_lock : threading.Lock = threading.Lock()
 
 
-    # --------------------------------------------------------------------------
-    #
     def _get_cached(self, key, force, collector, *args):
         """
         Thread-safe caching with non-blocking collector:
@@ -130,16 +117,12 @@ class QueueInfo(ABC):
         return result
 
 
-    # --------------------------------------------------------------------------
-    #
     def get_info(self, force=False):
         """Return queue/partition info. force=True bypasses cache."""
 
         return self._get_cached('info', force, self._collect_info)
 
 
-    # --------------------------------------------------------------------------
-    #
     def list_jobs(self, queue, user=None, force=False):
         """List jobs in a queue.  If user is set, filter to that user."""
 
@@ -147,8 +130,6 @@ class QueueInfo(ABC):
         return self._get_cached(key, force, self._collect_jobs, queue, user)
 
 
-    # --------------------------------------------------------------------------
-    #
     def list_allocations(self, user=None, force=False):
         """
         List allocations/projects.  If user is set, filter to that user.
@@ -159,8 +140,6 @@ class QueueInfo(ABC):
         return self._get_cached(key, force, self._collect_allocations, user)
 
 
-    # --------------------------------------------------------------------------
-    #
     @abstractmethod
     def _collect_info(self):
         raise NotImplementedError
@@ -174,8 +153,6 @@ class QueueInfo(ABC):
         raise NotImplementedError
 
 
-# ------------------------------------------------------------------------------
-#
 class QueueInfoSlurm(QueueInfo):
     """
     SLURM backend for queue information.
@@ -189,8 +166,6 @@ class QueueInfoSlurm(QueueInfo):
           allowing a single edge service to query multiple clusters.
     """
 
-    # --------------------------------------------------------------------------
-    #
     def __init__(self, slurm_conf=None):
 
         super().__init__()
@@ -200,8 +175,6 @@ class QueueInfoSlurm(QueueInfo):
             self._env['SLURM_CONF'] = slurm_conf
 
 
-    # --------------------------------------------------------------------------
-    #
     def _run(self, cmd):
         """Run a subprocess with self._env, return stdout."""
 
@@ -211,8 +184,6 @@ class QueueInfoSlurm(QueueInfo):
         return result.stdout
 
 
-    # --------------------------------------------------------------------------
-    #
     def _collect_info(self):
         """
         Collect queue/partition info via sinfo --json and scontrol show
@@ -299,8 +270,6 @@ class QueueInfoSlurm(QueueInfo):
         return {'queues': partitions}
 
 
-    # --------------------------------------------------------------------------
-    #
     def _collect_jobs(self, queue, user):
         """
         Collect job list via squeue --json.
@@ -352,8 +321,6 @@ class QueueInfoSlurm(QueueInfo):
         return {'jobs': result}
 
 
-    # --------------------------------------------------------------------------
-    #
     def _collect_allocations(self, user):
         """
         Collect allocation/association data via sacctmgr show assoc --json.
@@ -372,8 +339,6 @@ class QueueInfoSlurm(QueueInfo):
             return self._collect_allocations_parsable(user)
 
 
-    # --------------------------------------------------------------------------
-    #
     def _collect_allocations_json(self, user):
         """Collect allocations via sacctmgr --json."""
 
@@ -388,8 +353,6 @@ class QueueInfoSlurm(QueueInfo):
         return {'allocations': self._parse_assocs(assocs)}
 
 
-    # --------------------------------------------------------------------------
-    #
     def _collect_allocations_parsable(self, user):
         """
         Fallback: collect allocations via sacctmgr -P -n (pipe-delimited).
@@ -403,8 +366,6 @@ class QueueInfoSlurm(QueueInfo):
         return {'allocations': self._parse_assocs_parsable(stdout)}
 
 
-    # --------------------------------------------------------------------------
-    #
     def _parse_assocs(self, assocs):
         """Parse association list from JSON data."""
 
@@ -438,8 +399,6 @@ class QueueInfoSlurm(QueueInfo):
         return result
 
 
-    # --------------------------------------------------------------------------
-    #
     @staticmethod
     def _parse_assocs_parsable(stdout):
         """
@@ -480,4 +439,3 @@ class QueueInfoSlurm(QueueInfo):
         return result
 
 
-# ------------------------------------------------------------------------------

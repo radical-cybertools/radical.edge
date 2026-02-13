@@ -5,8 +5,6 @@ __copyright__ = 'Copyright 2024, RADICAL@Rutgers'
 __license__   = 'MIT'
 
 
-# ------------------------------------------------------------------------------
-#
 class PluginClient:
     """
     Base class for plugin clients.
@@ -18,8 +16,6 @@ class PluginClient:
     - Session validation
     """
 
-    # --------------------------------------------------------------------------
-    #
     def __init__(self, cid: str):
         """
         Initialize a plugin client.
@@ -30,9 +26,6 @@ class PluginClient:
         self._cid: str = cid
         self._active: bool = True
 
-
-    # --------------------------------------------------------------------------
-    #
     async def close(self) -> dict:
         """
         Close this client session.
@@ -43,9 +36,6 @@ class PluginClient:
         self._active = False
         return {}
 
-
-    # --------------------------------------------------------------------------
-    #
     async def request_echo(self, q: str = "hello") -> dict:
         """
         Echo service for testing.
@@ -61,11 +51,8 @@ class PluginClient:
             RuntimeError: If the session is closed.
         """
         self._check_active()
-        return {"cid": self._cid, "echo": q}
+        return {"cid": self._cid, "echo": q + f" -- {self._name}"}
 
-
-    # --------------------------------------------------------------------------
-    #
     def _check_active(self):
         """
         Check if the session is active.
@@ -75,7 +62,4 @@ class PluginClient:
         """
         if not self._active:
             raise RuntimeError("session is closed")
-
-
-# ------------------------------------------------------------------------------
 

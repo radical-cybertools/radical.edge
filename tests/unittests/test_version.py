@@ -13,21 +13,18 @@ Test for version information.
 import radical.edge as re
 
 
-# ------------------------------------------------------------------------------
 def test_version_exists():
     """Test that version attribute exists."""
     assert hasattr(re, 'version')
     assert hasattr(re, '__version__')
 
 
-# ------------------------------------------------------------------------------
 def test_version_is_string():
     """Test that version is a string."""
     assert isinstance(re.version, str)
     assert isinstance(re.__version__, str)
 
 
-# ------------------------------------------------------------------------------
 def test_version_not_empty():
     """Test that version is not empty."""
     assert re.version
@@ -36,13 +33,11 @@ def test_version_not_empty():
     assert re.__version__ != ''
 
 
-# ------------------------------------------------------------------------------
 def test_version_matches():
     """Test that version and __version__ match."""
     assert re.version == re.__version__
 
 
-# ------------------------------------------------------------------------------
 def test_version_format():
     """Test that version has expected format (not 'unknown')."""
     # Should be either a version number or git hash, not 'unknown'
@@ -50,5 +45,4 @@ def test_version_format():
     assert len(re.version) > 0
 
 
-# ------------------------------------------------------------------------------
 
