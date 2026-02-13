@@ -4,6 +4,11 @@ from .plugin_lucid      import PluginLucid
 from .plugin_xgfabric   import PluginXGFabric
 from .plugin_queue_info import PluginQueueInfo
 
+from .plugin_client_base    import PluginClient
+from .plugin_client_managed import ClientManagedPlugin
+
+from .service           import EdgeService
+
 
 # ------------------------------------------------------------------------------
 # Read version from VERSION file
