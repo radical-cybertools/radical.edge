@@ -5,7 +5,7 @@ import base64
 import json
 import uuid
 
-from typing  import Dict, Optional, Any
+from typing  import Dict, Any
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi import Request, Response, HTTPException
 
@@ -105,23 +105,23 @@ async def register(ws: WebSocket):
                 # and store connection
                 if not edge_name:
                     edge_name = frame_edge_name
-                    
+
                     # specific check: if connection exists for this name, reject
                     if edge_name in edge_connections:
-                         print(f"[Bridge] Edge name '{edge_name}' already connected. Rejecting duplicate.")
-                         await ws.send_text(json.dumps({
+                        print(f"[Bridge] Edge name '{edge_name}' already connected. Rejecting duplicate.")
+                        await ws.send_text(json.dumps({
                             "type": "error",
                             "message": f"Edge name '{edge_name}' already in use"
-                         }))
-                         return # Close connection
-                    
+                        }))
+                        return  # Close connection
+
                     edge_connections[edge_name] = ws
                     print(f"[Bridge] Edge '{edge_name}' registered connection")
 
                 # Verify consistent naming in session
                 if frame_edge_name != edge_name:
-                     print(f"[Bridge] Edge name mismatch in session: {frame_edge_name} != {edge_name}")
-                     continue
+                    print(f"[Bridge] Edge name mismatch in session: {frame_edge_name} != {edge_name}")
+                    continue
 
                 # Initialize edge in endpoints registry if new
                 if edge_name not in endpoints['edges']:
@@ -167,11 +167,11 @@ async def register(ws: WebSocket):
                 if edge_name in endpoints['edges']:
                     print(f"[Bridge] Unregistering edge: {edge_name}")
                     del endpoints['edges'][edge_name]
-                
+
                 if edge_name in edge_connections:
                     del edge_connections[edge_name]
             else:
-                 print(f"[Bridge] Disconnected duplicate/inactive session for: {edge_name}")
+                print(f"[Bridge] Disconnected duplicate/inactive session for: {edge_name}")
 
         # Fail any in-flight requests
         async with pending_lock:
@@ -215,16 +215,16 @@ async def proxy(full_path: str, request: Request):
     parts = full_path.strip('/').split('/', 1)
     if not parts:
         raise HTTPException(status_code=404, detail="Invalid path")
-    
+
     edge_name = parts[0]
-    
+
     if edge_name not in edge_connections:
-         # Try finding if it's a plugin on a default edge? No, enforcing /edge_name structure
-         raise HTTPException(status_code=404, detail=f"Edge '{edge_name}' not found")
-         
+        # Try finding if it's a plugin on a default edge? No, enforcing /edge_name structure
+        raise HTTPException(status_code=404, detail=f"Edge '{edge_name}' not found")
+
     # Path to forward: /plugin/...
     forward_path = '/' + parts[1] if len(parts) > 1 else '/'
-    
+
     # Prepare body (binary-safe)
     body_bytes = await request.body()
     body       = None
@@ -240,7 +240,7 @@ async def proxy(full_path: str, request: Request):
             is_binary = True
 
     req_id = str(uuid.uuid4())
-    
+
     # Query params handling
     if request.url.query:
         forward_path += f"?{request.url.query}"

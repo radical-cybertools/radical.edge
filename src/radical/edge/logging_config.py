@@ -20,7 +20,7 @@ class ColoredFormatter(logging.Formatter):
     def __init__(self, fmt: str = None, datefmt: str = None,
                  style: str = '%', use_colors: bool = None):
         super().__init__(fmt, datefmt, style)
-        
+
         if use_colors is None:
             use_colors = sys.stdout.isatty()
         self.use_colors = use_colors
@@ -40,14 +40,14 @@ class ColoredFormatter(logging.Formatter):
 
         record = copy.copy(record)
         levelname = record.levelname
-        
+
         if record.levelno in self.COLORS:
              # Match Uvicorn: "INFO:     " (Colored, with colon, padded to 9)
              levelname_with_sep = f"{levelname}:"
              padded_levelname = f"{levelname_with_sep:<9}"
              record.levelname = (f"{self.COLORS[record.levelno]}"
                                  f"{padded_levelname}{self.RESET}")
-        
+
         return super().format(record)
 
 
