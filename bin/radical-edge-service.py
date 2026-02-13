@@ -7,6 +7,7 @@ import signal
 import sys
 
 from radical.edge.service import EdgeService
+import radical.edge.logging_config  # noqa: F401
 
 
 log = logging.getLogger("radical.edge")
