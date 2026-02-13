@@ -1,25 +1,31 @@
 
-from fastapi import FastAPI, HTTPException
+__author__    = 'Radical Development Team'
+__email__     = 'radical@radical-project.org'
+__copyright__ = 'Copyright 2024, RADICAL@Rutgers'
+__license__   = 'MIT'
 
-from starlette.routing   import Route
+
+from fastapi import FastAPI
+
 from starlette.requests  import Request
 from starlette.responses import JSONResponse
 
 import asyncio
-import logging
-import pprint
-import uuid
 
 import radical.pilot as rp
 
-from .plugin_base import Plugin
-
-log = logging.getLogger("radical.edge")
+from .plugin_client_base import PluginClient
+from .plugin_client_managed import ClientManagedPlugin
 
 
 # ------------------------------------------------------------------------------
 #
-class LucidClient(object):
+class LucidClient(PluginClient):
+    """
+    Lucid client with Radical Pilot session management.
+    
+    Each client maintains its own RP Session, Pilot Manager, and Task Manager.
+    """
 
     # --------------------------------------------------------------------------
     #
@@ -30,33 +36,30 @@ class LucidClient(object):
         private to this client.
 
         Args:
-          cid (str): The unique client ID.
+            cid (str): The unique client ID.
         """
-
-        self._cid     : str = cid
-        self._session : rp.Session = rp.Session()
-        self._pmgr    : rp.PilotManager = rp.PilotManager(session=self._session)
-        self._tmgr    : rp.TaskManager = rp.TaskManager(session=self._session)
+        super().__init__(cid)
+        
+        self._session: rp.Session = rp.Session()
+        self._pmgr: rp.PilotManager = rp.PilotManager(session=self._session)
+        self._tmgr: rp.TaskManager = rp.TaskManager(session=self._session)
 
 
     # --------------------------------------------------------------------------
     #
-    async def close(self) -> dict[str, str]:
+    async def close(self) -> dict:
         """
         Close the Radical Pilot session for this client.
 
         Returns:
-          dict: An empty dictionary indicating successful closure.
+            dict: An empty dictionary indicating successful closure.
         """
-
         await asyncio.to_thread(self._session.close)
         self._session = None
-        self._pmgr    = None
-        self._tmgr    = None
-
-        print(f"[Edge] Session closed for client {self._cid}")
-
-        return {}
+        self._pmgr = None
+        self._tmgr = None
+        
+        return await super().close()
 
 
     # --------------------------------------------------------------------------
@@ -66,15 +69,14 @@ class LucidClient(object):
         Submit a pilot to the Pilot Manager and return its ID.
 
         Args:
-          description (dict): The pilot description dictionary.
+            description (dict): The pilot description dictionary.
 
         Returns:
-          dict: A dictionary containing the pilot ID ('pid').
+            dict: A dictionary containing the pilot ID ('pid').
         """
-        if not self._session:
-            raise RuntimeError("session is closed")
-
-        pd    = rp.PilotDescription(description)
+        self._check_active()
+        
+        pd = rp.PilotDescription(description)
         pilot = await asyncio.to_thread(self._pmgr.submit_pilots, pd)
         await asyncio.to_thread(self._tmgr.add_pilots, pilot)
         print(f"[Edge] Pilot submitted: {pilot.uid}")
@@ -89,15 +91,14 @@ class LucidClient(object):
         Submit a task to the Task Manager and return its ID.
 
         Args:
-          description (dict): The task description dictionary.
+            description (dict): The task description dictionary.
 
         Returns:
-          dict: A dictionary containing the task ID ('tid').
+            dict: A dictionary containing the task ID ('tid').
         """
-        if not self._session:
-            raise RuntimeError("session is closed")
-
-        td   = rp.TaskDescription(description)
+        self._check_active()
+        
+        td = rp.TaskDescription(description)
         task = await asyncio.to_thread(self._tmgr.submit_tasks, td)
         print(f"[Edge] Task submitted: {task.uid}")
 
@@ -111,14 +112,13 @@ class LucidClient(object):
         Wait for a task to complete and return its result.
 
         Args:
-          tid (str): The task ID to wait for.
+            tid (str): The task ID to wait for.
 
         Returns:
-          dict: A dictionary containing the task ID ('tid') and task details ('task').
+            dict: A dictionary containing the task ID ('tid') and task details ('task').
         """
-        if not self._session:
-            raise RuntimeError("session is closed")
-
+        self._check_active()
+        
         await asyncio.to_thread(self._tmgr.wait_tasks, tid)
         task = await asyncio.to_thread(self._tmgr.get_tasks, tid)
         print(f"[Edge] Task {tid} completed with state {task.state}")
@@ -126,28 +126,9 @@ class LucidClient(object):
         return {"tid": tid, "task": task.as_dict()}
 
 
-    # --------------------------------------------------------------------------
-    #
-    async def request_echo(self, q: str = "hello") -> dict:
-        """
-        Echo service for testing.
-
-        Args:
-          q (str): The string to echo. Defaults to "hello".
-
-        Returns:
-          dict: A dictionary containing the client ID ('cid') and the echoed string ('echo').
-        """
-        if not self._session:
-            raise RuntimeError("session is closed")
-
-        print(f"[Edge] Echo request from client {self._cid} with q={q}")
-        return {"cid": self._cid, "echo": q}
-
-
 # ------------------------------------------------------------------------------
 #
-class PluginLucid(Plugin):
+class PluginLucid(ClientManagedPlugin):
     """
     Lucid plugin for Radical Edge.
 
@@ -155,7 +136,21 @@ class PluginLucid(Plugin):
     session, Pilot Manager, and Task Manager. It provides routes for client
     registration, pilot submission, task submission, task waiting, and an echo
     service for testing / debugging.
+    
+    Standard routes inherited from ClientManagedPlugin:
+    - POST /lucid/{uid}/register_client
+    - POST /lucid/{uid}/unregister_client/{cid}
+    - GET  /lucid/{uid}/echo/{cid}
+    
+    Lucid-specific routes:
+    - POST /lucid/{uid}/pilot_submit/{cid}
+    - POST /lucid/{uid}/task_submit/{cid}
+    - GET  /lucid/{uid}/task_wait/{cid}/{tid}
     """
+
+    client_class = LucidClient
+    version = '0.0.1'
+
 
     # --------------------------------------------------------------------------
     #
@@ -165,126 +160,17 @@ class PluginLucid(Plugin):
         client management and task handling.
 
         Args:
-          app (FastAPI): The FastAPI application instance.
+            app (FastAPI): The FastAPI application instance.
         """
-
         super().__init__(app, 'lucid')
 
-        self._clients : dict[str, LucidClient] = {}
-        self._id_lock = asyncio.Lock()
-        self._next_id = 0
-
-        self.add_route_post('register_client', self.register_client)
-        self.add_route_post('unregister_client/{cid}', self.unregister_client)
+        # Register Lucid-specific routes
         self.add_route_post('pilot_submit/{cid}', self.pilot_submit)
         self.add_route_post('task_submit/{cid}', self.task_submit)
         self.add_route_get('task_wait/{cid}/{tid}', self.task_wait)
-        self.add_route_get('echo/{cid}', self.echo)
 
-        # list all routes
-        log.debug(f"[Edge] Lucid plugin routes:")
-        for route in self._routes:
-            if isinstance(route, Route):
-                log.debug(f"[Edge]   {route.path} -> {route.endpoint.__name__}")
-
-
-    # --------------------------------------------------------------------------
-    #
-    async def _forward(self, cid, func, *args, **kwargs) -> JSONResponse:
-        """
-        Forward a request to the specified LucidClient instance. Handle errors
-        and return a JSON response.
-
-        Args:
-          cid (str): The client ID.
-          func (callable): The LucidClient method to call.
-          *args: Positional arguments for the method.
-          **kwargs: Keyword arguments for the method.
-
-        Returns:
-          JSONResponse: A JSON response containing the result from the client method.
-        """
-
-        client = self._clients.get(cid)
-        log.debug(f"[Edge] Forward to client {cid} ({func.__name__})")
-
-        if not client:
-            raise HTTPException(status_code=404, detail=f"unknown client id: {cid}")
-
-        try:
-            ret = await func(client, *args, **kwargs)
-            return JSONResponse(ret)
-
-        except Exception as e:
-            log.exception(f"[Edge] Error in client {cid}: {e}")
-            raise HTTPException(status_code=500, detail=str(e)) from e
-
-
-    # --------------------------------------------------------------------------
-    #
-    async def register_client(self, request: Request) -> JSONResponse:
-        """
-        Register a new Lucid client and return its unique client ID.
-
-        Args:
-          request (Request): The incoming HTTP request (unused).
-
-        Returns:
-          JSONResponse: A JSON response containing the client ID ('cid').
-        """
-
-        async with self._id_lock:
-            cid = f"client.{self._next_id:04d}"
-            self._next_id += 1
-        self._clients[cid] = LucidClient(cid)
-
-        return JSONResponse({"cid": cid})
-
-
-    # --------------------------------------------------------------------------
-    #
-    async def unregister_client(self, request: Request) -> JSONResponse:
-        """
-        Unregister a Lucid client by its client ID and close its session.
-
-        Args:
-          request (Request): The incoming HTTP request. Path parameters must contain 'cid'.
-
-        Returns:
-          JSONResponse: A JSON response indicating success ('ok': True).
-
-        """
-
-        data = request.path_params
-        cid  = data['cid']
-        inst = self._clients.pop(cid, None)
-        if not inst:
-            raise HTTPException(status_code=404, detail=f"unknown client id: {cid}")
-        await inst.close()
-
-        return JSONResponse({"ok": True})
-
-    # --------------------------------------------------------------------------
-    #
-    async def echo(self, request: Request) -> JSONResponse:
-        """
-        Echo service for testing / debugging. Forwards the echo request to the
-        specified LucidClient instance.
-
-        Args:
-          request (Request): The incoming HTTP request. Path parameters must contain 'cid'.
-                             May contain 'q' as a query parameter.
-
-        Returns:
-          JSONResponse: A JSON response containing the client ID ('cid') and echo result ('echo').
-        """
-
-        data = request.path_params
-        cid = data['cid']
-        q   = data.get('q', 'hello')
-        print(f"[Edge] echo from client {cid} with q={q}")
-
-        return await self._forward(cid, LucidClient.request_echo, q=q)
+        # Log all routes for debugging
+        self._log_routes()
 
 
     # --------------------------------------------------------------------------
@@ -294,16 +180,15 @@ class PluginLucid(Plugin):
         Submit a pilot to the specified LucidClient instance's session.
 
         Args:
-          request (Request): The incoming HTTP request. Path parameters must contain 'cid'.
+            request (Request): The incoming HTTP request. Path parameters must contain 'cid'.
                              JSON body must contain 'description' as a pilot description.
 
         Returns:
-          JSONResponse: A JSON response containing the pilot ID ('pid').
+            JSONResponse: A JSON response containing the pilot ID ('pid').
         """
-
         data = request.path_params
         json = await request.json()
-        cid  = data['cid']
+        cid = data['cid']
         desc = json['description']
 
         return await self._forward(cid, LucidClient.pilot_submit, desc)
@@ -316,16 +201,15 @@ class PluginLucid(Plugin):
         Submit a task to the specified LucidClient instance's session.
 
         Args:
-          request (Request): The incoming HTTP request. Path parameters must contain 'cid'.
+            request (Request): The incoming HTTP request. Path parameters must contain 'cid'.
                              JSON body must contain 'description' as a task description.
 
         Returns:
-          JSONResponse: A JSON response containing the task ID ('tid').
+            JSONResponse: A JSON response containing the task ID ('tid').
         """
-
         data = request.path_params
         json = await request.json()
-        cid  = data['cid']
+        cid = data['cid']
         desc = json['description']
 
         return await self._forward(cid, LucidClient.task_submit, desc)
@@ -339,17 +223,16 @@ class PluginLucid(Plugin):
         session.
 
         Args:
-          request (Request): The incoming HTTP request. Path parameters must contain 'cid'
+            request (Request): The incoming HTTP request. Path parameters must contain 'cid'
                              and 'tid'.
 
         Returns:
-          JSONResponse: A JSON response containing the task ID ('tid') and
+            JSONResponse: A JSON response containing the task ID ('tid') and
                         task dictionary ('task').
         """
-
         data = request.path_params
-        cid  = data['cid']
-        tid  = data['tid']
+        cid = data['cid']
+        tid = data['tid']
         ret = await self._forward(cid, LucidClient.task_wait, tid)
         print("returning task: %s" % ret)
 

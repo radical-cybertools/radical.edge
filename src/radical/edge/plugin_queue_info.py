@@ -1,73 +1,56 @@
 
-from fastapi import FastAPI, HTTPException
+__author__    = 'Radical Development Team'
+__email__     = 'radical@radical-project.org'
+__copyright__ = 'Copyright 2024, RADICAL@Rutgers'
+__license__   = 'MIT'
 
-from starlette.routing   import Route
+
+from fastapi import FastAPI
+
 from starlette.requests  import Request
 from starlette.responses import JSONResponse
 
 import asyncio
-import logging
 
-from .plugin_base import Plugin
-from .queue_info  import QueueInfoSlurm
-
-log = logging.getLogger("radical.edge")
+from .plugin_client_base import PluginClient
+from .plugin_client_managed import ClientManagedPlugin
+from .queue_info import QueueInfoSlurm
 
 
 # ------------------------------------------------------------------------------
 #
-class QueueInfoClient(object):
+class QueueInfoClient(PluginClient):
+    """
+    QueueInfo client with per-client backend.
+    
+    Each client creates its own QueueInfoSlurm backend instance.
+    """
 
     # --------------------------------------------------------------------------
     #
-    def __init__(self, cid, backend):
+    def __init__(self, cid: str, slurm_conf=None):
         """
         Initialize a QueueInfoClient instance.
 
         Args:
-          cid (str): The unique client ID.
-          backend (QueueInfo): Shared backend instance for batch system queries.
+            cid (str): The unique client ID.
+            slurm_conf (str): Optional path to slurm.conf for the target cluster.
         """
-
-        self._cid     = cid
-        self._active  = True
-        self._backend = backend
+        super().__init__(cid)
+        self._backend = QueueInfoSlurm(slurm_conf=slurm_conf)
 
 
     # --------------------------------------------------------------------------
     #
-    async def close(self):
+    async def close(self) -> dict:
         """
-        Close this client session.
+        Close this client session and clean up backend.
 
         Returns:
-          dict: An empty dictionary indicating successful closure.
+            dict: An empty dictionary indicating successful closure.
         """
-
-        self._active = False
-        print(f"[Edge] Session closed for queue_info client {self._cid}")
-        return {}
-
-
-    # --------------------------------------------------------------------------
-    #
-    async def request_echo(self, q="hello"):
-        """
-        Echo service for testing.
-
-        Args:
-          q (str): The string to echo. Defaults to "hello".
-
-        Returns:
-          dict: A dictionary containing the client ID and echoed string.
-        """
-
-        if not self._active:
-            raise RuntimeError("session is closed")
-
-        print(f"[Edge] Echo request from queue_info client {self._cid}"
-              f" with q={q}")
-        return {"cid": self._cid, "echo": q}
+        self._backend = None
+        return await super().close()
 
 
     # --------------------------------------------------------------------------
@@ -77,15 +60,12 @@ class QueueInfoClient(object):
         Return queue/partition info.
 
         Args:
-          force (bool): Bypass cache if True.
+            force (bool): Bypass cache if True.
 
         Returns:
-          dict: Queue information from the backend.
+            dict: Queue information from the backend.
         """
-
-        if not self._active:
-            raise RuntimeError("session is closed")
-
+        self._check_active()
         return await asyncio.to_thread(self._backend.get_info, force)
 
 
@@ -96,19 +76,16 @@ class QueueInfoClient(object):
         List jobs in a queue.
 
         Args:
-          queue (str): Partition name.
-          user (str): Optional user name to filter on.
-          force (bool): Bypass cache if True.
+            queue (str): Partition name.
+            user (str): Optional user name to filter on.
+            force (bool): Bypass cache if True.
 
         Returns:
-          dict: Job listing from the backend.
+            dict: Job listing from the backend.
         """
-
-        if not self._active:
-            raise RuntimeError("session is closed")
-
+        self._check_active()
         return await asyncio.to_thread(self._backend.list_jobs,
-                                       queue, user, force)
+                                      queue, user, force)
 
 
     # --------------------------------------------------------------------------
@@ -118,30 +95,41 @@ class QueueInfoClient(object):
         List allocations/projects.
 
         Args:
-          user (str): Optional user name to filter on.
-          force (bool): Bypass cache if True.
+            user (str): Optional user name to filter on.
+            force (bool): Bypass cache if True.
 
         Returns:
-          dict: Allocation listing from the backend.
+            dict: Allocation listing from the backend.
         """
-
-        if not self._active:
-            raise RuntimeError("session is closed")
-
+        self._check_active()
         return await asyncio.to_thread(self._backend.list_allocations,
-                                       user, force)
+                                      user, force)
 
 
 # ------------------------------------------------------------------------------
 #
-class PluginQueueInfo(Plugin):
+class PluginQueueInfo(ClientManagedPlugin):
     """
     QueueInfo plugin for Radical Edge.
 
     This plugin exposes batch system queue information, job listings, and
-    allocation data via REST endpoints.  It manages per-client sessions
+    allocation data via REST endpoints. It manages per-client sessions
     and delegates to a QueueInfo backend for data collection.
+    
+    Standard routes inherited from ClientManagedPlugin:
+    - POST /queue_info/{uid}/register_client
+    - POST /queue_info/{uid}/unregister_client/{cid}
+    - GET  /queue_info/{uid}/echo/{cid}
+    
+    QueueInfo-specific routes:
+    - GET /queue_info/{uid}/get_info/{cid}
+    - GET /queue_info/{uid}/list_jobs/{cid}/{queue}
+    - GET /queue_info/{uid}/list_allocations/{cid}
     """
+
+    client_class = QueueInfoClient
+    version = '0.0.1'
+
 
     # --------------------------------------------------------------------------
     #
@@ -150,116 +138,48 @@ class PluginQueueInfo(Plugin):
         Initialize the QueueInfo plugin.
 
         Args:
-          app (FastAPI): The FastAPI application instance.
-          name (str): Plugin name (used in namespace). Defaults to
-              'queue_info'.  Override for multi-cluster setups.
-          slurm_conf (str): Optional path to slurm.conf for the target
-              cluster.
+            app (FastAPI): The FastAPI application instance.
+            name (str): Plugin name (used in namespace). Defaults to
+                'queue_info'. Override for multi-cluster setups.
+            slurm_conf (str): Optional path to slurm.conf for the target
+                cluster. This will be passed to each client.
         """
-
         super().__init__(app, name)
 
-        self._backend = QueueInfoSlurm(slurm_conf=slurm_conf)
-        self._clients : dict[str, QueueInfoClient] = {}
-        self._id_lock = asyncio.Lock()
-        self._next_id = 0
+        # Store slurm_conf to pass to each client
+        self._slurm_conf = slurm_conf
 
-        self.add_route_post('register_client',        self.register_client)
-        self.add_route_post('unregister_client/{cid}', self.unregister_client)
-        self.add_route_get('echo/{cid}',               self.echo)
-        self.add_route_get('get_info/{cid}',           self.get_info)
-        self.add_route_get('list_jobs/{cid}/{queue}',  self.list_jobs)
-        self.add_route_get('list_allocations/{cid}',   self.list_allocations)
+        # Register QueueInfo-specific routes
+        self.add_route_get('get_info/{cid}', self.get_info)
+        self.add_route_get('list_jobs/{cid}/{queue}', self.list_jobs)
+        self.add_route_get('list_allocations/{cid}', self.list_allocations)
 
-        # list all routes
-        log.debug(f"[Edge] QueueInfo plugin routes:")
-        for route in self._routes:
-            if isinstance(route, Route):
-                log.debug(f"[Edge]   {route.path} -> "
-                          f"{route.endpoint.__name__}")
+        # Log all routes for debugging
+        self._log_routes()
 
 
     # --------------------------------------------------------------------------
     #
-    async def _forward(self, cid, func, *args, **kwargs):
+    def _create_client(self, cid: str, **kwargs):
         """
-        Forward a request to the specified QueueInfoClient instance.
-
+        Override to pass slurm_conf to each client.
+        
         Args:
-          cid (str): The client ID.
-          func (callable): The QueueInfoClient method to call.
-          *args: Positional arguments for the method.
-          **kwargs: Keyword arguments for the method.
-
+            cid (str): The client ID.
+            **kwargs: Additional keyword arguments (unused).
+        
         Returns:
-          JSONResponse: A JSON response containing the result.
+            QueueInfoClient: A new client instance with its own backend.
         """
-
-        client = self._clients.get(cid)
-        log.debug(f"[Edge] Forward to client {cid} ({func.__name__})")
-
-        if not client:
-            raise HTTPException(status_code=404,
-                                detail=f"unknown client id: {cid}")
-
-        try:
-            ret = await func(client, *args, **kwargs)
-            return JSONResponse(ret)
-
-        except Exception as e:
-            log.exception(f"[Edge] Error in client {cid}: {e}")
-            raise HTTPException(status_code=500, detail=str(e)) from e
-
-
-    # --------------------------------------------------------------------------
-    #
-    async def register_client(self, request):
-        """Register a new QueueInfo client and return its client ID."""
-
-        async with self._id_lock:
-            cid = f"client.{self._next_id:04d}"
-            self._next_id += 1
-        self._clients[cid] = QueueInfoClient(cid, self._backend)
-
-        return JSONResponse({"cid": cid})
-
-
-    # --------------------------------------------------------------------------
-    #
-    async def unregister_client(self, request):
-        """Unregister a QueueInfo client and close its session."""
-
-        data = request.path_params
-        cid  = data['cid']
-        inst = self._clients.pop(cid, None)
-        if not inst:
-            raise HTTPException(status_code=404,
-                                detail=f"unknown client id: {cid}")
-        await inst.close()
-
-        return JSONResponse({"ok": True})
-
-
-    # --------------------------------------------------------------------------
-    #
-    async def echo(self, request):
-        """Echo service for testing / debugging."""
-
-        data = request.path_params
-        cid  = data['cid']
-        q    = request.query_params.get('q', 'hello')
-        print(f"[Edge] echo from queue_info client {cid} with q={q}")
-
-        return await self._forward(cid, QueueInfoClient.request_echo, q=q)
+        return self.client_class(cid, slurm_conf=self._slurm_conf)
 
 
     # --------------------------------------------------------------------------
     #
     async def get_info(self, request):
         """Return queue/partition information."""
-
-        data  = request.path_params
-        cid   = data['cid']
+        data = request.path_params
+        cid = data['cid']
         force = request.query_params.get('force', '').lower() == 'true'
 
         return await self._forward(cid, QueueInfoClient.get_info,
@@ -270,11 +190,10 @@ class PluginQueueInfo(Plugin):
     #
     async def list_jobs(self, request):
         """List jobs in a specified queue/partition."""
-
-        data  = request.path_params
-        cid   = data['cid']
+        data = request.path_params
+        cid = data['cid']
         queue = data['queue']
-        user  = request.query_params.get('user')
+        user = request.query_params.get('user')
         force = request.query_params.get('force', '').lower() == 'true'
 
         return await self._forward(cid, QueueInfoClient.list_jobs,
@@ -285,10 +204,9 @@ class PluginQueueInfo(Plugin):
     #
     async def list_allocations(self, request):
         """List allocations/projects."""
-
-        data  = request.path_params
-        cid   = data['cid']
-        user  = request.query_params.get('user')
+        data = request.path_params
+        cid = data['cid']
+        user = request.query_params.get('user')
         force = request.query_params.get('force', '').lower() == 'true'
 
         return await self._forward(cid, QueueInfoClient.list_allocations,
@@ -296,3 +214,4 @@ class PluginQueueInfo(Plugin):
 
 
 # ------------------------------------------------------------------------------
+
