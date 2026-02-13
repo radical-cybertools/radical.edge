@@ -26,6 +26,7 @@ Contents:
    :maxdepth: 3
 
    module_radical.edge.rst
+   service_embedding.rst
    plugin_development.rst
    plugin_api.rst
 

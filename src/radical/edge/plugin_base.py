@@ -65,6 +65,20 @@ class Plugin(object):
 
     # --------------------------------------------------------------------------
     #
+    @property
+    def name(self) -> str:
+        """
+        Get the name of the plugin.
+
+        Returns:
+          str: The name of the plugin.
+        """
+        return self._name
+
+
+    # --------------------------------------------------------------------------
+
+    #
     def add_route_post(self, path : str, method : callable):
         """
         Add a POST route to the plugin's namespace.

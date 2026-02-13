@@ -16,7 +16,7 @@ Core Components
 The module consists of several key components:
 
 1. **Plugin System**: Base classes for creating plugins with client management
-2. **REST Service**: FastAPI-based REST API server
+2. **Edge Service**: Embedded service runner for hosting plugins
 3. **Plugins**: Pre-built plugins for various services (Lucid, XGFabric, QueueInfo)
 4. **Queue Info**: Backend for querying batch system information
 
@@ -67,10 +67,10 @@ Main Module
    :undoc-members:
    :show-inheritance:
 
-REST Service
+Edge Service
 ------------
 
-.. automodule:: radical.edge.rest_service
+.. automodule:: radical.edge.service
    :members:
    :undoc-members:
    :show-inheritance:
