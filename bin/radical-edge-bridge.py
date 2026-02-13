@@ -5,7 +5,7 @@ import base64
 import json
 import uuid
 
-from typing  import Dict, Optional
+from typing  import Dict, Optional, Any
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi import Request, Response, HTTPException
 
@@ -32,28 +32,30 @@ app.add_middleware(
 )
 
 # Single-edge demo. Extend to a dict if you need multiple services/tenants.
-edge_ws: Optional[WebSocket]       = None
+# Map edge_name -> WebSocket
+edge_connections: Dict[str, WebSocket] = {}
 pending: Dict[str, asyncio.Future] = dict()
 pending_lock                       = asyncio.Lock()
-endpoints: Dict[str, dict]         = dict()
+
+# New structure: {'bridge': {...}, 'edges': {edge_name: {'plugins': {...}}}}
+endpoints: Dict[str, Any] = {
+    'bridge': {},  # URL will be set at startup
+    'edges': {}
+}
 
 HEARTBEAT_INTERVAL = 20
 REQUEST_TIMEOUT    = 45
 
-# register this endpoint
-bridge_id = str(uuid.uuid4())
-endpoints[bridge_id] = {"type": "radical.edge.brige"}
-
 
 # ------------------------------------------------------------------------------
 #
-async def _send_to_edge(message: dict):
+async def _send_to_edge(edge_name: str, message: dict):
 
-    if not edge_ws or edge_ws.client_state != WebSocketState.CONNECTED:
-        raise HTTPException(status_code=503, detail="No edge connected")
+    ws = edge_connections.get(edge_name)
+    if not ws or ws.client_state != WebSocketState.CONNECTED:
+        raise HTTPException(status_code=503, detail=f"Edge '{edge_name}' not connected")
 
-    await edge_ws.send_text(json.dumps(message))
-
+    await ws.send_text(json.dumps(message))
 
 
 # ------------------------------------------------------------------------------
@@ -61,10 +63,8 @@ async def _send_to_edge(message: dict):
 @app.websocket("/register")
 async def register(ws: WebSocket):
 
-    global edge_ws
     await ws.accept()
-    edge_ws = ws
-    edge_uid = None
+    edge_name = None
     print("[Bridge] Edge connected")
 
     # Heartbeat
@@ -93,17 +93,47 @@ async def register(ws: WebSocket):
                 pass
 
             elif data.get("type") == "register":
-                edge_uid = data['edge_uid']
-                ep_uid = data.get('ep_uid')
-                if edge_uid == bridge_id:
-                    print(f"[Bridge] Ignoring self-registration: {edge_uid}")
+                frame_edge_name = data.get('edge_name')
+                plugin_name = data.get('plugin_name')
+                endpoint_data = data.get('endpoint', {})
+
+                if not frame_edge_name:
+                    print("[Bridge] Registration missing edge_name")
                     continue
-                if edge_uid not in endpoints:
-                    print(f"[Bridge] Registering edge: {edge_uid}")
-                    endpoints[edge_uid] = {}
-                if ep_uid:
-                    print(f"[Bridge] Registering ep: {ep_uid} : {edge_uid}")
-                    endpoints[edge_uid][ep_uid] = data['endpoint']
+
+                # On first registration message (edge base), set the session edge_name
+                # and store connection
+                if not edge_name:
+                    edge_name = frame_edge_name
+                    
+                    # specific check: if connection exists for this name, reject
+                    if edge_name in edge_connections:
+                         print(f"[Bridge] Edge name '{edge_name}' already connected. Rejecting duplicate.")
+                         await ws.send_text(json.dumps({
+                            "type": "error",
+                            "message": f"Edge name '{edge_name}' already in use"
+                         }))
+                         return # Close connection
+                    
+                    edge_connections[edge_name] = ws
+                    print(f"[Bridge] Edge '{edge_name}' registered connection")
+
+                # Verify consistent naming in session
+                if frame_edge_name != edge_name:
+                     print(f"[Bridge] Edge name mismatch in session: {frame_edge_name} != {edge_name}")
+                     continue
+
+                # Initialize edge in endpoints registry if new
+                if edge_name not in endpoints['edges']:
+                    endpoints['edges'][edge_name] = {'plugins': {}}
+
+                # Register plugin
+                if plugin_name:
+                    print(f"[Bridge] Registering plugin: {plugin_name} on {edge_name}")
+                    endpoints['edges'][edge_name]['plugins'][plugin_name] = endpoint_data
+                else:
+                    # Edge base endpoint (radical.edge)
+                    endpoints['edges'][edge_name]['endpoint'] = endpoint_data
 
             elif data.get("type") == "response":
                 req_id = data["req_id"]
@@ -127,15 +157,21 @@ async def register(ws: WebSocket):
 
     finally:
 
-        print("[Bridge] Edge disconnected")
+        print(f"[Bridge] Edge disconnected: {edge_name}")
         ping_task.cancel()
 
-        if edge_uid and edge_uid in endpoints:
-            print(f"[Bridge] Unregistering edge: {edge_uid}")
-            del endpoints[edge_uid]
-
-        if edge_ws is ws:
-            edge_ws = None
+        if edge_name:
+            # Only unregister if this WS was the active one for the name
+            # (Prevent rejected duplicates from killing the valid session)
+            if edge_connections.get(edge_name) == ws:
+                if edge_name in endpoints['edges']:
+                    print(f"[Bridge] Unregistering edge: {edge_name}")
+                    del endpoints['edges'][edge_name]
+                
+                if edge_name in edge_connections:
+                    del edge_connections[edge_name]
+            else:
+                 print(f"[Bridge] Disconnected duplicate/inactive session for: {edge_name}")
 
         # Fail any in-flight requests
         async with pending_lock:
@@ -175,6 +211,20 @@ async def proxy(full_path: str, request: Request):
 
     # print('[Bridge] Proxy request:', request.method, full_path)
 
+    # Parse edge_name from path: /edge_name/plugin/...
+    parts = full_path.strip('/').split('/', 1)
+    if not parts:
+        raise HTTPException(status_code=404, detail="Invalid path")
+    
+    edge_name = parts[0]
+    
+    if edge_name not in edge_connections:
+         # Try finding if it's a plugin on a default edge? No, enforcing /edge_name structure
+         raise HTTPException(status_code=404, detail=f"Edge '{edge_name}' not found")
+         
+    # Path to forward: /plugin/...
+    forward_path = '/' + parts[1] if len(parts) > 1 else '/'
+    
     # Prepare body (binary-safe)
     body_bytes = await request.body()
     body       = None
@@ -190,16 +240,16 @@ async def proxy(full_path: str, request: Request):
             is_binary = True
 
     req_id = str(uuid.uuid4())
-    path   = '/' + full_path.lstrip('/')
-
+    
+    # Query params handling
     if request.url.query:
-        path += f"?{request.url.query}"
+        forward_path += f"?{request.url.query}"
 
     message = {
         "type"     : "request",
         "req_id"   : req_id,
         "method"   : request.method,
-        "path"     : path,
+        "path"     : forward_path,
         "headers"  : _strip_headers(request),
         "is_binary": is_binary,
         "body"     : body,
@@ -211,7 +261,7 @@ async def proxy(full_path: str, request: Request):
 
     try:
         # print('[Bridge] Sending to edge:', message)
-        await _send_to_edge(message)
+        await _send_to_edge(edge_name, message)
 
     except HTTPException:
         async with pending_lock:
@@ -264,18 +314,28 @@ if __name__ == "__main__":
 
     import uvicorn
 
-    # for route in app.routes:
-    #     if hasattr(route, 'methods'):
-    #         print(f"{route.path} {route.methods}")
-    #     else:
-    #         print(f"{route.path} [no methods - {type(route).__name__}]")
+    # Uvicorn config
+    host = "0.0.0.0"
+    port = 8000
+    ssl_certfile = "cert.pem"
+    ssl_keyfile = "key.pem"
+
+    # Construct bridge URL based on config
+    protocol = "wss" if ssl_certfile else "ws"
+    # Use localhost for external advertising if binding to 0.0.0.0
+    advertise_host = "localhost" if host == "0.0.0.0" else host
+    bridge_url = f"{protocol}://{advertise_host}:{port}/register"
+
+    endpoints['bridge']['url'] = bridge_url
+
+    print(f"[Bridge] Advertising URL: {bridge_url}")
 
     uvicorn.run(app,
-                host="0.0.0.0",
-                port=8000,
+                host=host,
+                port=port,
                 reload=False,
-                ssl_certfile="cert.pem",
-                ssl_keyfile="key.pem",
+                ssl_certfile=ssl_certfile,
+                ssl_keyfile=ssl_keyfile,
                 log_level="info")
 
 

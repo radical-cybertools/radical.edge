@@ -13,14 +13,17 @@ import radical.edge.logging_config  # noqa: F401
 log = logging.getLogger("radical.edge")
 
 # ------------------------------------------------------------------------------
+
+
 #
 async def main():
     """
     Main entry point for the standalone Radical Edge Service.
     """
-
     bridge_url = os.environ.get("BRIDGE_URL")
-    service = EdgeService(bridge_url=bridge_url)
+    edge_name = sys.argv[1] if len(sys.argv) > 1 else None
+
+    service = EdgeService(bridge_url=bridge_url, name=edge_name)
     loop = asyncio.get_running_loop()
     stop_event = asyncio.Event()
 

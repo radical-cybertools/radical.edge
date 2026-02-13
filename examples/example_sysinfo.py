@@ -10,6 +10,7 @@ from rich.panel import Panel
 # BRIDGE_HTTP = "https://95.217.193.116:8000"
 BRIDGE_HTTP = "https://localhost:8000"
 
+
 def bytes2human(n):
     if n is None: return "N/A"
     n = int(n)
@@ -23,6 +24,7 @@ def bytes2human(n):
             return '%.1f%s' % (value, s)
     return "%sB" % n
 
+
 def main():
     console = Console()
 
@@ -31,7 +33,7 @@ def main():
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
     with httpx.Client(timeout=60.0, verify=False) as http:
-        
+
         with console.status("[bold green]Connecting to Bridge..."):
             try:
                 r = http.post(f"{BRIDGE_HTTP}/edge/list")
@@ -41,31 +43,28 @@ def main():
                 console.print(f"[bold red]Failed to connect to bridge at {BRIDGE_HTTP}: {e}[/]")
                 sys.exit(1)
 
-        # Structure seems to be: {'data': {edge_uid: {plugin_uid: {type: ..., namespace: ...}}}}
-        # Or possibly just {edge_uid: ...} depending on API version.
-        # User output showed {'data': ...} wrapper.
-        
-        edges = data.get('data', data) # Handle wrapper if present
-        
+        # Structure: {'data': {'bridge': {...}, 'edges': {edge_name: {'plugins': {plugin_name: {namespace: ...}}}}}}
+        # Handle 'data' wrapper
+        registry = data.get('data', data)
+        edges = registry.get('edges', {})
+
+        import pprint
+        pprint.pprint(data)
+
         sysinfo_endpoints = []
 
-        # Traverse: Edge -> Plugin
-        for edge_uid, plugins in edges.items():
-            if not isinstance(plugins, dict):
-                continue
-                
-            for p_uid, p_info in plugins.items():
-                if not isinstance(p_info, dict):
-                    continue
-                    
+        # Traverse: Edge -> Plugins
+        for edge_name, edge_data in edges.items():
+            plugins = edge_data.get('plugins', {})
+
+            for plugin_name, plugin_info in plugins.items():
                 # Check for sysinfo
-                # p_info usually has 'type' and 'namespace'
-                if p_info.get('type') == 'sysinfo' or p_info.get('type') == 'radical.sysinfo':
-                    ns = p_info.get('namespace')
+                if plugin_name == 'sysinfo':
+                    ns = plugin_info.get('namespace')
                     if ns:
                         sysinfo_endpoints.append({
-                            'edge': edge_uid,
-                            'plugin': p_uid,
+                            'edge': edge_name,
+                            'plugin': plugin_name,
                             'url': f"{BRIDGE_HTTP}{ns}/metrics"
                         })
 
@@ -81,19 +80,20 @@ def main():
                 r = http.get(ep['url'])
                 r.raise_for_status()
                 metrics = r.json()
-                
+
                 # Render using Rich
                 render_metrics(console, ep['edge'], metrics)
-                
+
             except Exception as e:
                 console.print(f"[red]Failed to fetch metrics from {ep['url']}: {e}[/]")
 
 
+
 def render_metrics(console: Console, edge_id: str, m: dict):
-    
+
     # Header
     sys = m.get('system', {})
-    
+
     title = f"[bold cyan]Edge: {edge_id} | Host: {sys.get('hostname','?')} | OS: {sys.get('kernel','?')}[/]"
     console.print(Panel(title, expand=False))
 
@@ -104,7 +104,7 @@ def render_metrics(console: Console, edge_id: str, m: dict):
     t_cpu.add_column("Value", justify="right")
     t_cpu.add_row("Model", str(cpu.get('model')))
     t_cpu.add_row("Cores", f"{cpu.get('cores_physical')}p / {cpu.get('cores_logical')}l")
-    
+
     # Convert load avg to percentage (load / cores * 100)
     load_avg = cpu.get('load_avg', [0, 0, 0])
     cores = cpu.get('cores_logical', 1) or 1
@@ -113,7 +113,7 @@ def render_metrics(console: Console, edge_id: str, m: dict):
         t_cpu.add_row("Load", f"{load_pct[0]}% / {load_pct[1]}% / {load_pct[2]}%")
     else:
         t_cpu.add_row("Load", "N/A")
-    
+
     t_cpu.add_row("Usage", f"{cpu.get('percent')}%")
     console.print(t_cpu)
     console.print("")
@@ -128,16 +128,16 @@ def render_metrics(console: Console, edge_id: str, m: dict):
         t_gpu.add_column("Mem Total", justify="right")
         t_gpu.add_column("Mem Used", justify="right")
         t_gpu.add_column("Mem Free", justify="right")
-        
+
         for g in m['gpus']:
             # GPU memory is in MB, convert to bytes for bytes2human
             mem_total_mb = g.get('mem_total', 0)
             mem_used_mb = g.get('mem_used', 0)
             mem_free_mb = g.get('mem_free', 0)
-            
+
             t_gpu.add_row(
-                str(g.get('id')), g.get('name'), 
-                f"{g.get('util_gpu', 'N/A')}%", 
+                str(g.get('id')), g.get('name'),
+                f"{g.get('util_gpu', 'N/A')}%",
                 f"{g.get('util_mem', 'N/A')}%",
                 bytes2human(mem_total_mb * 1024 * 1024),
                 bytes2human(mem_used_mb * 1024 * 1024),
@@ -154,7 +154,7 @@ def render_metrics(console: Console, edge_id: str, m: dict):
     t_disk.add_column("Total", justify="right")
     t_disk.add_column("Used", justify="right")
     t_disk.add_column("Use%", justify="right")
-    
+
     for d in m.get('disks', []):
         t_disk.add_row(
             d.get('mount'), d.get('device'), d.get('type'),
@@ -173,6 +173,7 @@ def render_metrics(console: Console, edge_id: str, m: dict):
     t_mem.add_row("Avail", bytes2human(mem.get('available')))
     console.print(t_mem)
     console.print("")
+
 
 if __name__ == "__main__":
     main()

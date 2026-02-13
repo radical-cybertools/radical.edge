@@ -3,7 +3,6 @@ from fastapi import FastAPI
 
 from starlette.routing   import Route, BaseRoute
 
-import uuid
 import logging
 
 log = logging.getLogger("radical.edge")
@@ -15,7 +14,7 @@ class Plugin(object):
     """
     Base class for Edge plugins.
 
-    Each plugin gets its own namespace, identified by a unique UUID. Routes can
+    Each plugin gets its own namespace, identified by its name. Routes can
     be added to the plugin using the `add_route_post` and `add_route_get`
     methods.
     """
@@ -32,21 +31,8 @@ class Plugin(object):
         """
 
         self._name     : str = name
-        self._uid      : str = str(uuid.uuid4())
-        self._namespace: str = f"/{self._name}/{self._uid}"
+        self._namespace: str = f"/{self._name}"
         self._routes   : list[BaseRoute] = app.router.routes
-
-
-    # --------------------------------------------------------------------------
-    #
-    @property
-    def uid(self) -> str:
-        """
-        Get the unique identifier (UUID) of the plugin.
-        Returns:
-          str: The UUID of the plugin.
-        """
-        return self._uid
 
 
     # --------------------------------------------------------------------------
