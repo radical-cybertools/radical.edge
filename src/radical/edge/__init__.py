@@ -3,6 +3,7 @@ import os
 from .plugin_lucid      import PluginLucid
 from .plugin_xgfabric   import PluginXGFabric
 from .plugin_queue_info import PluginQueueInfo
+from .plugin_sysinfo    import PluginSysInfo
 
 from .plugin_client_base    import PluginClient
 from .plugin_client_managed import ClientManagedPlugin

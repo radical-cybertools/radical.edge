@@ -60,6 +60,15 @@ PluginQueueInfo
    :show-inheritance:
 
 
+PluginSysInfo
+-------------
+
+.. automodule:: radical.edge.plugin_sysinfo
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+
 Queue Info Backend
 ==================
 
