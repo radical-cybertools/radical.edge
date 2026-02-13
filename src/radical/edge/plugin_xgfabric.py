@@ -19,14 +19,14 @@ from .plugin_client_managed import ClientManagedPlugin
 class XGFabricClient(PluginClient):
     """
     XGFabric client.
-    
+
     Inherits all common client functionality from PluginClient:
     - Client ID management
     - Session state tracking
     - Echo service
     - Session validation
     """
-    
+
     # All functionality inherited from PluginClient
     # No additional methods needed for this simple client
 
@@ -39,7 +39,7 @@ class PluginXGFabric(ClientManagedPlugin):
 
     This plugin manages multiple XGFabric clients. It provides routes for
     client registration and an echo service for testing / debugging.
-    
+
     All client management functionality is inherited from ClientManagedPlugin.
     """
 
@@ -52,7 +52,7 @@ class PluginXGFabric(ClientManagedPlugin):
     def __init__(self, app: FastAPI):
         """
         Initialize the XGFabric plugin with the FastAPI app.
-        
+
         Routes are automatically registered by the base class:
         - POST /xgfabric/{uid}/register_client
         - POST /xgfabric/{uid}/unregister_client/{cid}
@@ -62,8 +62,7 @@ class PluginXGFabric(ClientManagedPlugin):
             app (FastAPI): The FastAPI application instance.
         """
         super().__init__(app, 'xgfabric')
-        
-        # Log all routes for debugging
+
         self._log_routes()
 
 

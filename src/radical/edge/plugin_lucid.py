@@ -23,7 +23,7 @@ from .plugin_client_managed import ClientManagedPlugin
 class LucidClient(PluginClient):
     """
     Lucid client with Radical Pilot session management.
-    
+
     Each client maintains its own RP Session, Pilot Manager, and Task Manager.
     """
 
@@ -39,7 +39,7 @@ class LucidClient(PluginClient):
             cid (str): The unique client ID.
         """
         super().__init__(cid)
-        
+
         self._session: rp.Session = rp.Session()
         self._pmgr: rp.PilotManager = rp.PilotManager(session=self._session)
         self._tmgr: rp.TaskManager = rp.TaskManager(session=self._session)
@@ -58,7 +58,7 @@ class LucidClient(PluginClient):
         self._session = None
         self._pmgr = None
         self._tmgr = None
-        
+
         return await super().close()
 
 
@@ -75,7 +75,7 @@ class LucidClient(PluginClient):
             dict: A dictionary containing the pilot ID ('pid').
         """
         self._check_active()
-        
+
         pd = rp.PilotDescription(description)
         pilot = await asyncio.to_thread(self._pmgr.submit_pilots, pd)
         await asyncio.to_thread(self._tmgr.add_pilots, pilot)
@@ -97,7 +97,7 @@ class LucidClient(PluginClient):
             dict: A dictionary containing the task ID ('tid').
         """
         self._check_active()
-        
+
         td = rp.TaskDescription(description)
         task = await asyncio.to_thread(self._tmgr.submit_tasks, td)
         print(f"[Edge] Task submitted: {task.uid}")
@@ -118,7 +118,7 @@ class LucidClient(PluginClient):
             dict: A dictionary containing the task ID ('tid') and task details ('task').
         """
         self._check_active()
-        
+
         await asyncio.to_thread(self._tmgr.wait_tasks, tid)
         task = await asyncio.to_thread(self._tmgr.get_tasks, tid)
         print(f"[Edge] Task {tid} completed with state {task.state}")
@@ -136,12 +136,12 @@ class PluginLucid(ClientManagedPlugin):
     session, Pilot Manager, and Task Manager. It provides routes for client
     registration, pilot submission, task submission, task waiting, and an echo
     service for testing / debugging.
-    
+
     Standard routes inherited from ClientManagedPlugin:
     - POST /lucid/{uid}/register_client
     - POST /lucid/{uid}/unregister_client/{cid}
     - GET  /lucid/{uid}/echo/{cid}
-    
+
     Lucid-specific routes:
     - POST /lucid/{uid}/pilot_submit/{cid}
     - POST /lucid/{uid}/task_submit/{cid}
@@ -169,7 +169,6 @@ class PluginLucid(ClientManagedPlugin):
         self.add_route_post('task_submit/{cid}', self.task_submit)
         self.add_route_get('task_wait/{cid}/{tid}', self.task_wait)
 
-        # Log all routes for debugging
         self._log_routes()
 
 

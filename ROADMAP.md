@@ -1,7 +1,7 @@
 
 # Radical Edge - 6 Month Development Roadmap
 
-**Timeline:** February 2026 - July 2026  
+**Timeline:** February 2026 - July 2026
 **Resources:** 1 developer @ ~96 hours/month
 
 ---

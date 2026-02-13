@@ -5,7 +5,7 @@ Module Documentation
 Overview
 ========
 
-The ``radical.edge`` module provides a plugin-based REST API framework for 
+The ``radical.edge`` module provides a plugin-based REST API framework for
 managing distributed computing resources and workflows. It is built on FastAPI
 and provides a standardized way to create plugins that manage multiple client
 sessions.

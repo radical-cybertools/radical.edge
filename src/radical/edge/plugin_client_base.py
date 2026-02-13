@@ -10,7 +10,7 @@ __license__   = 'MIT'
 class PluginClient:
     """
     Base class for plugin clients.
-    
+
     Provides common functionality for all plugin clients including:
     - Client ID management
     - Session state tracking
@@ -23,7 +23,7 @@ class PluginClient:
     def __init__(self, cid: str):
         """
         Initialize a plugin client.
-        
+
         Args:
             cid (str): The unique client ID.
         """
@@ -36,7 +36,7 @@ class PluginClient:
     async def close(self) -> dict:
         """
         Close this client session.
-        
+
         Returns:
             dict: An empty dictionary indicating successful closure.
         """
@@ -49,14 +49,14 @@ class PluginClient:
     async def request_echo(self, q: str = "hello") -> dict:
         """
         Echo service for testing.
-        
+
         Args:
             q (str): The string to echo. Defaults to "hello".
-        
+
         Returns:
-            dict: A dictionary containing the client ID ('cid') and the 
+            dict: A dictionary containing the client ID ('cid') and the
                   echoed string ('echo').
-        
+
         Raises:
             RuntimeError: If the session is closed.
         """
@@ -69,7 +69,7 @@ class PluginClient:
     def _check_active(self):
         """
         Check if the session is active.
-        
+
         Raises:
             RuntimeError: If the session is closed.
         """

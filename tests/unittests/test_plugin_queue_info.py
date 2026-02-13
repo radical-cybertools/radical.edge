@@ -24,9 +24,9 @@ def test_queue_info_client_initialization():
     with patch('radical.edge.plugin_queue_info.QueueInfoSlurm') as MockSlurm:
         mock_backend = Mock()
         MockSlurm.return_value = mock_backend
-        
+
         client = QueueInfoClient("test_client_001")
-        
+
         assert client._cid == "test_client_001"
         assert client._active is True
         assert client._backend == mock_backend
@@ -42,11 +42,11 @@ async def test_queue_info_client_close():
     with patch('radical.edge.plugin_queue_info.QueueInfoSlurm') as MockSlurm:
         mock_backend = Mock()
         MockSlurm.return_value = mock_backend
-        
+
         client = QueueInfoClient("test_client_001")
-        
+
         result = await client.close()
-        
+
         assert result == {}
         assert client._active is False
         assert client._backend is None
@@ -61,7 +61,7 @@ async def test_queue_info_client_echo():
     with patch('radical.edge.plugin_queue_info.QueueInfoSlurm'):
         client = QueueInfoClient("test_client_001")
         result = await client.request_echo("test message")
-        
+
         assert result["cid"] == "test_client_001"
         assert result["echo"] == "test message"
 
@@ -75,7 +75,7 @@ async def test_queue_info_client_echo_default():
     with patch('radical.edge.plugin_queue_info.QueueInfoSlurm'):
         client = QueueInfoClient("test_client_001")
         result = await client.request_echo()
-        
+
         assert result["cid"] == "test_client_001"
         assert result["echo"] == "hello"
 
@@ -89,7 +89,7 @@ async def test_queue_info_client_echo_after_close():
     with patch('radical.edge.plugin_queue_info.QueueInfoSlurm'):
         client = QueueInfoClient("test_client_001")
         await client.close()
-        
+
         with pytest.raises(RuntimeError, match="session is closed"):
             await client.request_echo()
 
@@ -104,11 +104,11 @@ async def test_queue_info_client_get_info():
         mock_backend = Mock()
         mock_backend.get_info = Mock(return_value={"queues": {"test": {}}})
         MockSlurm.return_value = mock_backend
-        
+
         client = QueueInfoClient("test_client_001")
-        
+
         result = await client.get_info()
-        
+
         assert "queues" in result
         mock_backend.get_info.assert_called_once_with(False)
 
@@ -123,11 +123,11 @@ async def test_queue_info_client_get_info_force():
         mock_backend = Mock()
         mock_backend.get_info = Mock(return_value={"queues": {}})
         MockSlurm.return_value = mock_backend
-        
+
         client = QueueInfoClient("test_client_001")
-        
+
         result = await client.get_info(force=True)
-        
+
         mock_backend.get_info.assert_called_once_with(True)
 
 
@@ -140,7 +140,7 @@ async def test_queue_info_client_get_info_closed_session():
     with patch('radical.edge.plugin_queue_info.QueueInfoSlurm'):
         client = QueueInfoClient("test_client_001")
         await client.close()
-        
+
         with pytest.raises(RuntimeError, match="session is closed"):
             await client.get_info()
 
@@ -155,11 +155,11 @@ async def test_queue_info_client_list_jobs():
         mock_backend = Mock()
         mock_backend.list_jobs = Mock(return_value={"jobs": []})
         MockSlurm.return_value = mock_backend
-        
+
         client = QueueInfoClient("test_client_001")
-        
+
         result = await client.list_jobs("test_queue")
-        
+
         assert "jobs" in result
         mock_backend.list_jobs.assert_called_once_with("test_queue", None, False)
 
@@ -174,11 +174,11 @@ async def test_queue_info_client_list_jobs_with_user():
         mock_backend = Mock()
         mock_backend.list_jobs = Mock(return_value={"jobs": []})
         MockSlurm.return_value = mock_backend
-        
+
         client = QueueInfoClient("test_client_001")
-        
+
         result = await client.list_jobs("test_queue", user="testuser", force=True)
-        
+
         mock_backend.list_jobs.assert_called_once_with("test_queue", "testuser", True)
 
 
@@ -192,11 +192,11 @@ async def test_queue_info_client_list_allocations():
         mock_backend = Mock()
         mock_backend.list_allocations = Mock(return_value={"allocations": []})
         MockSlurm.return_value = mock_backend
-        
+
         client = QueueInfoClient("test_client_001")
-        
+
         result = await client.list_allocations()
-        
+
         assert "allocations" in result
         mock_backend.list_allocations.assert_called_once_with(None, False)
 
@@ -211,11 +211,11 @@ async def test_queue_info_client_list_allocations_with_user():
         mock_backend = Mock()
         mock_backend.list_allocations = Mock(return_value={"allocations": []})
         MockSlurm.return_value = mock_backend
-        
+
         client = QueueInfoClient("test_client_001")
-        
+
         result = await client.list_allocations(user="testuser", force=True)
-        
+
         mock_backend.list_allocations.assert_called_once_with("testuser", True)
 
 
@@ -227,15 +227,15 @@ def test_plugin_queue_info_initialization(mock_slurm):
     '''
     app = FastAPI()
     plugin = PluginQueueInfo(app)
-    
+
     assert plugin._name == "queue_info"
     assert plugin._clients == {}
     assert plugin._next_id == 0
     assert plugin._id_lock is not None
-    
+
     # Backend is created PER CLIENT, not in plugin initialization
     mock_slurm.assert_not_called()
-    
+
     # Check that routes were added
     route_paths = [route.path for route in app.router.routes]
     assert any("register_client" in path for path in route_paths)
@@ -254,7 +254,7 @@ def test_plugin_queue_info_custom_name_and_conf(mock_slurm):
     '''
     app = FastAPI()
     plugin = PluginQueueInfo(app, name="custom_queue", slurm_conf="/custom/slurm.conf")
-    
+
     assert plugin._name == "custom_queue"
     assert plugin._slurm_conf == "/custom/slurm.conf"
     mock_slurm.assert_not_called()
@@ -269,15 +269,15 @@ async def test_plugin_queue_info_register_client(mock_slurm):
     '''
     app = FastAPI()
     plugin = PluginQueueInfo(app)
-    
+
     request = Mock(spec=Request)
-    
+
     response = await plugin.register_client(request)
-    
+
     assert isinstance(response, JSONResponse)
     assert "client.0000" in plugin._clients
     assert plugin._next_id == 1
-    
+
     # Verify client created with backend
     mock_slurm.assert_called_once()
 
@@ -291,15 +291,15 @@ async def test_plugin_queue_info_unregister_client(mock_slurm):
     '''
     app = FastAPI()
     plugin = PluginQueueInfo(app)
-    
+
     # Register a client
     request = Mock(spec=Request)
     await plugin.register_client(request)
-    
+
     # Unregister it
     request.path_params = {"cid": "client.0000"}
     response = await plugin.unregister_client(request)
-    
+
     assert isinstance(response, JSONResponse)
     assert "client.0000" not in plugin._clients
 
@@ -313,17 +313,17 @@ async def test_plugin_queue_info_echo(mock_slurm):
     '''
     app = FastAPI()
     plugin = PluginQueueInfo(app)
-    
+
     # Register a client
     request = Mock(spec=Request)
     await plugin.register_client(request)
-    
+
     # Echo request
     request.path_params = {"cid": "client.0000"}
     request.query_params = {"q": "test"}
-    
+
     response = await plugin.echo(request)
-    
+
     assert isinstance(response, JSONResponse)
 
 
@@ -337,20 +337,20 @@ async def test_plugin_queue_info_get_info(mock_slurm):
     mock_backend = Mock()
     mock_backend.get_info = Mock(return_value={"queues": {}})
     mock_slurm.return_value = mock_backend
-    
+
     app = FastAPI()
     plugin = PluginQueueInfo(app)
-    
+
     # Register a client
     request = Mock(spec=Request)
     await plugin.register_client(request)
-    
+
     # Get info
     request.path_params = {"cid": "client.0000"}
     request.query_params = {}
-    
+
     response = await plugin.get_info(request)
-    
+
     assert isinstance(response, JSONResponse)
 
 
@@ -364,20 +364,20 @@ async def test_plugin_queue_info_list_jobs(mock_slurm):
     mock_backend = Mock()
     mock_backend.list_jobs = Mock(return_value={"jobs": []})
     mock_slurm.return_value = mock_backend
-    
+
     app = FastAPI()
     plugin = PluginQueueInfo(app)
-    
+
     # Register a client
     request = Mock(spec=Request)
     await plugin.register_client(request)
-    
+
     # List jobs
     request.path_params = {"cid": "client.0000", "queue": "test_queue"}
     request.query_params = {}
-    
+
     response = await plugin.list_jobs(request)
-    
+
     assert isinstance(response, JSONResponse)
 
 
@@ -391,20 +391,20 @@ async def test_plugin_queue_info_list_allocations(mock_slurm):
     mock_backend = Mock()
     mock_backend.list_allocations = Mock(return_value={"allocations": []})
     mock_slurm.return_value = mock_backend
-    
+
     app = FastAPI()
     plugin = PluginQueueInfo(app)
-    
+
     # Register a client
     request = Mock(spec=Request)
     await plugin.register_client(request)
-    
+
     # List allocations
     request.path_params = {"cid": "client.0000"}
     request.query_params = {}
-    
+
     response = await plugin.list_allocations(request)
-    
+
     assert isinstance(response, JSONResponse)
 
 
@@ -417,14 +417,14 @@ async def test_plugin_queue_info_unknown_client_error(mock_slurm):
     '''
     app = FastAPI()
     plugin = PluginQueueInfo(app)
-    
+
     request = Mock(spec=Request)
     request.path_params = {"cid": "unknown_client"}
     request.query_params = {}
-    
+
     with pytest.raises(HTTPException) as exc_info:
         await plugin.echo(request)
-    
+
     assert exc_info.value.status_code == 404
 
 

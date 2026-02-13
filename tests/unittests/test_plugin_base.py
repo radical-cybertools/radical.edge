@@ -21,7 +21,7 @@ def test_plugin_initialization():
     '''
     app = FastAPI()
     plugin = Plugin(app, "test_plugin")
-    
+
     assert plugin._name == "test_plugin"
     assert isinstance(plugin._uid, str)
     # Verify it's a valid UUID
@@ -37,7 +37,7 @@ def test_plugin_uid_property():
     '''
     app = FastAPI()
     plugin = Plugin(app, "test_plugin")
-    
+
     assert plugin.uid == plugin._uid
     assert isinstance(plugin.uid, str)
     # Verify it's a valid UUID
@@ -51,7 +51,7 @@ def test_plugin_namespace_property():
     '''
     app = FastAPI()
     plugin = Plugin(app, "test_plugin")
-    
+
     expected_namespace = f"/test_plugin/{plugin._uid}"
     assert plugin.namespace == expected_namespace
 
@@ -63,16 +63,16 @@ def test_plugin_add_route_post():
     '''
     app = FastAPI()
     plugin = Plugin(app, "test_plugin")
-    
+
     async def test_handler():
         return {"status": "ok"}
-    
+
     initial_route_count = len(app.router.routes)
     plugin.add_route_post("/test", test_handler)
-    
+
     # Verify a new route was added
     assert len(app.router.routes) == initial_route_count + 1
-    
+
     # Get the last added route
     new_route = app.router.routes[-1]
     assert isinstance(new_route, Route)
@@ -87,16 +87,16 @@ def test_plugin_add_route_get():
     '''
     app = FastAPI()
     plugin = Plugin(app, "test_plugin")
-    
+
     async def test_handler():
         return {"status": "ok"}
-    
+
     initial_route_count = len(app.router.routes)
     plugin.add_route_get("/test", test_handler)
-    
+
     # Verify a new route was added
     assert len(app.router.routes) == initial_route_count + 1
-    
+
     # Get the last added route
     new_route = app.router.routes[-1]
     assert isinstance(new_route, Route)
@@ -111,21 +111,21 @@ def test_plugin_route_path_normalization():
     '''
     app = FastAPI()
     plugin = Plugin(app, "test_plugin")
-    
+
     async def test_handler():
         return {"status": "ok"}
-    
+
     # Add route with leading slash
     plugin.add_route_post("/test", test_handler)
     route1 = app.router.routes[-1]
-    
+
     # Verify no double slashes
     assert "//" not in route1.path
-    
+
     # Add route without leading slash
     plugin.add_route_get("test2", test_handler)
     route2 = app.router.routes[-1]
-    
+
     # Verify no double slashes
     assert "//" not in route2.path
 
@@ -137,25 +137,25 @@ def test_plugin_multiple_routes():
     '''
     app = FastAPI()
     plugin = Plugin(app, "test_plugin")
-    
+
     async def handler1():
         return {"endpoint": "1"}
-    
+
     async def handler2():
         return {"endpoint": "2"}
-    
+
     async def handler3():
         return {"endpoint": "3"}
-    
+
     initial_route_count = len(app.router.routes)
-    
+
     plugin.add_route_post("/endpoint1", handler1)
     plugin.add_route_get("/endpoint2", handler2)
     plugin.add_route_post("/endpoint3", handler3)
-    
+
     # Verify all routes were added
     assert len(app.router.routes) == initial_route_count + 3
-    
+
     # Verify all routes have the correct namespace
     for route in app.router.routes[-3:]:
         assert route.path.startswith(plugin.namespace)
@@ -170,12 +170,12 @@ def test_plugin_unique_uids():
     plugin1 = Plugin(app, "test_plugin")
     plugin2 = Plugin(app, "test_plugin")
     plugin3 = Plugin(app, "another_plugin")
-    
+
     # All UIDs should be different
     assert plugin1.uid != plugin2.uid
     assert plugin1.uid != plugin3.uid
     assert plugin2.uid != plugin3.uid
-    
+
     # All namespaces should be different
     assert plugin1.namespace != plugin2.namespace
     assert plugin1.namespace != plugin3.namespace
@@ -185,7 +185,7 @@ def test_plugin_unique_uids():
 # ------------------------------------------------------------------------------
 #
 if __name__ == '__main__':
-    
+
     test_plugin_initialization()
     test_plugin_uid_property()
     test_plugin_namespace_property()
@@ -194,7 +194,7 @@ if __name__ == '__main__':
     test_plugin_route_path_normalization()
     test_plugin_multiple_routes()
     test_plugin_unique_uids()
-    
+
     print("All tests passed!")
 
 

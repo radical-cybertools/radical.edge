@@ -22,7 +22,7 @@ from .queue_info import QueueInfoSlurm
 class QueueInfoClient(PluginClient):
     """
     QueueInfo client with per-client backend.
-    
+
     Each client creates its own QueueInfoSlurm backend instance.
     """
 
@@ -115,12 +115,12 @@ class PluginQueueInfo(ClientManagedPlugin):
     This plugin exposes batch system queue information, job listings, and
     allocation data via REST endpoints. It manages per-client sessions
     and delegates to a QueueInfo backend for data collection.
-    
+
     Standard routes inherited from ClientManagedPlugin:
     - POST /queue_info/{uid}/register_client
     - POST /queue_info/{uid}/unregister_client/{cid}
     - GET  /queue_info/{uid}/echo/{cid}
-    
+
     QueueInfo-specific routes:
     - GET /queue_info/{uid}/get_info/{cid}
     - GET /queue_info/{uid}/list_jobs/{cid}/{queue}
@@ -146,7 +146,7 @@ class PluginQueueInfo(ClientManagedPlugin):
         """
         super().__init__(app, name)
 
-        # Store slurm_conf to pass to each client
+
         self._slurm_conf = slurm_conf
 
         # Register QueueInfo-specific routes
@@ -154,7 +154,7 @@ class PluginQueueInfo(ClientManagedPlugin):
         self.add_route_get('list_jobs/{cid}/{queue}', self.list_jobs)
         self.add_route_get('list_allocations/{cid}', self.list_allocations)
 
-        # Log all routes for debugging
+
         self._log_routes()
 
 
@@ -163,11 +163,11 @@ class PluginQueueInfo(ClientManagedPlugin):
     def _create_client(self, cid: str, **kwargs):
         """
         Override to pass slurm_conf to each client.
-        
+
         Args:
             cid (str): The client ID.
             **kwargs: Additional keyword arguments (unused).
-        
+
         Returns:
             QueueInfoClient: A new client instance with its own backend.
         """
