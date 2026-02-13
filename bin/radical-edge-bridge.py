@@ -264,11 +264,11 @@ if __name__ == "__main__":
 
     import uvicorn
 
-    for route in app.routes:
-        if hasattr(route, 'methods'):
-            print(f"{route.path} {route.methods}")
-        else:
-            print(f"{route.path} [no methods - {type(route).__name__}]")
+    # for route in app.routes:
+    #     if hasattr(route, 'methods'):
+    #         print(f"{route.path} {route.methods}")
+    #     else:
+    #         print(f"{route.path} [no methods - {type(route).__name__}]")
 
     uvicorn.run(app,
                 host="0.0.0.0",
