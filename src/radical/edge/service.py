@@ -263,8 +263,11 @@ class EdgeService:
                     self._http_client = http_client
 
                     try:
+                        # Determine if we need SSL
+                        ssl_arg = ssl_ctx if self._bridge_url.startswith("wss://") else None
+
                         async with websockets.connect(self._bridge_url,
-                                                      ssl=ssl_ctx,
+                                                      ssl=ssl_arg,
                                                       ping_interval=PING_INTERVAL,
                                                       ping_timeout=PING_TIMEOUT,
                                                       close_timeout=10) as ws:
