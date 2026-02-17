@@ -43,5 +43,5 @@ Terminal 2 - run the edge service on the HPC resource
 
 Terminal 3 - run a test client:
 ```sh
-./examples/00_radical.edge.py
+./examples/example_sysinfo.py
 ```

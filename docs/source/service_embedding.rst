@@ -164,3 +164,70 @@ Simply importing the plugin module registers it. You can then pass it to ``EdgeS
    )
 
    service.start_background()
+
+Using PSIJ Plugin
+=================
+
+The ``PluginPSIJ`` provides an interface to submit and manage jobs via the `psij-python <https://exaworks.org/psij-python/>`_ library. This allows you to interact with various HPC schedulers (Slurm, PBS, LSF, etc.) using a unified API.
+
+Prerequisites
+-------------
+Ensure ``psij-python`` is installed in your environment:
+
+.. code-block:: bash
+
+   pip install psij-python
+
+Usage
+-----
+To use the PSIJ plugin, simply include it when initializing the ``EdgeService``.
+
+.. code-block:: python
+
+   from radical.edge import EdgeService, PluginPSIJ
+
+   service = EdgeService(
+       bridge_url="wss://radical-pilot.org/bridge/register",
+       plugins=[PluginPSIJ]
+   )
+   service.start_background()
+
+API Endpoints
+-------------
+The plugin exposes the following endpoints under the ``/psij`` namespace (default):
+
+*   **POST /psij/submit?cid=<client_id>**
+    Submits a job. Requires a JSON body with ``job_spec`` and optional ``executor``.
+
+    .. code-block:: json
+
+       {
+           "job_spec": {
+               "executable": "/bin/echo",
+               "arguments": ["Hello World"],
+               "directory": "/tmp",
+               "environment": {"MY_VAR": "value"}
+           },
+           "executor": "local"
+       }
+
+*   **GET /psij/status/{job_id}?cid=<client_id>**
+    Retrieves the status of a specific job.
+
+*   **POST /psij/cancel/{job_id}?cid=<client_id>**
+    Cancels a specific job.
+
+Registering a Client
+--------------------
+Before submitting jobs, you must register a client session to get a ``cid`` (Client ID):
+
+.. code-block:: python
+
+   import requests
+
+   # Register client
+   resp = requests.post("http://localhost:8000/psij/register_client")
+   cid = resp.json()['cid']
+
+   # Use cid in subsequent requests
+   requests.post(f"http://localhost:8000/psij/submit?cid={cid}", ...)
