@@ -125,6 +125,7 @@ class PluginLucid(ClientManagedPlugin):
     - GET  /lucid/{uid}/task_wait/{cid}/{tid}
     """
 
+    plugin_name = "radical.lucid"
     client_class = LucidClient
     version = '0.0.1'
 

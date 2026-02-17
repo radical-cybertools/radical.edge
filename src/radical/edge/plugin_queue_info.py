@@ -109,21 +109,22 @@ class PluginQueueInfo(ClientManagedPlugin):
     - GET /queue_info/{uid}/list_allocations/{cid}
     """
 
+    plugin_name = "radical.queue_info"
     client_class = QueueInfoClient
     version = '0.0.1'
 
-    def __init__(self, app, name='queue_info', slurm_conf=None):
+    def __init__(self, app: FastAPI, instance_name='queue_info', slurm_conf=None):
         """
         Initialize the QueueInfo plugin.
 
         Args:
             app (FastAPI): The FastAPI application instance.
-            name (str): Plugin name (used in namespace). Defaults to
+            instance_name (str): Plugin instance name (used in namespace). Defaults to
                 'queue_info'. Override for multi-cluster setups.
             slurm_conf (str): Optional path to slurm.conf for the target
                 cluster. This will be passed to each client.
         """
-        super().__init__(app, name)
+        super().__init__(app, instance_name)
 
         self._slurm_conf = slurm_conf
 
@@ -147,7 +148,7 @@ class PluginQueueInfo(ClientManagedPlugin):
         """
         return self.client_class(cid, slurm_conf=self._slurm_conf)
 
-    async def get_info(self, request):
+    async def get_info(self, request: Request) -> JSONResponse:
         """Return queue/partition information."""
         data = request.path_params
         cid = data['cid']
@@ -156,7 +157,7 @@ class PluginQueueInfo(ClientManagedPlugin):
         return await self._forward(cid, QueueInfoClient.get_info,
                                    force=force)
 
-    async def list_jobs(self, request):
+    async def list_jobs(self, request: Request) -> JSONResponse:
         """List jobs in a specified queue/partition."""
         data = request.path_params
         cid = data['cid']
@@ -167,7 +168,7 @@ class PluginQueueInfo(ClientManagedPlugin):
         return await self._forward(cid, QueueInfoClient.list_jobs,
                                    queue, user=user, force=force)
 
-    async def list_allocations(self, request):
+    async def list_allocations(self, request: Request) -> JSONResponse:
         """List allocations/projects."""
         data = request.path_params
         cid = data['cid']

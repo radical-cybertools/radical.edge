@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 __author__    = 'Radical Development Team'
+# pylint: disable=protected-access,unused-import,unused-variable,not-callable,unused-argument
 __email__     = 'radical@radical-project.org'
 __copyright__ = 'Copyright date +%Y, RADICAL@Rutgers'
 __license__   = 'MIT'

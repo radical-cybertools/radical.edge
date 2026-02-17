@@ -1,0 +1,85 @@
+
+import asyncio
+import logging
+# pylint: disable=protected-access,unused-import,unused-variable,not-callable,unused-argument
+import time
+import pytest
+from unittest.mock import Mock
+
+from radical.edge.service import EdgeService
+import radical.edge as re
+
+# Configure logging for tests
+logging.basicConfig(level=logging.DEBUG)
+
+
+@pytest.mark.asyncio
+async def test_embedded_service_async_init():
+    """Test async service initialization and plugin loading."""
+
+    # Mock plugin class
+    class MockPlugin(re.ClientManagedPlugin):
+        client_class = Mock()
+
+        def __init__(self, app):
+            super().__init__(app, 'mock_plugin')
+
+    # Create service
+    service = EdgeService(plugins=[MockPlugin])
+
+    assert 'mock_plugin' in service._plugins
+    assert isinstance(service._plugins['mock_plugin'], MockPlugin)
+
+    # Verify internal app has routes
+    routes = [r.path for r in service._app.routes]
+    # Standard routes + MockPlugin routes
+    assert any('/mock_plugin/' in r for r in routes)
+
+
+@pytest.mark.asyncio
+async def test_embedded_service_run_stop():
+    """Test service run/stop cycle (integration-like but mocked ws)."""
+
+    service = EdgeService(bridge_url="wss://localhost:0")
+
+    # Create task for service.run()
+    task = asyncio.create_task(service.run())
+
+    # Let it start
+    await asyncio.sleep(0.1)
+
+    # Stop it
+    service.stop()
+
+    try:
+        await asyncio.wait_for(task, timeout=1.0)
+    except asyncio.TimeoutError:
+        pytest.fail("Service did not stop in time")
+    except asyncio.CancelledError:
+        pass  # Expected on stop()
+    except Exception:
+        # Expected if mocked ws fails, but run() catches exceptions
+        # run() swallows connection errors and retries.
+        # But stop() should break the loop.
+        pass
+
+
+def test_embedded_service_sync_background():
+    """Test synchronous background execution."""
+
+    service = EdgeService(bridge_url="wss://localhost:0")
+
+    # Start background thread
+    service.start_background()
+
+    time.sleep(0.1)
+
+    assert service._thread.is_alive()
+
+    service.stop()
+    service._thread.join(timeout=2.0)
+
+    assert not service._thread.is_alive()
+
+
+

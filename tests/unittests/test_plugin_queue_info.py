@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 __author__    = 'Radical Development Team'
+# pylint: disable=protected-access,unused-import,unused-variable,not-callable,unused-argument
 __email__     = 'radical@radical-project.org'
 __copyright__ = 'Copyright 2024, RADICAL@Rutgers'
 __license__   = 'MIT'
@@ -239,9 +240,9 @@ def test_plugin_queue_info_custom_name_and_conf(mock_slurm):
     Test PluginQueueInfo with custom name and SLURM config.
     '''
     app = FastAPI()
-    plugin = PluginQueueInfo(app, name="custom_queue", slurm_conf="/custom/slurm.conf")
+    plugin = PluginQueueInfo(app, instance_name="custom_queue", slurm_conf="/custom/slurm.conf")
 
-    assert plugin._name == "custom_queue"
+    assert plugin._instance_name == "custom_queue"
     assert plugin._slurm_conf == "/custom/slurm.conf"
     mock_slurm.assert_not_called()
 

@@ -8,9 +8,6 @@ Import this module early in your application to configure logging.
 import logging
 import sys
 import copy
-from typing import Optional
-
-
 
 class ColoredFormatter(logging.Formatter):
     """
@@ -42,11 +39,11 @@ class ColoredFormatter(logging.Formatter):
         levelname = record.levelname
 
         if record.levelno in self.COLORS:
-             # Match Uvicorn: "INFO:     " (Colored, with colon, padded to 9)
-             levelname_with_sep = f"{levelname}:"
-             padded_levelname = f"{levelname_with_sep:<9}"
-             record.levelname = (f"{self.COLORS[record.levelno]}"
-                                 f"{padded_levelname}{self.RESET}")
+            # Match Uvicorn: "INFO:     " (Colored, with colon, padded to 9)
+            levelname_with_sep = f"{levelname}:"
+            padded_levelname = f"{levelname_with_sep:<9}"
+            record.levelname = (f"{self.COLORS[record.levelno]}"
+                                f"{padded_levelname}{self.RESET}")
 
         return super().format(record)
 
