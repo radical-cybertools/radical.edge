@@ -1,14 +1,15 @@
 import os
 
-from .plugin_lucid      import PluginLucid
-from .plugin_xgfabric   import PluginXGFabric
-from .plugin_queue_info import PluginQueueInfo
-from .plugin_sysinfo    import PluginSysInfo
+from .plugin_lucid      import PluginLucid  # noqa: F401
+from .plugin_xgfabric   import PluginXGFabric  # noqa: F401
+from .plugin_queue_info import PluginQueueInfo  # noqa: F401
+from .plugin_sysinfo    import PluginSysInfo  # noqa: F401
 
-from .plugin_client_base    import PluginClient
-from .plugin_client_managed import ClientManagedPlugin
+from .plugin_base           import Plugin  # noqa: F401
+from .plugin_client_base    import PluginClient  # noqa: F401
+from .plugin_client_managed import ClientManagedPlugin  # noqa: F401
 
-from .service           import EdgeService
+from .service           import EdgeService  # noqa: F401
 
 
 # Read version from VERSION file

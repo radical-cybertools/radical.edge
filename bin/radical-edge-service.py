@@ -7,7 +7,7 @@ import signal
 import sys
 
 from radical.edge.service import EdgeService
-import radical.edge.logging_config  # noqa: F401
+import radical.edge.logging_config  # noqa: F401, W0611
 
 
 log = logging.getLogger("radical.edge")
@@ -33,14 +33,14 @@ async def main():
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, signal_handler)
 
-    log.info(f"Starting Radical Edge Service (Bridge: {service._bridge_url})")
+    log.info("Starting Radical Edge Service (%s)", service.bridge_url)
 
     try:
         await service.run()
     except asyncio.CancelledError:
         log.info("Service cancelled")
-    except Exception as e:
-        log.exception(f"Service crashed: {e}")
+    except Exception:
+        log.exception("Service crashed")
         sys.exit(1)
     finally:
         log.info("Service stopped")

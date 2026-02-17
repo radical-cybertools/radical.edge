@@ -72,6 +72,7 @@ async def register(ws: WebSocket):
             except Exception:
                 return
 
+    ping_task = None
     try:
 
         # start the ping task - it will run as long as the endpoint is connected
@@ -152,7 +153,8 @@ async def register(ws: WebSocket):
     finally:
 
         print(f"[Bridge] Edge disconnected: {edge_name}")
-        ping_task.cancel()
+        if ping_task:
+            ping_task.cancel()
 
         if edge_name:
             # Only unregister if this WS was the active one for the name
@@ -260,10 +262,10 @@ async def proxy(full_path: str, request: Request):
     try:
         resp = await asyncio.wait_for(fut, timeout=None)  # , timeout=REQUEST_TIMEOUT)
 
-    except asyncio.TimeoutError:
+    except asyncio.TimeoutError as exc:
         async with pending_lock:
             pending.pop(req_id, None)
-        raise HTTPException(status_code=504, detail="Upstream (edge) timeout")
+        raise HTTPException(status_code=504, detail="Upstream (edge) timeout") from exc
 
     status    = int(resp.get("status", 502))
     headers   = resp.get("headers") or {}

@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 
-import sys
 import httpx
 import pprint
 
@@ -73,7 +72,7 @@ def main():
         check_response(r)
 
         tids = list()
-        for i in range(10):
+        for _ in range(10):
             r = http.post(f"{base}/task_submit/{cid}",
                           json={'description': {'executable': 'date'}})
             print('---------------------------------')

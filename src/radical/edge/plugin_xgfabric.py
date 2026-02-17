@@ -7,9 +7,6 @@ __license__   = 'MIT'
 
 from fastapi import FastAPI
 
-from starlette.requests  import Request
-from starlette.responses import JSONResponse
-
 from .plugin_client_base import PluginClient
 from .plugin_client_managed import ClientManagedPlugin
 
@@ -39,6 +36,7 @@ class PluginXGFabric(ClientManagedPlugin):
     All client management functionality is inherited from ClientManagedPlugin.
     """
 
+    plugin_name = "radical.xgfabric"
     client_class = XGFabricClient
     version = '0.0.1'
 

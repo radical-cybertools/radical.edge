@@ -92,9 +92,11 @@ def main():
 def render_metrics(console: Console, edge_id: str, m: dict):
 
     # Header
-    sys = m.get('system', {})
+    system = m.get('system', {})
+    hostname = system.get('hostname', '?')
+    kernel = system.get('kernel', '?')
 
-    title = f"[bold cyan]Edge: {edge_id} | Host: {sys.get('hostname','?')} | OS: {sys.get('kernel','?')}[/]"
+    title = f"[bold cyan]Edge: {edge_id} | Host: {hostname} | OS: {kernel}[/]"
     console.print(Panel(title, expand=False))
 
     # CPU Table

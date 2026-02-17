@@ -105,3 +105,62 @@ Notes
 
 *   **No Local Ports**: The embedded service uses in-memory transport. It does **not** open a local HTTP port (like 8001).
 *   **Plugins**: Plugins are instantiated with the internal FastAPI app. If passing custom plugin instances, ensure they are compatible.
+
+
+Developing External Plugins
+===========================
+
+You can define custom plugins in your own modules and register them with the Edge Service.
+Inheriting from ``radical.edge.ClientManagedPlugin`` (or ``Plugin``) and defining ``plugin_name``
+automatically registers your plugin class.
+
+Example: Weather Plugin
+-----------------------
+
+**1. Define the Plugin**
+
+.. code-block:: python
+
+   # file: my_project/plugins/weather.py
+
+   import radical.edge as re
+   from starlette.requests import Request
+   from starlette.responses import JSONResponse
+
+   class WeatherPlugin(re.ClientManagedPlugin):
+       """A plugin that provides weather data."""
+
+       # Unique name for registry discovery
+       plugin_name = "my_org.weather"
+
+       def __init__(self, app, instance_name="weather"):
+           # instance_name determines the URL namespace (e.g. /weather)
+           super().__init__(app, instance_name)
+
+           self.add_route_get("forecast", self.get_forecast)
+           self.add_route_get("current",  self.get_current)
+
+       async def get_forecast(self, request: Request) -> JSONResponse:
+           return JSONResponse({"forecast": "sunny", "temp": 72})
+
+       async def get_current(self, request: Request) -> JSONResponse:
+           return JSONResponse({"temp": 68, "humidity": 45})
+
+**2. Use the Plugin**
+
+Simply importing the plugin module registers it. You can then pass it to ``EdgeService``.
+
+.. code-block:: python
+
+   # file: app.py
+
+   from radical.edge import EdgeService
+   # Import triggers automatic registration
+   from my_project.plugins.weather import WeatherPlugin
+
+   service = EdgeService(
+       bridge_url="ws://localhost:8000/register",
+       plugins=[WeatherPlugin]  # Loads the plugin immediately
+   )
+
+   service.start_background()

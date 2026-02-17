@@ -5,7 +5,7 @@ __copyright__ = 'Copyright 2024, RADICAL@Rutgers'
 __license__   = 'MIT'
 
 
-from typing import Any
+from typing import Type
 from fastapi import FastAPI, HTTPException
 
 from starlette.routing   import Route
@@ -38,18 +38,18 @@ class ClientManagedPlugin(Plugin):
         _create_client(cid, **kwargs): Custom client creation logic
     """
 
-    client_class = None  # Override in subclass
+    client_class: Type[PluginClient] | None = None  # Override in subclass
     version = '0.0.1'    # Override in subclass
 
-    def __init__(self, app: FastAPI, name: str):
+    def __init__(self, app: FastAPI, instance_name: str):
         """
         Initialize the client-managed plugin.
 
         Args:
             app (FastAPI): The FastAPI application instance.
-            name (str): The name of the plugin, used in the namespace.
+            instance_name (str): The name of the plugin instance, used in the namespace.
         """
-        super().__init__(app, name)
+        super().__init__(app, instance_name)
 
         self._clients: dict[str, PluginClient] = {}
         self._id_lock = asyncio.Lock()
@@ -80,7 +80,7 @@ class ClientManagedPlugin(Plugin):
         if self.client_class is None:
             raise NotImplementedError(
                 "Subclass must define client_class attribute")
-        return self.client_class(cid, **kwargs)
+        return self.client_class(cid, **kwargs)  # pylint: disable=not-callable
 
     async def register_client(self, request: Request) -> JSONResponse:
         """
@@ -177,7 +177,7 @@ class ClientManagedPlugin(Plugin):
             HTTPException: 404 if client ID is not found, 500 on client error.
         """
         client = self._clients.get(cid)
-        log.debug(f"[Edge] Forward to client {cid} ({func.__name__})")
+        log.debug("[Edge] Forward to client %s (%s)", cid, func.__name__)
 
         if not client:
             raise HTTPException(status_code=404,
@@ -188,7 +188,7 @@ class ClientManagedPlugin(Plugin):
             return JSONResponse(ret)
 
         except Exception as e:
-            log.exception(f"[Edge] Error in client {cid}: {e}")
+            log.exception("[Edge] Error in client %s: %s", cid, e)
             raise HTTPException(status_code=500, detail=str(e)) from e
 
     def _log_routes(self):
@@ -198,8 +198,8 @@ class ClientManagedPlugin(Plugin):
         This is a convenience method for subclasses to call after registering
         all their routes.
         """
-        log.debug(f"[Edge] {self._name} plugin routes:")
+        log.debug("[Edge] %s plugin routes:", self._instance_name)
         for route in self._routes:
             if isinstance(route, Route):
-                log.debug(f"[Edge]   {route.path} -> {route.endpoint.__name__}")
+                log.debug("[Edge]   %s -> %s", route.path, route.endpoint.__name__)
 

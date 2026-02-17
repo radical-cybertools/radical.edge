@@ -1,6 +1,5 @@
 
-import pytest
-from unittest.mock import patch, MagicMock
+# pylint: disable=protected-access,unused-import,unused-variable,not-callable,unused-argument
 from fastapi import FastAPI
 from starlette.testclient import TestClient
 

@@ -17,7 +17,7 @@ from fastapi import FastAPI, HTTPException, Request
 from httpx import ASGITransport
 
 import radical.edge as re
-import radical.edge.logging_config  # noqa: F401
+import radical.edge.logging_config  # noqa: F401 # pylint: disable=unused-import
 
 if TYPE_CHECKING:
     from radical.edge.plugin_base import Plugin
@@ -77,7 +77,11 @@ class EdgeService:
         # Always load SysInfo plugin
         self.load_plugin(re.PluginSysInfo(self._app))
 
-    #
+    @property
+    def bridge_url(self):
+        """Get the current Bridge URL."""
+        return self._bridge_url
+
     def load_plugin(self, plugin_input: Union[Type["Plugin"], "Plugin"]):
         """
         Load a plugin into the service.
@@ -97,16 +101,17 @@ class EdgeService:
             # FastAPI app for proper routing integration.
             plugin_instance = plugin_input
 
-        name = plugin_instance.name
+        name = plugin_instance.instance_name
         self._plugins[name] = plugin_instance
-        log.info(f"[Edge] Loaded plugin: {name}")
+        log.info("[Edge] Loaded plugin: %s", name)
 
     async def _load_plugin_endpoint(self, pname: str, request: Request):
         """
         Internal endpoint to load plugins dynamically via HTTP request (from Bridge).
-        Currently supports: radical.lucid, radical.xgfabric, radical.queue_info,
-        radical.sysinfo.
+        Uses the plugin registry to discover and load registered plugins.
         """
+        from .plugin_base import Plugin
+
         label = request.query_params.get('name', pname.split('.')[-1])
 
         if not _re.match(r'^[A-Za-z0-9_-]+$', label):
@@ -118,32 +123,26 @@ class EdgeService:
             plugin = self._plugins[label]
             return {"namespace": plugin.namespace}
 
-        plugin = None
-
-        # TODO: Implement dynamic plugin loading mechanism.
-        # Currently supports specific known plugins.
-        if pname == "radical.lucid":
-            plugin = re.PluginLucid(self._app)
-        elif pname == "radical.xgfabric":
-            plugin = re.PluginXGFabric(self._app)
-        elif pname == "radical.queue_info":
-            slurm_conf = request.query_params.get('slurm_conf')
-            plugin = re.PluginQueueInfo(self._app, name=label,
-                                        slurm_conf=slurm_conf)
-        elif pname == "radical.sysinfo":
-            plugin = re.PluginSysInfo(self._app)
-
-        if not plugin:
-            log.error(f"[Edge] unknown plugin: {pname}")
+        # Look up plugin class in registry
+        plugin_cls = Plugin.get_plugin_class(pname)
+        if not plugin_cls:
+            log.error("[Edge] unknown plugin: %s", pname)
             raise HTTPException(status_code=404,
                                 detail=f"unknown plugin: {pname}")
+
+        # Handle plugins with custom initialization (e.g., PluginQueueInfo)
+        if pname == "radical.queue_info":
+            slurm_conf = request.query_params.get('slurm_conf')
+            plugin = plugin_cls(self._app, instance_name=label, slurm_conf=slurm_conf)
+        else:
+            plugin = plugin_cls(self._app)
 
         self._plugins[label] = plugin
 
         # Notify Bridge of new plugin
         try:
             async with self._send_lock:
-                log.info(f"[Edge] registering plugin endpoint: {pname}")
+                log.info("[Edge] registering plugin endpoint: %s", pname)
                 msg = {
                     "type": "register",
                     "edge_name": self._name,
@@ -156,9 +155,9 @@ class EdgeService:
                 if self._ws:
                     await self._ws.send(json.dumps(msg))
         except Exception as e:
-            log.exception(f"[Edge] plugin registration failed: {e}")
+            log.exception("[Edge] plugin registration failed: %s", e)
             raise HTTPException(status_code=500,
-                                detail=f"plugin registering failed: {e}")
+                                detail=f"plugin registering failed: {e}") from e
 
         return {"namespace": f"/{self._name}{plugin.namespace}"}
 
@@ -168,7 +167,7 @@ class EdgeService:
         """
         try:
             if data.get("type") != "request":
-                log.warning(f"[Edge] unknown message type: {data.get('type')}")
+                log.warning("[Edge] unknown message type: %s", data.get('type'))
                 raise ValueError("unknown message type")
 
             req_id    = data["req_id"]
@@ -259,7 +258,8 @@ class EdgeService:
                 else:
                     pass
 
-                async with httpx.AsyncClient(transport=transport, base_url="http://local") as http_client:
+                async with httpx.AsyncClient(transport=transport,
+                                             base_url="http://local") as http_client:
                     self._http_client = http_client
 
                     try:
@@ -270,7 +270,7 @@ class EdgeService:
                                                       close_timeout=10) as ws:
 
                             self._ws = ws
-                            log.info(f"[Edge] Connected to Bridge at {self._bridge_url}")
+                            log.info("[Edge] Connected to %s", self._bridge_url)
                             backoff = 1  # Reset backoff on success
 
                             # Initial Registration
@@ -302,7 +302,7 @@ class EdgeService:
                                     data = json.loads(message)
 
                                     if data.get("type") == "error":
-                                        log.error(f"[Edge] Registration error: {data.get('message')}")
+                                        log.error("[Edge] Registration error: %s", data.get('message'))
                                         self._stop_event.set()
                                         return  # Fatal error, stop
 
@@ -325,7 +325,7 @@ class EdgeService:
                     except (ws_exc.ConnectionClosed, OSError) as e:
                         if self._stop_event.is_set():
                             break  # no reconnect
-                        log.warning(f"[Edge] Connection lost: {e}. Reconnecting in {backoff}s...")
+                        log.warning("[Edge] Connection lost: %s. Reconnecting in %ss...", e, backoff)
                         await asyncio.sleep(backoff)
                         backoff = min(backoff * 2, 30)
 
@@ -334,7 +334,7 @@ class EdgeService:
                 if self._stop_event.is_set():
                     break
 
-                log.exception(f"[Edge] Unexpected error: {e}")
+                log.exception("[Edge] Unexpected error: %s", e)
                 await asyncio.sleep(5)
 
     def stop(self):
@@ -360,4 +360,4 @@ class EdgeService:
         except asyncio.CancelledError:
             log.info("[Edge] Background service cancelled")
         except Exception as e:
-            log.exception(f"[Edge] Background thread failed: {e}")
+            log.exception("[Edge] Background thread failed: %s", e)

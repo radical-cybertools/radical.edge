@@ -453,6 +453,8 @@ class PluginSysInfo(Plugin):
     Provides system hardware configuration and resource utilization metrics.
     """
 
+    plugin_name = "radical.sysinfo"
+
     def __init__(self, app: FastAPI):
         """
         Initialize the SysInfo plugin.

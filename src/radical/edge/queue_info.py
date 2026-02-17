@@ -179,8 +179,7 @@ class QueueInfoSlurm(QueueInfo):
         """Run a subprocess with self._env, return stdout."""
 
         result = subprocess.run(cmd, capture_output=True, text=True,
-                                timeout=60, env=self._env)
-        result.check_returncode()
+                                timeout=60, env=self._env, check=True)
         return result.stdout
 
 

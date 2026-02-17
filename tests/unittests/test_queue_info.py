@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 
+# pylint: disable=protected-access
+# pylint: disable=protected-access,unused-import,unused-variable,not-callable,unused-argument
+
 import json
 import os
 import pytest
