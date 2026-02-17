@@ -7,7 +7,7 @@ import signal
 import sys
 
 from radical.edge.service import EdgeService
-import radical.edge.logging_config  # noqa: F401, W0611
+import radical.edge.logging_config  # noqa: F401 # pylint: disable=unused-import, W0611
 
 
 log = logging.getLogger("radical.edge")
