@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import os
 import sys
 import httpx
 
@@ -7,8 +8,7 @@ from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 
-# BRIDGE_HTTP = "https://95.217.193.116:8000"
-BRIDGE_HTTP = "https://localhost:8000"
+BRIDGE_URL = os.environ.get("BRIDGE_URL")
 
 
 def bytes2human(n):
@@ -36,11 +36,11 @@ def main():
 
         with console.status("[bold green]Connecting to Bridge..."):
             try:
-                r = http.post(f"{BRIDGE_HTTP}/edge/list")
+                r = http.post(f"{BRIDGE_URL}/edge/list")
                 r.raise_for_status()
                 data = r.json()
             except Exception as e:
-                console.print(f"[bold red]Failed to connect to bridge at {BRIDGE_HTTP}: {e}[/]")
+                console.print(f"[bold red]Failed to connect to bridge at {BRIDGE_URL}: {e}[/]")
                 sys.exit(1)
 
         # Structure: {'data': {'bridge': {...}, 'edges': {edge_name: {'plugins': {plugin_name: {namespace: ...}}}}}}
@@ -65,7 +65,7 @@ def main():
                         sysinfo_endpoints.append({
                             'edge': edge_name,
                             'plugin': plugin_name,
-                            'url': f"{BRIDGE_HTTP}{ns}/metrics"
+                            'url': f"{BRIDGE_URL}{ns}/metrics"
                         })
 
         if not sysinfo_endpoints:
