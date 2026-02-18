@@ -14,27 +14,28 @@ import asyncio
 
 import radical.pilot as rp
 
-from .plugin_client_base import PluginClient
-from .plugin_client_managed import ClientManagedPlugin
+
+from .plugin_session_base import PluginSession
+from .plugin_session_managed import SessionManagedPlugin
 
 
-class LucidClient(PluginClient):
+class LucidSession(PluginSession):
     """
-    Lucid client with Radical Pilot session management.
+    Lucid session with Radical Pilot session management.
 
-    Each client maintains its own RP Session, Pilot Manager, and Task Manager.
+    Each session maintains its own RP Session, Pilot Manager, and Task Manager.
     """
 
-    def __init__(self, cid: str):
+    def __init__(self, sid: str):
         """
-        Initialize a LucidClient instance with a unique client ID.
+        Initialize a LucidSession instance with a unique session ID.
         Start a Radical Pilot session, Pilot Manager, and Task Manager, all
-        private to this client.
+        private to this session.
 
         Args:
-            cid (str): The unique client ID.
+            sid (str): The unique session ID.
         """
-        super().__init__(cid)
+        super().__init__(sid)
 
         self._session: rp.Session = rp.Session()
         self._pmgr: rp.PilotManager = rp.PilotManager(session=self._session)
@@ -42,7 +43,7 @@ class LucidClient(PluginClient):
 
     async def close(self) -> dict:
         """
-        Close the Radical Pilot session for this client.
+        Close the Radical Pilot session.
 
         Returns:
             dict: An empty dictionary indicating successful closure.
@@ -87,7 +88,6 @@ class LucidClient(PluginClient):
         task = await asyncio.to_thread(self._tmgr.submit_tasks, td)
         return {"tid": task.uid}
 
-
     async def task_wait(self, tid: str) -> dict:
         """
         Wait for a task to complete and return its result.
@@ -105,34 +105,34 @@ class LucidClient(PluginClient):
         return {"tid": tid, "task": task.as_dict()}
 
 
-class PluginLucid(ClientManagedPlugin):
+class PluginLucid(SessionManagedPlugin):
     """
     Lucid plugin for Radical Edge.
 
-    This plugin manages multiple Lucid clients, each with its own Radical Pilot
-    session, Pilot Manager, and Task Manager. It provides routes for client
+    This plugin manages multiple Lucid sessions, each with its own Radical Pilot
+    session, Pilot Manager, and Task Manager. It provides routes for session
     registration, pilot submission, task submission, task waiting, and an echo
     service for testing / debugging.
 
-    Standard routes inherited from ClientManagedPlugin:
-    - POST /lucid/{uid}/register_client
-    - POST /lucid/{uid}/unregister_client/{cid}
-    - GET  /lucid/{uid}/echo/{cid}
+    Standard routes inherited from SessionManagedPlugin:
+    - POST /lucid/{uid}/register_session
+    - POST /lucid/{uid}/unregister_session/{sid}
+    - GET  /lucid/{uid}/echo/{sid}
 
     Lucid-specific routes:
-    - POST /lucid/{uid}/pilot_submit/{cid}
-    - POST /lucid/{uid}/task_submit/{cid}
-    - GET  /lucid/{uid}/task_wait/{cid}/{tid}
+    - POST /lucid/{uid}/pilot_submit/{sid}
+    - POST /lucid/{uid}/task_submit/{sid}
+    - GET  /lucid/{uid}/task_wait/{sid}/{tid}
     """
 
     plugin_name = "radical.lucid"
-    client_class = LucidClient
+    session_class = LucidSession
     version = '0.0.1'
 
     def __init__(self, app: FastAPI):
         """
         Initialize the Lucid plugin with the FastAPI app. Set up routes for
-        client management and task handling.
+        session management and task handling.
 
         Args:
             app (FastAPI): The FastAPI application instance.
@@ -140,18 +140,18 @@ class PluginLucid(ClientManagedPlugin):
         super().__init__(app, 'lucid')
 
         # Register Lucid-specific routes
-        self.add_route_post('pilot_submit/{cid}', self.pilot_submit)
-        self.add_route_post('task_submit/{cid}', self.task_submit)
-        self.add_route_get('task_wait/{cid}/{tid}', self.task_wait)
+        self.add_route_post('pilot_submit/{sid}', self.pilot_submit)
+        self.add_route_post('task_submit/{sid}', self.task_submit)
+        self.add_route_get('task_wait/{sid}/{tid}', self.task_wait)
 
         self._log_routes()
 
     async def pilot_submit(self, request: Request) -> JSONResponse:
         """
-        Submit a pilot to the specified LucidClient instance's session.
+        Submit a pilot to the specified LucidSession instance.
 
         Args:
-            request (Request): The incoming HTTP request. Path parameters must contain 'cid'.
+            request (Request): The incoming HTTP request. Path parameters must contain 'sid'.
                              JSON body must contain 'description' as a pilot description.
 
         Returns:
@@ -159,17 +159,17 @@ class PluginLucid(ClientManagedPlugin):
         """
         data = request.path_params
         json = await request.json()
-        cid = data['cid']
+        sid = data['sid']
         desc = json['description']
 
-        return await self._forward(cid, LucidClient.pilot_submit, desc)
+        return await self._forward(sid, LucidSession.pilot_submit, desc)
 
     async def task_submit(self, request: Request) -> JSONResponse:
         """
-        Submit a task to the specified LucidClient instance's session.
+        Submit a task to the specified LucidSession instance.
 
         Args:
-            request (Request): The incoming HTTP request. Path parameters must contain 'cid'.
+            request (Request): The incoming HTTP request. Path parameters must contain 'sid'.
                              JSON body must contain 'description' as a task description.
 
         Returns:
@@ -177,18 +177,17 @@ class PluginLucid(ClientManagedPlugin):
         """
         data = request.path_params
         json = await request.json()
-        cid = data['cid']
+        sid = data['sid']
         desc = json['description']
 
-        return await self._forward(cid, LucidClient.task_submit, desc)
+        return await self._forward(sid, LucidSession.task_submit, desc)
 
     async def task_wait(self, request: Request) -> JSONResponse:
         """
-        Wait for a task to complete in the specified LucidClient instance's
-        session.
+        Wait for a task to complete in the specified LucidSession instance.
 
         Args:
-            request (Request): The incoming HTTP request. Path parameters must contain 'cid'
+            request (Request): The incoming HTTP request. Path parameters must contain 'sid'
                              and 'tid'.
 
         Returns:
@@ -196,9 +195,9 @@ class PluginLucid(ClientManagedPlugin):
                         task dictionary ('task').
         """
         data = request.path_params
-        cid = data['cid']
+        sid = data['sid']
         tid = data['tid']
-        ret = await self._forward(cid, LucidClient.task_wait, tid)
+        ret = await self._forward(sid, LucidSession.task_wait, tid)
 
         return ret
 

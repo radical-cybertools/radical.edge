@@ -4,7 +4,10 @@ import os
 import httpx
 import pprint
 
-BRIDGE_URL = os.environ.get("BRIDGE_URL")
+bridge_url = os.environ.get("RADICAL_BRIDGE_URL")
+bridge_url = bridge_url.rstrip('/')
+bridge_cert = os.environ.get("RADICAL_BRIDGE_CERT")
+
 
 
 def main():
@@ -22,77 +25,76 @@ def main():
 
         return data
 
-    with httpx.Client(timeout=60.0,
-                      verify='cert.pem') as http:
+    with httpx.Client(timeout=60.0, verify=bridge_cert) as http:
 
         print('=================================')
 
-        r = http.post(f"{BRIDGE_URL}/edge/list")
+        r = http.post(f"{bridge_url}/edge/list")
         print('---------------------------------')
         print("list")
         data = check_response(r)
         pprint.pprint(data)
 
         # load lucid plugin on the edge service
-        r = http.post(f"{BRIDGE_URL}/edge/load_plugin/radical.lucid")
+        r = http.post(f"{bridge_url}/edge/load_plugin/radical.lucid")
         print('---------------------------------')
         print("load_plugin")
         data = check_response(r)
         ns   = data["namespace"]
-        base = f"{BRIDGE_URL}{ns}"
+        base = f"{bridge_url}{ns}"
         print(f"namespace: {ns}")
         print(f"base url : {base}")
 
-        r = http.post(f"{BRIDGE_URL}/edge/list")
+        r = http.post(f"{bridge_url}/edge/list")
         print('---------------------------------')
         print("list")
         data = check_response(r)
         pprint.pprint(data)
 
-        # register client
-        r = http.post(f"{base}/register_client")
+        # register session
+        r = http.post(f"{base}/register_session")
         print('---------------------------------')
-        print("register_client")
+        print("register_session")
         data = check_response(r)
-        cid  = data["cid"]
+        sid  = data["sid"]
 
         # GET example (echo)
-        r = http.get(f"{base}/echo/{cid}", params={"q": "from-client"})
+        r = http.get(f"{base}/echo/{sid}", params={"q": "from-session"})
         print('---------------------------------')
-        print("GET /echo/{cid}")
+        print("GET /echo/{sid}")
         check_response(r)
 
         # submit a pilot
-        r = http.post(f"{base}/pilot_submit/{cid}",
+        r = http.post(f"{base}/pilot_submit/{sid}",
                       json={'description': {'resource': 'local.localhost',
                                             'nodes'   : 10,
                                             'runtime' : 10}})
         print('---------------------------------')
-        print("POST /submit_pilot/{cid}")
+        print("POST /submit_pilot/{sid}")
         check_response(r)
 
         tids = list()
         for _ in range(10):
-            r = http.post(f"{base}/task_submit/{cid}",
+            r = http.post(f"{base}/task_submit/{sid}",
                           json={'description': {'executable': 'date'}})
             print('---------------------------------')
-            print("POST /task_submit/{cid}")
+            print("POST /task_submit/{sid}")
             data = check_response(r)
             tid  = data["tid"]
             tids.append(tid)
 
         for tid in tids:
-            r = http.get(f"{base}/task_wait/{cid}/{tid}")
+            r = http.get(f"{base}/task_wait/{sid}/{tid}")
             print('---------------------------------')
-            print("GET /task_wait/{cid}/{tid}")
+            print("GET /task_wait/{sid}/{tid}")
             data = check_response(r)
             ret  = data['task']['stdout'].strip()
             print(f"task {tid} returned: {ret}")
 
-        # unregister client
-        r = http.post(f"{base}/unregister_client/{cid}")
+        # unregister session
+        r = http.post(f"{base}/unregister_session/{sid}")
         print('---------------------------------')
-        print("unregister_client")
+        print("unregister_session")
         check_response(r)
 
 

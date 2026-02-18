@@ -7,8 +7,8 @@ from .plugin_sysinfo    import PluginSysInfo  # noqa: F401
 from .plugin_psij       import PluginPSIJ  # noqa: F401
 
 from .plugin_base           import Plugin  # noqa: F401
-from .plugin_client_base    import PluginClient  # noqa: F401
-from .plugin_client_managed import ClientManagedPlugin  # noqa: F401
+from .plugin_session_base   import PluginSession  # noqa: F401
+from .plugin_session_managed import SessionManagedPlugin  # noqa: F401
 
 from .service           import EdgeService  # noqa: F401
 

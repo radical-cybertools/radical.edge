@@ -18,10 +18,10 @@ async def main():
     """
     Main entry point for the standalone Radical Edge Service.
     """
-    bridge_url = os.environ.get("BRIDGE_URL")
     edge_name = sys.argv[1] if len(sys.argv) > 1 else None
+    edge_url = sys.argv[2] if len(sys.argv) > 2 else None
 
-    service = EdgeService(bridge_url=bridge_url, name=edge_name)
+    service = EdgeService(bridge_url=edge_url, name=edge_name)
     loop = asyncio.get_running_loop()
     stop_event = asyncio.Event()
 

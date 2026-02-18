@@ -10,20 +10,21 @@ from datetime import timedelta
 
 import psij
 
-from .plugin_client_managed import ClientManagedPlugin
-from .plugin_client_base import PluginClient
+
+from .plugin_session_managed import SessionManagedPlugin
+from .plugin_session_base import PluginSession
 
 
 log = logging.getLogger("radical.edge")
 
 
-class PSIJClient(PluginClient):
+class PSIJSession(PluginSession):
     '''
-    Client-specific PSIJ state.
+    Session-specific PSIJ state.
     '''
 
-    def __init__(self, cid, **kwargs):
-        super().__init__(cid, **kwargs)
+    def __init__(self, sid, **kwargs):
+        super().__init__(sid, **kwargs)
         self._jobs = {}  # local job cache: job_id -> psij.Job
 
     async def submit_job(self, job_spec_dict: dict, executor_name: str = 'local') -> dict:
@@ -115,7 +116,7 @@ class PSIJClient(PluginClient):
             raise HTTPException(status_code=500, detail=str(e)) from e
 
 
-class PluginPSIJ(ClientManagedPlugin):
+class PluginPSIJ(SessionManagedPlugin):
     '''
     PSIJ plugin for Radical Edge.
 
@@ -142,7 +143,7 @@ class PluginPSIJ(ClientManagedPlugin):
     '''
 
     plugin_name = "radical.psij"
-    client_class = PSIJClient
+    session_class = PSIJSession
     version = '0.0.1'
 
     def __init__(self, app: FastAPI, instance_name: str = "psij"):
@@ -153,32 +154,32 @@ class PluginPSIJ(ClientManagedPlugin):
         self.add_route_post('cancel/{job_id}', self.cancel_job)
 
     async def submit_job(self, request: Request) -> JSONResponse:
-        cid = request.query_params.get('cid')
-        if not cid:
-            raise HTTPException(status_code=400, detail="cid required")
+        sid = request.query_params.get('sid')
+        if not sid:
+            raise HTTPException(status_code=400, detail="sid required")
 
         data = await request.json()
         job_spec = data.get('job_spec', {})
         executor = data.get('executor', 'local')
 
-        return await self._forward(cid, PSIJClient.submit_job,
+        return await self._forward(sid, PSIJSession.submit_job,
                                  job_spec_dict=job_spec,
                                  executor_name=executor)
 
     async def get_job_status(self, request: Request) -> JSONResponse:
-        cid = request.query_params.get('cid')
+        sid = request.query_params.get('sid')
         job_id = request.path_params['job_id']
 
-        if not cid:
-            raise HTTPException(status_code=400, detail="cid required")
+        if not sid:
+            raise HTTPException(status_code=400, detail="sid required")
 
-        return await self._forward(cid, PSIJClient.get_job_status, job_id=job_id)
+        return await self._forward(sid, PSIJSession.get_job_status, job_id=job_id)
 
     async def cancel_job(self, request: Request) -> JSONResponse:
-        cid = request.query_params.get('cid')
+        sid = request.query_params.get('sid')
         job_id = request.path_params['job_id']
 
-        if not cid:
-            raise HTTPException(status_code=400, detail="cid required")
+        if not sid:
+            raise HTTPException(status_code=400, detail="sid required")
 
-        return await self._forward(cid, PSIJClient.cancel_job, job_id=job_id)
+        return await self._forward(sid, PSIJSession.cancel_job, job_id=job_id)

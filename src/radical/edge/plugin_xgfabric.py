@@ -7,37 +7,38 @@ __license__   = 'MIT'
 
 from fastapi import FastAPI
 
-from .plugin_client_base import PluginClient
-from .plugin_client_managed import ClientManagedPlugin
+
+from .plugin_session_base import PluginSession
+from .plugin_session_managed import SessionManagedPlugin
 
 
-class XGFabricClient(PluginClient):
+class XGFabricSession(PluginSession):
     """
-    XGFabric client.
+    XGFabric session.
 
-    Inherits all common client functionality from PluginClient:
-    - Client ID management
+    Inherits all common session functionality from PluginSession:
+    - Session ID management
     - Session state tracking
     - Echo service
     - Session validation
     """
 
-    # All functionality inherited from PluginClient
-    # No additional methods needed for this simple client
+    # All functionality inherited from PluginSession
+    # No additional methods needed for this simple session
 
 
-class PluginXGFabric(ClientManagedPlugin):
+class PluginXGFabric(SessionManagedPlugin):
     """
     XGFabric plugin for Radical Edge.
 
-    This plugin manages multiple XGFabric clients. It provides routes for
-    client registration and an echo service for testing / debugging.
+    This plugin manages multiple XGFabric sessions. It provides routes for
+    session registration and an echo service for testing / debugging.
 
-    All client management functionality is inherited from ClientManagedPlugin.
+    All session management functionality is inherited from SessionManagedPlugin.
     """
 
     plugin_name = "radical.xgfabric"
-    client_class = XGFabricClient
+    session_class = XGFabricSession
     version = '0.0.1'
 
     def __init__(self, app: FastAPI):
@@ -45,9 +46,9 @@ class PluginXGFabric(ClientManagedPlugin):
         Initialize the XGFabric plugin with the FastAPI app.
 
         Routes are automatically registered by the base class:
-        - POST /xgfabric/{uid}/register_client
-        - POST /xgfabric/{uid}/unregister_client/{cid}
-        - GET  /xgfabric/{uid}/echo/{cid}
+        - POST /xgfabric/{uid}/register_session
+        - POST /xgfabric/{uid}/unregister_session/{sid}
+        - GET  /xgfabric/{uid}/echo/{sid}
 
         Args:
             app (FastAPI): The FastAPI application instance.

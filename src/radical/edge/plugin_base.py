@@ -47,7 +47,7 @@ class Plugin(object):
 
         self._instance_name: str = instance_name
         self._namespace: str = f"/{self._instance_name}"
-        self._routes: list[BaseRoute] = app.router.routes
+        self._app = app
 
 
     @property
@@ -87,7 +87,7 @@ class Plugin(object):
         """
         full_path = self._namespace + '/' + path
         full_path = full_path.replace('//', '/')
-        self._routes.append(Route(full_path, method, methods=["POST"]))
+        self._app.add_route(full_path, method, methods=["POST"])
 
 
     def add_route_get(self, path : str, method : callable):
@@ -103,7 +103,7 @@ class Plugin(object):
         """
         full_path = self._namespace + '/' + path
         full_path = full_path.replace('//', '/')
-        self._routes.append(Route(full_path, method, methods=["GET"]))
+        self._app.add_route(full_path, method, methods=["GET"])
 
 
 

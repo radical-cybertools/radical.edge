@@ -25,9 +25,6 @@ if TYPE_CHECKING:
 log = logging.getLogger("radical.edge")
 
 
-DEFAULT_BRIDGE_URL = "wss://localhost:8000/register"
-
-
 class EdgeService:
     """
     Embedded Radical Edge Service.
@@ -49,13 +46,16 @@ class EdgeService:
 
         Args:
             bridge_url (str): WebSocket URL for the Bridge. Defaults to env var
-                              'BRIDGE_URL' or internal default.
+                              'RADICAL_BRIDGE_URL' or internal default.
             plugins (list): List of plugin classes or instances to load
                             immediately.
             name (str): Edge service name for identification. Defaults to hostname.
         """
-        self._bridge_url = bridge_url or os.environ.get("BRIDGE_URL", DEFAULT_BRIDGE_URL)
+        self._bridge_url = bridge_url or os.environ.get("RADICAL_BRIDGE_URL")
         self._app = FastAPI(title="Embedded Edge Service")
+
+        if not self._bridge_url:
+            raise ValueError("Bridge URL missing as argument or RADICAL_BRIDGE_URL")
 
         self._plugins: Dict[str, Any] = {}
         self._name: str = name or socket.gethostname()
@@ -138,6 +138,11 @@ class EdgeService:
             plugin = plugin_cls(self._app)
 
         self._plugins[label] = plugin
+
+        # Debug routes
+        for route in self._app.routes:
+            if hasattr(route, 'path'):
+                log.info("[Edge] Registered route: %s %s", route.methods, route.path)
 
         # Notify Bridge of new plugin
         try:
@@ -251,24 +256,31 @@ class EdgeService:
 
         while not self._stop_event.is_set():
             try:
-                # SSL Context (if needed, trusting system defaults or local cert)
-                ssl_ctx = ssl.create_default_context()
-                certfile = os.environ.get( "RADICAL_EDGE_CERT", "cert.pem")
-                if os.path.exists(certfile):
-                    ssl_ctx.load_verify_locations(certfile)
-                else:
-                    pass
 
                 async with httpx.AsyncClient(transport=transport,
                                              base_url="http://local") as http_client:
                     self._http_client = http_client
 
                     try:
-                        # Determine if we need SSL
-                        ssl_arg = ssl_ctx if self._bridge_url.startswith("wss://") else None
+                        # For the ws connect, we change http(s) to ws(s)
+                        if self._bridge_url.startswith("https://"):
+                            ws_url = "wss://" + self._bridge_url[len("https://"):]
+                        elif self._bridge_url.startswith("http://"):
+                            ws_url = "ws://" + self._bridge_url[len("http://"):]
 
-                        async with websockets.connect(self._bridge_url + "/register",
-                                                      ssl=ssl_arg,
+                        # remove trailing slashes
+                        ws_url = ws_url.rstrip("/")
+
+                        # Determine if we need SSL
+                        ssl_ctx = None
+                        if ws_url.startswith("wss://"):
+                            ssl_ctx = ssl.create_default_context()
+                            certfile = os.environ.get("RADICAL_BRIDGE_CERT")
+                            if os.path.exists(certfile):
+                                ssl_ctx.load_verify_locations(certfile)
+
+                        async with websockets.connect(ws_url + "/register",
+                                                      ssl=ssl_ctx,
                                                       ping_interval=PING_INTERVAL,
                                                       ping_timeout=PING_TIMEOUT,
                                                       close_timeout=10) as ws:

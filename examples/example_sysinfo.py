@@ -8,7 +8,9 @@ from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 
-BRIDGE_URL = os.environ.get("BRIDGE_URL")
+bridge_url = os.environ.get("RADICAL_BRIDGE_URL")
+bridge_url = bridge_url.rstrip('/')
+bridge_cert = os.environ.get("RADICAL_BRIDGE_CERT")
 
 
 def bytes2human(n):
@@ -32,15 +34,15 @@ def main():
     import urllib3
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-    with httpx.Client(timeout=60.0, verify=False) as http:
+    with httpx.Client(timeout=60.0, verify=bridge_cert) as http:
 
         with console.status("[bold green]Connecting to Bridge..."):
             try:
-                r = http.post(f"{BRIDGE_URL}/edge/list")
+                r = http.post(f"{bridge_url}/edge/list")
                 r.raise_for_status()
                 data = r.json()
             except Exception as e:
-                console.print(f"[bold red]Failed to connect to bridge at {BRIDGE_URL}: {e}[/]")
+                console.print(f"[bold red]Failed to connect to bridge at {bridge_url}: {e}[/]")
                 sys.exit(1)
 
         # Structure: {'data': {'bridge': {...}, 'edges': {edge_name: {'plugins': {plugin_name: {namespace: ...}}}}}}
@@ -65,7 +67,7 @@ def main():
                         sysinfo_endpoints.append({
                             'edge': edge_name,
                             'plugin': plugin_name,
-                            'url': f"{BRIDGE_URL}{ns}/metrics"
+                            'url': f"{bridge_url}{ns}/metrics"
                         })
 
         if not sysinfo_endpoints:

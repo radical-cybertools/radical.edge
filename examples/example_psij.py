@@ -12,7 +12,9 @@ from rich.panel import Panel
 from rich.live import Live
 
 # Default Bridge HTTP URL
-BRIDGE_URL = os.environ.get("BRIDGE_URL")
+bridge_url = os.environ.get("RADICAL_BRIDGE_URL")
+bridge_url = bridge_url.rstrip('/')
+bridge_cert = os.environ.get("RADICAL_BRIDGE_CERT")
 
 
 def render_job_table(job_id, state, job_spec):
@@ -49,16 +51,16 @@ def main():
     import urllib3
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-    with httpx.Client(timeout=60.0, verify=False) as http:
+    with httpx.Client(timeout=60.0, verify=bridge_cert) as http:
 
         # 1. Discover Edge
         with console.status("[bold green]Connecting to Bridge..."):
             try:
-                r = http.post(f"{BRIDGE_URL}/edge/list")
+                r = http.post(f"{bridge_url}/edge/list")
                 r.raise_for_status()
                 data = r.json()
             except Exception as e:
-                console.print(f"[bold red]Failed to connect to bridge at {BRIDGE_URL}: {e}[/]")
+                console.print(f"[bold red]Failed to connect to bridge at {bridge_url}: {e}[/]")
                 sys.exit(1)
 
         registry = data.get('data', data)
@@ -76,7 +78,7 @@ def main():
         with console.status(f"[bold green]Loading PSIJ plugin on {edge_name}..."):
             # The bridge forwards /{edge_name}/... to the edge service
             # The edge service listens on /edge/load_plugin/{pname}
-            resp = http.post(f"{BRIDGE_URL}/{edge_name}/edge/load_plugin/radical.psij")
+            resp = http.post(f"{bridge_url}/{edge_name}/edge/load_plugin/radical.psij")
 
             if resp.status_code != 200:
                 # Check if it was already loaded (service might return 200 with namespace, but logic checks 404/others)
@@ -94,18 +96,18 @@ def main():
                  console.print(f"[bold red]Plugin loaded but no namespace returned: {resp.text}[/]")
                  sys.exit(1)
 
-            base_url = f"{BRIDGE_URL}{namespace}"
+            base_url = f"{bridge_url}{namespace}"
 
         console.print(f"[green]PSIJ Plugin active at: {base_url}[/]")
 
-        # 2. Register Client
-        with console.status("[bold green]Registering Client Session..."):
-            resp = http.post(f"{base_url}/register_client")
+        # 2. Register Session
+        with console.status("[bold green]Registering Session..."):
+            resp = http.post(f"{base_url}/register_session")
             if resp.status_code != 200:
                 console.print(f"[bold red]Failed to register: {resp.text}[/]")
                 sys.exit(1)
-            cid = resp.json()['cid']
-            console.print(f"[green]Registered Client ID: {cid}[/]")
+            sid = resp.json()['sid']
+            console.print(f"[green]Registered Session ID: {sid}[/]")
 
         # 3. Submit Job
         job_spec = {
@@ -118,11 +120,11 @@ def main():
         }
         payload = {
             "job_spec": job_spec,
-            "executor": "slurm",
+            "executor": "local",
         }
 
         with console.status("[bold green]Submitting Job..."):
-            resp = http.post(f"{base_url}/submit?cid={cid}", json=payload)
+            resp = http.post(f"{base_url}/submit?sid={sid}", json=payload)
             if resp.status_code != 200:
                 console.print(f"[bold red]Submission failed: {resp.text}[/]")
                 sys.exit(1)
@@ -135,7 +137,7 @@ def main():
         try:
             with Live(render_job_table(job_id, "UNKNOWN", job_spec), refresh_per_second=4) as live:
                 while True:
-                    resp = http.get(f"{base_url}/status/{job_id}?cid={cid}")
+                    resp = http.get(f"{base_url}/status/{job_id}?sid={sid}")
                     if resp.status_code != 200:
                         console.print(f"[bold red]Status check failed: {resp.text}[/]")
                         break
