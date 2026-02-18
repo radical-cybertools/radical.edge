@@ -6,6 +6,7 @@ import logging
 
 from fastapi import FastAPI, HTTPException, Request
 from starlette.responses import JSONResponse
+from datetime import timedelta
 
 import psij
 
@@ -34,7 +35,7 @@ class PSIJClient(PluginClient):
             # psij.JobSpec constructor keywords match the dict keys mostly
             # We might need some translation if the input dict is not 1:1
             # For now assume direct mapping or simple fields
-            
+
             # Simple fields first
             spec = psij.JobSpec()
             if 'executable' in job_spec_dict:
@@ -45,24 +46,33 @@ class PSIJClient(PluginClient):
                 spec.directory = job_spec_dict['directory']
             if 'environment' in job_spec_dict:
                 spec.environment = job_spec_dict['environment']
+            if 'attributes' in job_spec_dict:
+                attribs = job_spec_dict['attributes']
+                spec.attributes = psij.JobAttributes()
+                duration = attribs.get("duration")
+                if duration:
+                    spec.attributes.duration = timedelta(seconds=int(duration))
+                spec.attributes.queue_name = attribs.get("queue_name")
+                spec.attributes.project_name = attribs.get("project_name")
+                spec.attributes.reservation_id = attribs.get("reservation_id")
 
             # Create Job
             job = psij.Job(spec)
-            
+
             # Get Executor
             # Note: Executor creation might be expensive, maybe cache them?
             # For now, create new one per request or per client/executor pair
             # psij.JobExecutor.get_instance(name)
             ex = psij.JobExecutor.get_instance(executor_name)
-            
+
             # Submit
             ex.submit(job)
-            
+
             # Cache job
-            # job.id is only available AFTER submit? 
+            # job.id is only available AFTER submit?
             # psij.Job.id is assigned by the system usually or we can check
             self._jobs[job.id] = job
-            
+
             log.info("Submitted job %s to %s", job.id, executor_name)
             return {"job_id": job.id, "native_id": job.native_id}
 
@@ -151,14 +161,14 @@ class PluginPSIJ(ClientManagedPlugin):
         job_spec = data.get('job_spec', {})
         executor = data.get('executor', 'local')
 
-        return await self._forward(cid, PSIJClient.submit_job, 
-                                 job_spec_dict=job_spec, 
+        return await self._forward(cid, PSIJClient.submit_job,
+                                 job_spec_dict=job_spec,
                                  executor_name=executor)
 
     async def get_job_status(self, request: Request) -> JSONResponse:
         cid = request.query_params.get('cid')
         job_id = request.path_params['job_id']
-        
+
         if not cid:
             raise HTTPException(status_code=400, detail="cid required")
 
@@ -167,7 +177,7 @@ class PluginPSIJ(ClientManagedPlugin):
     async def cancel_job(self, request: Request) -> JSONResponse:
         cid = request.query_params.get('cid')
         job_id = request.path_params['job_id']
-        
+
         if not cid:
             raise HTTPException(status_code=400, detail="cid required")
 
