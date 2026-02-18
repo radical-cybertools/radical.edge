@@ -254,7 +254,7 @@ class EdgeService:
                 # SSL Context (if needed, trusting system defaults or local cert)
                 ssl_ctx = ssl.create_default_context()
                 certfile = os.environ.get( "RADICAL_EDGE_CERT", "cert.pem")
-                if os.path.exists(certfile)
+                if os.path.exists(certfile):
                     ssl_ctx.load_verify_locations(certfile)
                 else:
                     pass
@@ -267,7 +267,7 @@ class EdgeService:
                         # Determine if we need SSL
                         ssl_arg = ssl_ctx if self._bridge_url.startswith("wss://") else None
 
-                        async with websockets.connect(self._bridge_url,
+                        async with websockets.connect(self._bridge_url + "/register",
                                                       ssl=ssl_arg,
                                                       ping_interval=PING_INTERVAL,
                                                       ping_timeout=PING_TIMEOUT,
