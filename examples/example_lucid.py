@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 
+import os
 import httpx
 import pprint
 
-BRIDGE_HTTP = "https://95.217.193.116:8000"
-BRIDGE_HTTP = "https://localhost:8000"
+BRIDGE_URL = os.environ.get("BRIDGE_URL")
 
 
 def main():
@@ -27,23 +27,23 @@ def main():
 
         print('=================================')
 
-        r = http.post(f"{BRIDGE_HTTP}/edge/list")
+        r = http.post(f"{BRIDGE_URL}/edge/list")
         print('---------------------------------')
         print("list")
         data = check_response(r)
         pprint.pprint(data)
 
         # load lucid plugin on the edge service
-        r = http.post(f"{BRIDGE_HTTP}/edge/load_plugin/radical.lucid")
+        r = http.post(f"{BRIDGE_URL}/edge/load_plugin/radical.lucid")
         print('---------------------------------')
         print("load_plugin")
         data = check_response(r)
         ns   = data["namespace"]
-        base = f"{BRIDGE_HTTP}{ns}"
+        base = f"{BRIDGE_URL}{ns}"
         print(f"namespace: {ns}")
         print(f"base url : {base}")
 
-        r = http.post(f"{BRIDGE_HTTP}/edge/list")
+        r = http.post(f"{BRIDGE_URL}/edge/list")
         print('---------------------------------')
         print("list")
         data = check_response(r)
