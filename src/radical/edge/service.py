@@ -253,8 +253,9 @@ class EdgeService:
             try:
                 # SSL Context (if needed, trusting system defaults or local cert)
                 ssl_ctx = ssl.create_default_context()
-                if os.path.exists("cert.pem"):
-                    ssl_ctx.load_verify_locations("cert.pem")
+                certfile = os.environ.get( "RADICAL_EDGE_CERT", "cert.pem")
+                if os.path.exists(certfile)
+                    ssl_ctx.load_verify_locations(certfile)
                 else:
                     pass
 

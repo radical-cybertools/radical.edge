@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import json
+import os
 import uuid
 
 from typing  import Dict, Any
@@ -18,7 +19,7 @@ from starlette.websockets    import WebSocketState
 app = FastAPI(title="Bridge")
 
 origins = [
-    'https://dev-1.bv-brc.org'
+    "https://dev-1.bv-brc.org"
 ]
 
 app.add_middleware(
@@ -35,10 +36,10 @@ edge_connections: Dict[str, WebSocket] = {}
 pending: Dict[str, asyncio.Future] = dict()
 pending_lock                       = asyncio.Lock()
 
-# New structure: {'bridge': {...}, 'edges': {edge_name: {'plugins': {...}}}}
+# New structure: {"bridge": {...}, "edges": {edge_name: {"plugins": {...}}}}
 endpoints: Dict[str, Any] = {
-    'bridge': {},  # URL will be set at startup
-    'edges': {}
+    "bridge": {},  # URL will be set at startup
+    "edges": {}
 }
 
 HEARTBEAT_INTERVAL = 20
@@ -84,13 +85,13 @@ async def register(ws: WebSocket):
             # print(f"[Bridge] Message received: {data}")
 
             if data.get("type") == "pong":
-                # print('[Bridge] Pong received')
+                # print("[Bridge] Pong received")
                 pass
 
             elif data.get("type") == "register":
-                frame_edge_name = data.get('edge_name')
-                plugin_name = data.get('plugin_name')
-                endpoint_data = data.get('endpoint', {})
+                frame_edge_name = data.get("edge_name")
+                plugin_name = data.get("plugin_name")
+                endpoint_data = data.get("endpoint", {})
 
                 if not frame_edge_name:
                     print("[Bridge] Registration missing edge_name")
@@ -119,16 +120,16 @@ async def register(ws: WebSocket):
                     continue
 
                 # Initialize edge in endpoints registry if new
-                if edge_name not in endpoints['edges']:
-                    endpoints['edges'][edge_name] = {'plugins': {}}
+                if edge_name not in endpoints["edges"]:
+                    endpoints["edges"][edge_name] = {"plugins": {}}
 
                 # Register plugin
                 if plugin_name:
                     print(f"[Bridge] Registering plugin: {plugin_name} on {edge_name}")
-                    endpoints['edges'][edge_name]['plugins'][plugin_name] = endpoint_data
+                    endpoints["edges"][edge_name]["plugins"][plugin_name] = endpoint_data
                 else:
                     # Edge base endpoint (radical.edge)
-                    endpoints['edges'][edge_name]['endpoint'] = endpoint_data
+                    endpoints["edges"][edge_name]["endpoint"] = endpoint_data
 
             elif data.get("type") == "response":
                 req_id = data["req_id"]
@@ -160,9 +161,9 @@ async def register(ws: WebSocket):
             # Only unregister if this WS was the active one for the name
             # (Prevent rejected duplicates from killing the valid session)
             if edge_connections.get(edge_name) == ws:
-                if edge_name in endpoints['edges']:
+                if edge_name in endpoints["edges"]:
                     print(f"[Bridge] Unregistering edge: {edge_name}")
-                    del endpoints['edges'][edge_name]
+                    del endpoints["edges"][edge_name]
 
                 if edge_name in edge_connections:
                     del edge_connections[edge_name]
@@ -307,8 +308,8 @@ if __name__ == "__main__":
     # Uvicorn config
     host = "0.0.0.0"
     port = 8000
-    ssl_certfile = "cert.pem"
-    ssl_keyfile = "key.pem"
+    ssl_certfile = os.environ.get('RADICAL_EDGE_CERT', 'cert.pem')
+    ssl_keyfile = os.environ.get('RADICAL_EDGE_KEY', "key.pem")
 
     # Construct bridge URL based on config
     protocol = "wss" if ssl_certfile else "ws"
@@ -316,7 +317,7 @@ if __name__ == "__main__":
     advertise_host = "localhost" if host == "0.0.0.0" else host
     bridge_url = f"{protocol}://{advertise_host}:{port}/register"
 
-    endpoints['bridge']['url'] = bridge_url
+    endpoints["bridge"]["url"] = bridge_url
 
     print(f"[Bridge] Advertising URL: {bridge_url}")
 

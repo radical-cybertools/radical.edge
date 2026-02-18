@@ -5,28 +5,34 @@ Package radical.edge
 Create a certificate:
 ---------------------
 
+Run this on the bridge machine which holds the original self-signed cert which
+is allows remote access (only use this for development!):
+
 ```sh
-# Self-signed certificate (for development)
-openssl req -x509 -newkey rsa:4096 -nodes \
-  -keyout key.pem \
-  -out cert.pem \
-  -days 365 \
-  -subj "/CN=localhost"
+openssl req -x509 -nodes -days 3650 -newkey rsa:4096 \
+-keyout edge_key.pem -out edge_cert.pem \
+-subj "/CN=95.217.193.116" \
+-addext "subjectAltName = IP:95.217.193.116,DNS:localhost,IP:127.0.0.1"
 ```
 
-use like this:
+Add every address clients will use, for example:
 
-```py
-import uvicorn
-
-uvicorn.run(
-    "app:app",
-    host="0.0.0.0",
-    port=8443,
-    ssl_keyfile="key.pem",
-    ssl_certfile="cert.pem"
-)
+``
+...
+-addext "subjectAltName = \
+IP:95.217.193.116,\
+IP:10.0.0.5,\
+IP:127.0.0.1,\
+DNS:edge.example.org,\
+DNS:localhost"
 ```
+
+Before running any of the commands below, set
+```sh
+export RADICAL_EDGE_CERT=`pwd`/edge_cert.pem
+export RADICAL_EDGE_KEY=`pwd`/edge_key.pem
+```
+
 
 Test in local environment:
 --------------------------
