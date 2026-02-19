@@ -1,106 +1,49 @@
 #!/usr/bin/env python3
 
-import os
-import httpx
-import pprint
-
-bridge_url = os.environ.get("RADICAL_BRIDGE_URL")
-bridge_url = bridge_url.rstrip('/')
-bridge_cert = os.environ.get("RADICAL_BRIDGE_CERT")
-
+from radical.edge import BridgeClient
 
 
 def main():
 
-    def check_response(r):
-        try:
-            r.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            print(f"Error response {r.status_code} while requesting {r.url!r}.")
-            print(f"Response content: {r.text}")
-            raise e
+    bc = BridgeClient()
+    eids = bc.list_edges()
 
-        data = r.json()
-      # pprint.pprint(data)
+    if not eids:
+        print("No edges found.")
+        return
 
-        return data
+    eid = eids[0]
+    print(f"Using edge: {eid}")
 
-    with httpx.Client(timeout=60.0, verify=bridge_cert) as http:
+    ec = bc.get_edge_client(eid)
+    lucid = ec.get_plugin('lucid')
 
-        print('=================================')
+    print("Submitting pilot...")
+    res = lucid.pilot_submit({
+        'resource': 'local.localhost',
+        'nodes': 1,
+        'runtime': 10
+    })
+    pid = res['pid']
+    print(f"Pilot ID: {pid}")
 
-        r = http.post(f"{bridge_url}/edge/list")
-        print('---------------------------------')
-        print("list")
-        data = check_response(r)
-        pprint.pprint(data)
+    print("Submitting tasks...")
+    tids = []
+    for _ in range(3):
+        res = lucid.task_submit({'description': {'executable': 'date'}})
+        tid = res['tid']
+        tids.append(tid)
+        print(f"Task ID: {tid}")
 
-        # load lucid plugin on the edge service
-        r = http.post(f"{bridge_url}/edge/load_plugin/radical.lucid")
-        print('---------------------------------')
-        print("load_plugin")
-        data = check_response(r)
-        ns   = data["namespace"]
-        base = f"{bridge_url}{ns}"
-        print(f"namespace: {ns}")
-        print(f"base url : {base}")
+    for tid in tids:
+        print(f"Waiting for task {tid}...")
+        res = lucid.task_wait(tid)
+        stdout = res['task']['stdout'].strip()
+        print(f"Task {tid} result: {stdout}")
 
-        r = http.post(f"{bridge_url}/edge/list")
-        print('---------------------------------')
-        print("list")
-        data = check_response(r)
-        pprint.pprint(data)
-
-        # register session
-        r = http.post(f"{base}/register_session")
-        print('---------------------------------')
-        print("register_session")
-        data = check_response(r)
-        sid  = data["sid"]
-
-        # GET example (echo)
-        r = http.get(f"{base}/echo/{sid}", params={"q": "from-session"})
-        print('---------------------------------')
-        print("GET /echo/{sid}")
-        check_response(r)
-
-        # submit a pilot
-        r = http.post(f"{base}/pilot_submit/{sid}",
-                      json={'description': {'resource': 'local.localhost',
-                                            'nodes'   : 10,
-                                            'runtime' : 10}})
-        print('---------------------------------')
-        print("POST /submit_pilot/{sid}")
-        check_response(r)
-
-        tids = list()
-        for _ in range(10):
-            r = http.post(f"{base}/task_submit/{sid}",
-                          json={'description': {'executable': 'date'}})
-            print('---------------------------------')
-            print("POST /task_submit/{sid}")
-            data = check_response(r)
-            tid  = data["tid"]
-            tids.append(tid)
-
-        for tid in tids:
-            r = http.get(f"{base}/task_wait/{sid}/{tid}")
-            print('---------------------------------')
-            print("GET /task_wait/{sid}/{tid}")
-            data = check_response(r)
-            ret  = data['task']['stdout'].strip()
-            print(f"task {tid} returned: {ret}")
-
-        # unregister session
-        r = http.post(f"{base}/unregister_session/{sid}")
-        print('---------------------------------')
-        print("unregister_session")
-        check_response(r)
+    bc.close()
 
 
 if __name__ == "__main__":
-
     main()
-
-
 

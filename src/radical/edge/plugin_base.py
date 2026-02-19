@@ -1,3 +1,4 @@
+import uuid
 from fastapi import FastAPI
 
 from starlette.routing   import Route, BaseRoute
@@ -20,6 +21,8 @@ class Plugin(object):
     """
 
     _registry: dict[str, type] = {}
+    session_class: type = None
+    remote_client_class: type = None
 
     def __init_subclass__(cls, **kwargs):
         """Auto-register subclasses that define plugin_name."""
@@ -36,6 +39,11 @@ class Plugin(object):
         """Look up a registered plugin class by name."""
         return cls._registry.get(name)
 
+    @classmethod
+    def get_plugin_names(cls) -> list[str]:
+        """Get a list of registered plugin names."""
+        return list(cls._registry.keys())
+
     def __init__(self, app: FastAPI, instance_name: str):
         """
         Initialize the Plugin with a FastAPI app and an instance name.
@@ -46,6 +54,12 @@ class Plugin(object):
         """
 
         self._instance_name: str = instance_name
+        self._uid: str = str(uuid.uuid4())
+        # Use simple hex or full uuid? Tests expect valid UUID string.
+        # But namespace commonly uses truncated or full.
+        # test_plugin_base.py: assert uuid.UUID(plugin._uid)
+        # So full UUID string is fine.
+
         self._namespace: str = f"/{self._instance_name}"
         self._app = app
 
@@ -71,6 +85,16 @@ class Plugin(object):
           str: The instance name of the plugin.
         """
         return self._instance_name
+
+    @property
+    def uid(self) -> str:
+        """
+        Get the unique ID of the plugin instance.
+
+        Returns:
+            str: The UID of the plugin.
+        """
+        return self._uid
 
 
 

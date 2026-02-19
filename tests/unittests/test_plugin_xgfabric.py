@@ -8,7 +8,7 @@ __license__   = 'MIT'
 
 
 import radical.edge
-from radical.edge.plugin_xgfabric import PluginXGFabric, XGFabricClient
+from radical.edge.plugin_xgfabric import PluginXGFabric, XGFabricSession
 
 import pytest
 from unittest.mock import Mock, AsyncMock, patch
@@ -17,65 +17,65 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 
-def test_xgfabric_client_initialization():
+def test_xgfabric_session_initialization():
     '''
-    Test XGFabricClient initialization.
+    Test XGFabricSession initialization.
     '''
-    client = XGFabricClient("test_client_001")
+    session = XGFabricSession("test_session_001")
 
-    assert client._cid == "test_client_001"
-    assert client._active is True
+    assert session._sid == "test_session_001"
+    assert session._active is True
 
 
 @pytest.mark.asyncio
-async def test_xgfabric_client_close():
+async def test_xgfabric_session_close():
     '''
-    Test closing an XGFabricClient.
+    Test closing an XGFabricSession.
     '''
-    client = XGFabricClient("test_client_001")
+    session = XGFabricSession("test_session_001")
 
-    result = await client.close()
+    result = await session.close()
 
     assert result == {}
-    assert client._active is False
+    assert session._active is False
 
 
 @pytest.mark.asyncio
-async def test_xgfabric_client_echo():
+async def test_xgfabric_session_echo():
     '''
     Test echo functionality.
     '''
-    client = XGFabricClient("test_client_001")
+    session = XGFabricSession("test_session_001")
 
-    result = await client.request_echo("hello world")
+    result = await session.request_echo("hello world")
 
-    assert result["cid"] == "test_client_001"
+    assert result["sid"] == "test_session_001"
     assert result["echo"] == "hello world"
 
 
 @pytest.mark.asyncio
-async def test_xgfabric_client_echo_default():
+async def test_xgfabric_session_echo_default():
     '''
     Test echo with default parameter.
     '''
-    client = XGFabricClient("test_client_001")
+    session = XGFabricSession("test_session_001")
 
-    result = await client.request_echo()
+    result = await session.request_echo()
 
-    assert result["cid"] == "test_client_001"
+    assert result["sid"] == "test_session_001"
     assert result["echo"] == "hello"
 
 
 @pytest.mark.asyncio
-async def test_xgfabric_client_echo_after_close():
+async def test_xgfabric_session_echo_after_close():
     '''
-    Test that echo raises error after client is closed.
+    Test that echo raises error after session is closed.
     '''
-    client = XGFabricClient("test_client_001")
-    await client.close()
+    session = XGFabricSession("test_session_001")
+    await session.close()
 
     with pytest.raises(RuntimeError, match="session is closed"):
-        await client.request_echo()
+        await session.request_echo()
 
 
 def test_plugin_xgfabric_initialization():
@@ -85,22 +85,22 @@ def test_plugin_xgfabric_initialization():
     app = FastAPI()
     plugin = PluginXGFabric(app)
 
-    assert plugin._name == "xgfabric"
-    assert plugin._clients == {}
-    assert plugin._next_id == 0
+    assert plugin._instance_name == "xgfabric"
+    assert plugin._sessions == {}
     assert plugin._id_lock is not None
 
     # Check that routes were added
     route_paths = [route.path for route in app.router.routes]
-    assert any("register_client" in path for path in route_paths)
-    assert any("unregister_client" in path for path in route_paths)
+    assert any("register_session" in path for path in route_paths)
+    assert any("unregister_session" in path for path in route_paths)
     assert any("echo" in path for path in route_paths)
 
 
+
 @pytest.mark.asyncio
-async def test_plugin_xgfabric_register_client():
+async def test_plugin_xgfabric_register_session():
     '''
-    Test registering a new client.
+    Test registering a new session.
     '''
     app = FastAPI()
     plugin = PluginXGFabric(app)
@@ -108,69 +108,70 @@ async def test_plugin_xgfabric_register_client():
     # Mock request
     request = Mock(spec=Request)
 
-    response = await plugin.register_client(request)
+    response = await plugin.register_session(request)
 
     assert isinstance(response, JSONResponse)
-    assert "client.0000" in plugin._clients
-    assert plugin._next_id == 1
+    
+    import json
+    data = json.loads(response.body)
+    sid = data['sid']
+    assert sid in plugin._sessions
 
 
 @pytest.mark.asyncio
-async def test_plugin_xgfabric_register_multiple_clients():
+async def test_plugin_xgfabric_register_multiple_sessions():
     '''
-    Test registering multiple clients increments IDs.
+    Test registering multiple sessions.
     '''
     app = FastAPI()
     plugin = PluginXGFabric(app)
 
     request = Mock(spec=Request)
 
-    await plugin.register_client(request)
-    await plugin.register_client(request)
-    await plugin.register_client(request)
+    for _ in range(3):
+        await plugin.register_session(request)
 
-    assert "client.0000" in plugin._clients
-    assert "client.0001" in plugin._clients
-    assert "client.0002" in plugin._clients
-    assert plugin._next_id == 3
+    assert len(plugin._sessions) == 3
 
 
 @pytest.mark.asyncio
-async def test_plugin_xgfabric_unregister_client():
+async def test_plugin_xgfabric_unregister_session():
     '''
-    Test unregistering a client.
+    Test unregistering a session.
     '''
     app = FastAPI()
     plugin = PluginXGFabric(app)
 
-    # Register a client first
+    # Register a session first
     request = Mock(spec=Request)
-    await plugin.register_client(request)
+    response = await plugin.register_session(request)
+    import json
+    sid = json.loads(response.body)['sid']
 
     # Unregister it
-    request.path_params = {"cid": "client.0000"}
-    response = await plugin.unregister_client(request)
+    request.path_params = {"sid": sid}
+    response = await plugin.unregister_session(request)
 
     assert isinstance(response, JSONResponse)
-    assert "client.0000" not in plugin._clients
+    assert sid not in plugin._sessions
 
 
 @pytest.mark.asyncio
-async def test_plugin_xgfabric_unregister_unknown_client():
+async def test_plugin_xgfabric_unregister_unknown_session():
     '''
-    Test unregistering an unknown client raises HTTPException.
+    Test unregistering an unknown session raises HTTPException.
     '''
     app = FastAPI()
     plugin = PluginXGFabric(app)
 
     request = Mock(spec=Request)
-    request.path_params = {"cid": "unknown_client"}
+    request.path_params = {"sid": "unknown_session"}
 
     with pytest.raises(HTTPException) as exc_info:
-        await plugin.unregister_client(request)
+        await plugin.unregister_session(request)
 
     assert exc_info.value.status_code == 404
-    assert "unknown client id" in exc_info.value.detail
+    assert "unknown session id" in exc_info.value.detail
 
 
 @pytest.mark.asyncio
@@ -181,27 +182,34 @@ async def test_plugin_xgfabric_echo():
     app = FastAPI()
     plugin = PluginXGFabric(app)
 
-    # Register a client
+    # Register a session
     request = Mock(spec=Request)
-    await plugin.register_client(request)
+    response = await plugin.register_session(request)
+    import json
+    sid = json.loads(response.body)['sid']
 
     # Echo request
-    request.path_params = {"cid": "client.0000", "q": "test message"}
+    request.path_params = {"sid": sid}
+    request.query_params = {"q": "test message"}
+    
     response = await plugin.echo(request)
 
     assert isinstance(response, JSONResponse)
+    data = json.loads(response.body)
+    assert data['echo'] == "test message"
 
 
 @pytest.mark.asyncio
-async def test_plugin_xgfabric_echo_unknown_client():
+async def test_plugin_xgfabric_echo_unknown_session():
     '''
-    Test echo with unknown client raises HTTPException.
+    Test echo with unknown session raises HTTPException.
     '''
     app = FastAPI()
     plugin = PluginXGFabric(app)
 
     request = Mock(spec=Request)
-    request.path_params = {"cid": "unknown_client", "q": "test"}
+    request.path_params = {"sid": "unknown_session"}
+    request.query_params = {"q": "test"}
 
     with pytest.raises(HTTPException) as exc_info:
         await plugin.echo(request)
@@ -217,32 +225,37 @@ async def test_plugin_xgfabric_forward_success():
     app = FastAPI()
     plugin = PluginXGFabric(app)
 
-    # Register a client
+    # Register a session
     request = Mock(spec=Request)
-    await plugin.register_client(request)
+    response = await plugin.register_session(request)
+    import json
+    sid = json.loads(response.body)['sid']
 
     # Forward a request
-    response = await plugin._forward("client.0000", XGFabricClient.request_echo, q="test")
+    response = await plugin._forward(sid, XGFabricSession.request_echo, q="test")
 
     assert isinstance(response, JSONResponse)
 
 
 @pytest.mark.asyncio
-async def test_plugin_xgfabric_forward_client_error():
+async def test_plugin_xgfabric_forward_session_error():
     '''
-    Test _forward method when client method raises error.
+    Test _forward method when session method raises error.
     '''
     app = FastAPI()
     plugin = PluginXGFabric(app)
 
-    # Register and close a client
+    # Register and close a session
     request = Mock(spec=Request)
-    await plugin.register_client(request)
-    await plugin._clients["client.0000"].close()
+    response = await plugin.register_session(request)
+    import json
+    sid = json.loads(response.body)['sid']
+    
+    await plugin._sessions[sid].close()
 
-    # Try to use closed client
+    # Try to use closed session
     with pytest.raises(HTTPException) as exc_info:
-        await plugin._forward("client.0000", XGFabricClient.request_echo)
+        await plugin._forward(sid, XGFabricSession.request_echo)
 
     assert exc_info.value.status_code == 500
 
@@ -250,7 +263,7 @@ async def test_plugin_xgfabric_forward_client_error():
 @pytest.mark.asyncio
 async def test_plugin_xgfabric_concurrent_registration():
     '''
-    Test that concurrent client registration uses lock properly.
+    Test that concurrent session registration uses lock properly.
     '''
     import asyncio
 
@@ -259,13 +272,12 @@ async def test_plugin_xgfabric_concurrent_registration():
 
     request = Mock(spec=Request)
 
-    # Register multiple clients concurrently
-    tasks = [plugin.register_client(request) for _ in range(10)]
+    # Register multiple sessions concurrently
+    tasks = [plugin.register_session(request) for _ in range(10)]
     await asyncio.gather(*tasks)
 
     # All should have unique IDs
-    assert len(plugin._clients) == 10
-    assert plugin._next_id == 10
+    assert len(plugin._sessions) == 10
 
 
 if __name__ == '__main__':

@@ -22,12 +22,11 @@ def test_plugin_initialization():
     app = FastAPI()
     plugin = Plugin(app, "test_plugin")
 
-    assert plugin._name == "test_plugin"
+    assert plugin.instance_name == "test_plugin"
     assert isinstance(plugin._uid, str)
     # Verify it's a valid UUID
     assert uuid.UUID(plugin._uid)
-    assert plugin._namespace == f"/test_plugin/{plugin._uid}"
-    assert plugin._routes is app.router.routes
+    assert plugin._namespace == f"/{plugin.instance_name}"
 
 
 def test_plugin_uid_property():
@@ -50,7 +49,7 @@ def test_plugin_namespace_property():
     app = FastAPI()
     plugin = Plugin(app, "test_plugin")
 
-    expected_namespace = f"/test_plugin/{plugin._uid}"
+    expected_namespace = "/test_plugin"
     assert plugin.namespace == expected_namespace
 
 
@@ -169,10 +168,12 @@ def test_plugin_unique_uids():
     assert plugin1.uid != plugin3.uid
     assert plugin2.uid != plugin3.uid
 
-    # All namespaces should be different
-    assert plugin1.namespace != plugin2.namespace
-    assert plugin1.namespace != plugin3.namespace
-    assert plugin2.namespace != plugin3.namespace
+    # Namespaces will be the same if names are the same, but we don't allow
+    # duplicate names for different types in registration now? 
+    # Actually Plugin(app, name) just stores it.
+    assert plugin1.namespace == "/test_plugin"
+    assert plugin2.namespace == "/test_plugin"
+    assert plugin3.namespace == "/another_plugin"
 
 
 if __name__ == '__main__':

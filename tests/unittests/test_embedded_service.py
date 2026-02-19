@@ -18,14 +18,15 @@ async def test_embedded_service_async_init():
     """Test async service initialization and plugin loading."""
 
     # Mock plugin class
-    class MockPlugin(re.ClientManagedPlugin):
-        client_class = Mock()
-
+    # Subclassing automatically registers it if plugin_name is set
+    class MockPlugin(re.SessionManagedPlugin):
+        plugin_name = "mock_plugin"
+        session_class = Mock()
         def __init__(self, app):
             super().__init__(app, 'mock_plugin')
 
-    # Create service
-    service = EdgeService(plugins=[MockPlugin])
+    # EdgeService now loads registered plugins automatically
+    service = EdgeService(bridge_url="wss://localhost:0")
 
     assert 'mock_plugin' in service._plugins
     assert isinstance(service._plugins['mock_plugin'], MockPlugin)

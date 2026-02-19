@@ -5,6 +5,7 @@ __copyright__ = 'Copyright 2024, RADICAL@Rutgers'
 __license__   = 'MIT'
 
 
+
 from fastapi import FastAPI
 
 
@@ -37,7 +38,7 @@ class PluginXGFabric(SessionManagedPlugin):
     All session management functionality is inherited from SessionManagedPlugin.
     """
 
-    plugin_name = "radical.xgfabric"
+    plugin_name = "xgfabric"
     session_class = XGFabricSession
     version = '0.0.1'
 
@@ -46,9 +47,9 @@ class PluginXGFabric(SessionManagedPlugin):
         Initialize the XGFabric plugin with the FastAPI app.
 
         Routes are automatically registered by the base class:
-        - POST /xgfabric/{uid}/register_session
-        - POST /xgfabric/{uid}/unregister_session/{sid}
-        - GET  /xgfabric/{uid}/echo/{sid}
+        - POST /xgfabric/register_session
+        - POST /xgfabric/unregister_session/{sid}
+        - GET  /xgfabric/echo/{sid}
 
         Args:
             app (FastAPI): The FastAPI application instance.

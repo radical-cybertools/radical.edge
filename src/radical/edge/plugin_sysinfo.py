@@ -446,14 +446,59 @@ class SysInfoProvider:
         return metrics
 
 
-class PluginSysInfo(Plugin):
+from .plugin_session_base import PluginSession
+from .plugin_session_managed import SessionManagedPlugin
+
+
+class SysInfoSession(PluginSession):
+    """
+    SysInfo session (Service-side).
+
+    Provides methods to gather system metrics.
+    """
+    def __init__(self, sid: str, provider: SysInfoProvider):
+        super().__init__(sid)
+        self._provider = provider
+
+    async def get_metrics(self) -> dict:
+        """
+        Return current system metrics.
+        """
+        self._check_active()
+        return self._provider.get_metrics()
+
+
+from .client import PluginClient as RemotePluginClientBase
+
+class SysInfoRemoteClient(RemotePluginClientBase):
+    """
+    Client-side interface for the SysInfo plugin.
+    """
+
+    def get_metrics(self) -> dict:
+        """
+        Return current system metrics.
+        """
+        if not self.sid:
+            raise RuntimeError("No active session")
+
+        url = self._url(f"metrics/{self.sid}")
+        resp = self._http.get(url)
+        resp.raise_for_status()
+        return resp.json()
+
+
+class PluginSysInfo(SessionManagedPlugin):
     """
     SysInfo plugin for Radical Edge.
 
     Provides system hardware configuration and resource utilization metrics.
     """
 
-    plugin_name = "radical.sysinfo"
+    plugin_name = "sysinfo"
+    session_class = SysInfoSession
+    remote_client_class = SysInfoRemoteClient
+    version = '0.0.1'
 
     def __init__(self, app: FastAPI):
         """
@@ -464,11 +509,19 @@ class PluginSysInfo(Plugin):
         self._provider = SysInfoProvider()
 
         # Register routes
-        self.add_route_get('metrics', self.get_metrics_endpoint)
+        self.add_route_get('metrics/{sid}', self.get_metrics_endpoint)
 
-    def get_metrics_endpoint(self, request: Request) -> JSONResponse:
+        self._log_routes()
+
+    def _create_session(self, sid: str, **kwargs) -> SysInfoSession:
         """
-        Return current system metrics.
+        Custom session creation to pass the provider.
         """
-        metrics = self._provider.get_metrics()
-        return JSONResponse(metrics)
+        return SysInfoSession(sid, self._provider)
+
+    async def get_metrics_endpoint(self, request: Request) -> JSONResponse:
+        """
+        Return current system metrics for the specified session.
+        """
+        sid = request.path_params['sid']
+        return await self._forward(sid, SysInfoSession.get_metrics)

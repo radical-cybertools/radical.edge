@@ -5,13 +5,12 @@ __copyright__ = 'Copyright 2024, RADICAL@Rutgers'
 __license__   = 'MIT'
 
 
-from fastapi import FastAPI
 
-from starlette.requests  import Request
+from fastapi import FastAPI
+from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 import asyncio
-
 
 from .plugin_session_base import PluginSession
 from .plugin_session_managed import SessionManagedPlugin
@@ -96,21 +95,10 @@ class PluginQueueInfo(SessionManagedPlugin):
     QueueInfo plugin for Radical Edge.
 
     This plugin exposes batch system queue information, job listings, and
-    allocation data via REST endpoints. It manages per-session sessions
-    and delegates to a QueueInfo backend for data collection.
-
-    Standard routes inherited from SessionManagedPlugin:
-    - POST /queue_info/{uid}/register_session
-    - POST /queue_info/{uid}/unregister_session/{sid}
-    - GET  /queue_info/{uid}/echo/{sid}
-
-    QueueInfo-specific routes:
-    - GET /queue_info/{uid}/get_info/{sid}
-    - GET /queue_info/{uid}/list_jobs/{sid}/{queue}
-    - GET /queue_info/{uid}/list_allocations/{sid}
+    allocation data via REST endpoints.
     """
 
-    plugin_name = "radical.queue_info"
+    plugin_name = "queue_info"
     session_class = QueueInfoSession
     version = '0.0.1'
 

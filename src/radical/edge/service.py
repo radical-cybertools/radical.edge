@@ -19,8 +19,7 @@ from httpx import ASGITransport
 import radical.edge as re
 import radical.edge.logging_config  # noqa: F401 # pylint: disable=unused-import
 
-if TYPE_CHECKING:
-    from radical.edge.plugin_base import Plugin
+from radical.edge.plugin_base import Plugin
 
 log = logging.getLogger("radical.edge")
 
@@ -40,15 +39,13 @@ class EdgeService:
         app (FastAPI): The internal FastAPI application hosting the plugins.
     """
 
-    def __init__(self, bridge_url: str = None, plugins: list = None, name: str = None):
+    def __init__(self, bridge_url: str = None, name: str = None):
         """
         Initialize the Edge Service.
 
         Args:
             bridge_url (str): WebSocket URL for the Bridge. Defaults to env var
                               'RADICAL_BRIDGE_URL' or internal default.
-            plugins (list): List of plugin classes or instances to load
-                            immediately.
             name (str): Edge service name for identification. Defaults to hostname.
         """
         self._bridge_url = bridge_url or os.environ.get("RADICAL_BRIDGE_URL")
@@ -66,105 +63,29 @@ class EdgeService:
         self._running_task = None
         self._thread = None
 
-        self._app.add_api_route("/edge/load_plugin/{pname}",
-                                self._load_plugin_endpoint,
-                                methods=["POST"])
+        self._load_plugins()
 
-        if plugins:
-            for p in plugins:
-                self.load_plugin(p)
-
-        # Always load SysInfo plugin
-        self.load_plugin(re.PluginSysInfo(self._app))
 
     @property
     def bridge_url(self):
         """Get the current Bridge URL."""
         return self._bridge_url
 
-    def load_plugin(self, plugin_input: Union[Type["Plugin"], "Plugin"]):
+    def _load_plugins(self):
         """
-        Load a plugin into the service.
-
-        Args:
-            plugin_input: Either a Plugin class or an initialized Plugin instance.
+        Load all known and enabled plugin into the service.
         """
-        if plugin_input is None:
-            raise ValueError("plugin_input cannot be None")
 
-        if isinstance(plugin_input, type):
-            # It's a class, instantiate it with our app
-            plugin_instance = plugin_input(self._app)
-        else:
-            # Load the pre-initialized plugin instance as-is.
-            # Note: The instance should have been initialized with the same
-            # FastAPI app for proper routing integration.
-            plugin_instance = plugin_input
+        for pname in Plugin.get_plugin_names():
 
-        name = plugin_instance.instance_name
-        self._plugins[name] = plugin_instance
-        log.info("[Edge] Loaded plugin: %s", name)
+            try:
+                pclass = Plugin.get_plugin_class(pname)
+                pinstance = pclass(app=self._app)
+                self._plugins[pname] = pinstance
+                log.info("[Edge] Loaded plugin: %s", pname)
 
-    async def _load_plugin_endpoint(self, pname: str, request: Request):
-        """
-        Internal endpoint to load plugins dynamically via HTTP request (from Bridge).
-        Uses the plugin registry to discover and load registered plugins.
-        """
-        from .plugin_base import Plugin
-
-        label = request.query_params.get('name', pname.split('.')[-1])
-
-        if not _re.match(r'^[A-Za-z0-9_-]+$', label):
-            raise HTTPException(status_code=400,
-                                detail=f"invalid plugin name: {label}")
-
-        if label in self._plugins:
-            # Already loaded
-            plugin = self._plugins[label]
-            return {"namespace": plugin.namespace}
-
-        # Look up plugin class in registry
-        plugin_cls = Plugin.get_plugin_class(pname)
-        if not plugin_cls:
-            log.error("[Edge] unknown plugin: %s", pname)
-            raise HTTPException(status_code=404,
-                                detail=f"unknown plugin: {pname}")
-
-        # Handle plugins with custom initialization (e.g., PluginQueueInfo)
-        if pname == "radical.queue_info":
-            slurm_conf = request.query_params.get('slurm_conf')
-            plugin = plugin_cls(self._app, instance_name=label, slurm_conf=slurm_conf)
-        else:
-            plugin = plugin_cls(self._app)
-
-        self._plugins[label] = plugin
-
-        # Debug routes
-        for route in self._app.routes:
-            if hasattr(route, 'path'):
-                log.info("[Edge] Registered route: %s %s", route.methods, route.path)
-
-        # Notify Bridge of new plugin
-        try:
-            async with self._send_lock:
-                log.info("[Edge] registering plugin endpoint: %s", pname)
-                msg = {
-                    "type": "register",
-                    "edge_name": self._name,
-                    "plugin_name": pname,
-                    "endpoint": {
-                        "type": pname,
-                        "namespace": f"/{self._name}{plugin.namespace}"
-                    }
-                }
-                if self._ws:
-                    await self._ws.send(json.dumps(msg))
-        except Exception as e:
-            log.exception("[Edge] plugin registration failed: %s", e)
-            raise HTTPException(status_code=500,
-                                detail=f"plugin registering failed: {e}") from e
-
-        return {"namespace": f"/{self._name}{plugin.namespace}"}
+            except Exception:
+                log.exception("[Edge] Failed to load plugin: %s", pname)
 
     async def _handle_request(self, data: dict):
         """
@@ -267,6 +188,8 @@ class EdgeService:
                             ws_url = "wss://" + self._bridge_url[len("https://"):]
                         elif self._bridge_url.startswith("http://"):
                             ws_url = "ws://" + self._bridge_url[len("http://"):]
+                        else:
+                            ws_url = self._bridge_url
 
                         # remove trailing slashes
                         ws_url = ws_url.rstrip("/")
@@ -276,7 +199,7 @@ class EdgeService:
                         if ws_url.startswith("wss://"):
                             ssl_ctx = ssl.create_default_context()
                             certfile = os.environ.get("RADICAL_BRIDGE_CERT")
-                            if os.path.exists(certfile):
+                            if certfile and os.path.exists(certfile):
                                 ssl_ctx.load_verify_locations(certfile)
 
                         async with websockets.connect(ws_url + "/register",

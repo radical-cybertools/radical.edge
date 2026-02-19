@@ -8,7 +8,7 @@ __license__   = 'MIT'
 
 
 import radical.edge
-from radical.edge.plugin_lucid import PluginLucid, LucidClient
+from radical.edge.plugin_lucid import PluginLucid, LucidSession
 
 import pytest
 from unittest.mock import Mock, AsyncMock, patch, MagicMock
@@ -18,9 +18,9 @@ from starlette.responses import JSONResponse
 
 
 @patch('radical.edge.plugin_lucid.rp')
-def test_lucid_client_initialization(mock_rp):
+def test_lucid_session_initialization(mock_rp):
     '''
-    Test LucidClient initialization.
+    Test LucidSession initialization.
     '''
     # Mock radical.pilot objects
     mock_session = Mock()
@@ -31,12 +31,12 @@ def test_lucid_client_initialization(mock_rp):
     mock_rp.PilotManager.return_value = mock_pmgr
     mock_rp.TaskManager.return_value = mock_tmgr
 
-    client = LucidClient("test_client_001")
+    session = LucidSession("test_session_001")
 
-    assert client._cid == "test_client_001"
-    assert client._session == mock_session
-    assert client._pmgr == mock_pmgr
-    assert client._tmgr == mock_tmgr
+    assert session._sid == "test_session_001"
+    assert session._session == mock_session
+    assert session._pmgr == mock_pmgr
+    assert session._tmgr == mock_tmgr
 
     mock_rp.Session.assert_called_once()
     mock_rp.PilotManager.assert_called_once_with(session=mock_session)
@@ -45,9 +45,9 @@ def test_lucid_client_initialization(mock_rp):
 
 @pytest.mark.asyncio
 @patch('radical.edge.plugin_lucid.rp')
-async def test_lucid_client_close(mock_rp):
+async def test_lucid_session_close(mock_rp):
     '''
-    Test closing a LucidClient.
+    Test closing a LucidSession.
     '''
     mock_session = Mock()
     mock_session.close = Mock()
@@ -56,19 +56,19 @@ async def test_lucid_client_close(mock_rp):
     mock_rp.PilotManager.return_value = Mock()
     mock_rp.TaskManager.return_value = Mock()
 
-    client = LucidClient("test_client_001")
+    session = LucidSession("test_session_001")
 
-    result = await client.close()
+    result = await session.close()
 
     assert result == {}
-    assert client._session is None
-    assert client._pmgr is None
-    assert client._tmgr is None
+    assert session._session is None
+    assert session._pmgr is None
+    assert session._tmgr is None
 
 
 @pytest.mark.asyncio
 @patch('radical.edge.plugin_lucid.rp')
-async def test_lucid_client_pilot_submit(mock_rp):
+async def test_lucid_session_pilot_submit(mock_rp):
     '''
     Test submitting a pilot.
     '''
@@ -88,10 +88,10 @@ async def test_lucid_client_pilot_submit(mock_rp):
     mock_rp.TaskManager.return_value = mock_tmgr
     mock_rp.PilotDescription.return_value = Mock()
 
-    client = LucidClient("test_client_001")
+    session = LucidSession("test_session_001")
 
     description = {"resource": "local.localhost", "cores": 4}
-    result = await client.pilot_submit(description)
+    result = await session.pilot_submit(description)
 
     assert result == {"pid": "pilot.0000"}
     mock_rp.PilotDescription.assert_called_once_with(description)
@@ -99,7 +99,7 @@ async def test_lucid_client_pilot_submit(mock_rp):
 
 @pytest.mark.asyncio
 @patch('radical.edge.plugin_lucid.rp')
-async def test_lucid_client_pilot_submit_closed_session(mock_rp):
+async def test_lucid_session_pilot_submit_closed_session(mock_rp):
     '''
     Test that pilot_submit raises error when session is closed.
     '''
@@ -107,16 +107,16 @@ async def test_lucid_client_pilot_submit_closed_session(mock_rp):
     mock_rp.PilotManager.return_value = Mock()
     mock_rp.TaskManager.return_value = Mock()
 
-    client = LucidClient("test_client_001")
-    await client.close()
+    session = LucidSession("test_session_001")
+    await session.close()
 
     with pytest.raises(RuntimeError, match="session is closed"):
-        await client.pilot_submit({})
+        await session.pilot_submit({})
 
 
 @pytest.mark.asyncio
 @patch('radical.edge.plugin_lucid.rp')
-async def test_lucid_client_task_submit(mock_rp):
+async def test_lucid_session_task_submit(mock_rp):
     '''
     Test submitting a task.
     '''
@@ -133,10 +133,10 @@ async def test_lucid_client_task_submit(mock_rp):
     mock_rp.TaskManager.return_value = mock_tmgr
     mock_rp.TaskDescription.return_value = Mock()
 
-    client = LucidClient("test_client_001")
+    session = LucidSession("test_session_001")
 
     description = {"executable": "/bin/echo", "arguments": ["hello"]}
-    result = await client.task_submit(description)
+    result = await session.task_submit(description)
 
     assert result == {"tid": "task.0000"}
     mock_rp.TaskDescription.assert_called_once_with(description)
@@ -144,7 +144,7 @@ async def test_lucid_client_task_submit(mock_rp):
 
 @pytest.mark.asyncio
 @patch('radical.edge.plugin_lucid.rp')
-async def test_lucid_client_task_wait(mock_rp):
+async def test_lucid_session_task_wait(mock_rp):
     '''
     Test waiting for a task.
     '''
@@ -163,9 +163,9 @@ async def test_lucid_client_task_wait(mock_rp):
     mock_rp.PilotManager.return_value = Mock()
     mock_rp.TaskManager.return_value = mock_tmgr
 
-    client = LucidClient("test_client_001")
+    session = LucidSession("test_session_001")
 
-    result = await client.task_wait("task.0000")
+    result = await session.task_wait("task.0000")
 
     assert result["tid"] == "task.0000"
     assert result["task"]["state"] == "DONE"
@@ -173,7 +173,7 @@ async def test_lucid_client_task_wait(mock_rp):
 
 @pytest.mark.asyncio
 @patch('radical.edge.plugin_lucid.rp')
-async def test_lucid_client_echo(mock_rp):
+async def test_lucid_session_echo(mock_rp):
     '''
     Test echo functionality.
     '''
@@ -181,12 +181,13 @@ async def test_lucid_client_echo(mock_rp):
     mock_rp.PilotManager.return_value = Mock()
     mock_rp.TaskManager.return_value = Mock()
 
-    client = LucidClient("test_client_001")
+    session = LucidSession("test_session_001")
 
-    result = await client.request_echo("test message")
+    result = await session.request_echo("test message")
 
-    assert result["cid"] == "test_client_001"
+    assert result["sid"] == "test_session_001"
     assert result["echo"] == "test message"
+
 
 
 @patch('radical.edge.plugin_lucid.rp')
@@ -197,15 +198,14 @@ def test_plugin_lucid_initialization(mock_rp):
     app = FastAPI()
     plugin = PluginLucid(app)
 
-    assert plugin._name == "lucid"
-    assert plugin._clients == {}
-    assert plugin._next_id == 0
+    assert plugin._instance_name == "lucid"
+    assert plugin._sessions == {}
     assert plugin._id_lock is not None
 
     # Check that routes were added
     route_paths = [route.path for route in app.router.routes]
-    assert any("register_client" in path for path in route_paths)
-    assert any("unregister_client" in path for path in route_paths)
+    assert any("register_session" in path for path in route_paths)
+    assert any("unregister_session" in path for path in route_paths)
     assert any("pilot_submit" in path for path in route_paths)
     assert any("task_submit" in path for path in route_paths)
     assert any("task_wait" in path for path in route_paths)
@@ -214,9 +214,9 @@ def test_plugin_lucid_initialization(mock_rp):
 
 @pytest.mark.asyncio
 @patch('radical.edge.plugin_lucid.rp')
-async def test_plugin_lucid_register_client(mock_rp):
+async def test_plugin_lucid_register_session(mock_rp):
     '''
-    Test registering a new client.
+    Test registering a new session.
     '''
     mock_rp.Session.return_value = Mock()
     mock_rp.PilotManager.return_value = Mock()
@@ -227,18 +227,22 @@ async def test_plugin_lucid_register_client(mock_rp):
 
     request = Mock(spec=Request)
 
-    response = await plugin.register_client(request)
+    response = await plugin.register_session(request)
 
     assert isinstance(response, JSONResponse)
-    assert "client.0000" in plugin._clients
-    assert plugin._next_id == 1
+    
+    import json
+    data = json.loads(response.body)
+    sid = data['sid']
+    
+    assert sid in plugin._sessions
 
 
 @pytest.mark.asyncio
 @patch('radical.edge.plugin_lucid.rp')
-async def test_plugin_lucid_unregister_client(mock_rp):
+async def test_plugin_lucid_unregister_session(mock_rp):
     '''
-    Test unregistering a client.
+    Test unregistering a session.
     '''
     mock_rp.Session.return_value = Mock()
     mock_rp.PilotManager.return_value = Mock()
@@ -247,16 +251,18 @@ async def test_plugin_lucid_unregister_client(mock_rp):
     app = FastAPI()
     plugin = PluginLucid(app)
 
-    # Register a client
+    # Register a session
     request = Mock(spec=Request)
-    await plugin.register_client(request)
+    response = await plugin.register_session(request)
+    import json
+    sid = json.loads(response.body)['sid']
 
     # Unregister it
-    request.path_params = {"cid": "client.0000"}
-    response = await plugin.unregister_client(request)
+    request.path_params = {"sid": sid}
+    response = await plugin.unregister_session(request)
 
     assert isinstance(response, JSONResponse)
-    assert "client.0000" not in plugin._clients
+    assert sid not in plugin._sessions
 
 
 @pytest.mark.asyncio
@@ -272,15 +278,21 @@ async def test_plugin_lucid_echo(mock_rp):
     app = FastAPI()
     plugin = PluginLucid(app)
 
-    # Register a client
+    # Register a session
     request = Mock(spec=Request)
-    await plugin.register_client(request)
+    response = await plugin.register_session(request)
+    import json
+    sid = json.loads(response.body)['sid']
 
     # Echo request
-    request.path_params = {"cid": "client.0000", "q": "test"}
+    request.path_params = {"sid": sid}
+    request.query_params = {"q": "test"}
+    
     response = await plugin.echo(request)
 
     assert isinstance(response, JSONResponse)
+    data = json.loads(response.body)
+    assert data["echo"] == "test"
 
 
 @pytest.mark.asyncio
@@ -308,16 +320,18 @@ async def test_plugin_lucid_pilot_submit(mock_rp):
     app = FastAPI()
     plugin = PluginLucid(app)
 
-    # Register a client
+    # Register a session
     request = Mock(spec=Request)
-    await plugin.register_client(request)
+    response = await plugin.register_session(request)
+    import json
+    sid = json.loads(response.body)['sid']
 
     # Submit pilot
-    request.path_params = {"cid": "client.0000"}
+    request.path_params = {"sid": sid}
     request.json = AsyncMock(return_value={"description": {"resource": "local"}})
 
     response = await plugin.pilot_submit(request)
-
+    
     assert isinstance(response, JSONResponse)
 
 
@@ -343,30 +357,33 @@ async def test_plugin_lucid_task_submit(mock_rp):
     app = FastAPI()
     plugin = PluginLucid(app)
 
-    # Register a client
+    # Register a session
     request = Mock(spec=Request)
-    await plugin.register_client(request)
+    response = await plugin.register_session(request)
+    import json
+    sid = json.loads(response.body)['sid']
 
     # Submit task
-    request.path_params = {"cid": "client.0000"}
+    request.path_params = {"sid": sid}
     request.json = AsyncMock(return_value={"description": {"executable": "/bin/echo"}})
 
     response = await plugin.task_submit(request)
-
+    
     assert isinstance(response, JSONResponse)
 
 
 @pytest.mark.asyncio
 @patch('radical.edge.plugin_lucid.rp')
-async def test_plugin_lucid_unknown_client_error(mock_rp):
+async def test_plugin_lucid_unknown_session_error(mock_rp):
     '''
-    Test that operations on unknown client raise HTTPException.
+    Test that operations on unknown session raise HTTPException.
     '''
     app = FastAPI()
     plugin = PluginLucid(app)
 
     request = Mock(spec=Request)
-    request.path_params = {"cid": "unknown_client"}
+    request.path_params = {"sid": "unknown_session"}
+    request.query_params = {}
 
     with pytest.raises(HTTPException) as exc_info:
         await plugin.echo(request)

@@ -5,6 +5,7 @@ __copyright__ = 'Copyright 2024, RADICAL@Rutgers'
 __license__   = 'MIT'
 
 
+
 from fastapi import FastAPI
 
 from starlette.requests  import Request
@@ -15,13 +16,14 @@ import asyncio
 import radical.pilot as rp
 
 
+
 from .plugin_session_base import PluginSession
 from .plugin_session_managed import SessionManagedPlugin
 
 
 class LucidSession(PluginSession):
     """
-    Lucid session with Radical Pilot session management.
+    Lucid session with Radical Pilot session management (Server-side).
 
     Each session maintains its own RP Session, Pilot Manager, and Task Manager.
     """
@@ -105,28 +107,61 @@ class LucidSession(PluginSession):
         return {"tid": tid, "task": task.as_dict()}
 
 
+from .client import PluginClient as RemotePluginClientBase
+
+class LucidRemoteClient(RemotePluginClientBase):
+    """
+    Client-side interface for the Lucid plugin.
+    """
+
+    def pilot_submit(self, description: dict) -> dict:
+        """
+        Submit a pilot.
+        """
+        if not self.sid:
+            raise RuntimeError("No active session")
+
+        url = self._url(f"pilot_submit/{self.sid}")
+        resp = self._http.post(url, json={'description': description})
+        resp.raise_for_status()
+        return resp.json()
+
+    def task_submit(self, description: dict) -> dict:
+        """
+        Submit a task.
+        """
+        if not self.sid:
+            raise RuntimeError("No active session")
+
+        url = self._url(f"task_submit/{self.sid}")
+        resp = self._http.post(url, json={'description': description})
+        resp.raise_for_status()
+        return resp.json()
+
+    def task_wait(self, tid: str) -> dict:
+        """
+        Wait for a task to complete.
+        """
+        if not self.sid:
+            raise RuntimeError("No active session")
+
+        url = self._url(f"task_wait/{self.sid}/{tid}")
+        resp = self._http.get(url)
+        resp.raise_for_status()
+        return resp.json()
+
+
 class PluginLucid(SessionManagedPlugin):
     """
     Lucid plugin for Radical Edge.
 
     This plugin manages multiple Lucid sessions, each with its own Radical Pilot
-    session, Pilot Manager, and Task Manager. It provides routes for session
-    registration, pilot submission, task submission, task waiting, and an echo
-    service for testing / debugging.
-
-    Standard routes inherited from SessionManagedPlugin:
-    - POST /lucid/{uid}/register_session
-    - POST /lucid/{uid}/unregister_session/{sid}
-    - GET  /lucid/{uid}/echo/{sid}
-
-    Lucid-specific routes:
-    - POST /lucid/{uid}/pilot_submit/{sid}
-    - POST /lucid/{uid}/task_submit/{sid}
-    - GET  /lucid/{uid}/task_wait/{sid}/{tid}
+    session, Pilot Manager, and Task Manager.
     """
 
-    plugin_name = "radical.lucid"
+    plugin_name = "lucid"
     session_class = LucidSession
+    remote_client_class = LucidRemoteClient
     version = '0.0.1'
 
     def __init__(self, app: FastAPI):
@@ -197,7 +232,5 @@ class PluginLucid(SessionManagedPlugin):
         data = request.path_params
         sid = data['sid']
         tid = data['tid']
-        ret = await self._forward(sid, LucidSession.task_wait, tid)
-
-        return ret
+        return await self._forward(sid, LucidSession.task_wait, tid)
 

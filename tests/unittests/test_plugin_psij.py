@@ -8,7 +8,7 @@ from unittest.mock import patch, MagicMock
 from fastapi import FastAPI
 from starlette.testclient import TestClient
 
-from radical.edge.plugin_psij import PluginPSIJ, PSIJClient
+from radical.edge.plugin_psij import PluginPSIJ
 
 
 # Mock psij to avoid actual submission
@@ -32,9 +32,9 @@ def mock_psij():
 def test_plugin_psij_init():
     app = FastAPI()
     plugin = PluginPSIJ(app)
-    assert plugin.plugin_name == 'radical.psij'
+    assert plugin.plugin_name == 'psij'
     assert plugin.instance_name == 'psij'
-    assert '/psij/submit' in [r.path for r in app.router.routes]
+    assert f'{plugin.namespace}/submit/{{sid}}' in [r.path for r in app.router.routes]
 
 
 @pytest.mark.asyncio
@@ -50,10 +50,10 @@ async def test_submit_job(mock_psij):
 
     client = TestClient(app)
     
-    # Register client
-    resp = client.post("/psij/register_client")
+    # Register session
+    resp = client.post(f"{plugin.namespace}/register_session")
     assert resp.status_code == 200
-    cid = resp.json()['cid']
+    sid = resp.json()['sid']
 
     # Submit job
     payload = {
@@ -64,7 +64,7 @@ async def test_submit_job(mock_psij):
         "executor": "local"
     }
     
-    resp = client.post(f"/psij/submit?cid={cid}", json=payload)
+    resp = client.post(f"{plugin.namespace}/submit/{sid}", json=payload)
     assert resp.status_code == 200
     data = resp.json()
     assert data['job_id'] == 'job.123'
@@ -73,9 +73,9 @@ async def test_submit_job(mock_psij):
     mock_psij.JobSpec.assert_called()
     mock_psij.JobExecutor.get_instance.assert_called_with('local')
     
-    # Verify job is cached in client
-    p_client = plugin._clients[cid]
-    assert 'job.123' in p_client._jobs
+    # Verify job is cached in session
+    p_session = plugin._sessions[sid]
+    assert 'job.123' in p_session._jobs
 
 
 @pytest.mark.asyncio
@@ -84,11 +84,11 @@ async def test_get_job_status(mock_psij):
     plugin = PluginPSIJ(app)
     client = TestClient(app)
     
-    # Register and manually insert a job into client cache
-    resp = client.post("/psij/register_client")
-    cid = resp.json()['cid']
+    # Register and manually insert a job into session cache
+    resp = client.post(f"{plugin.namespace}/register_session")
+    sid = resp.json()['sid']
     
-    p_client = plugin._clients[cid]
+    p_session = plugin._sessions[sid]
     
     mock_job = MagicMock()
     mock_job.id = 'job.123'
@@ -97,10 +97,10 @@ async def test_get_job_status(mock_psij):
     mock_job.status.exit_code = None
     mock_job.status.time = None
     
-    p_client._jobs['job.123'] = mock_job
+    p_session._jobs['job.123'] = mock_job
     
     # Get status
-    resp = client.get(f"/psij/status/job.123?cid={cid}")
+    resp = client.get(f"{plugin.namespace}/status/{sid}/job.123")
     assert resp.status_code == 200
     data = resp.json()
     assert data['state'] == str(psij.JobState.ACTIVE)
@@ -113,15 +113,15 @@ async def test_cancel_job(mock_psij):
     plugin = PluginPSIJ(app)
     client = TestClient(app)
     
-    resp = client.post("/psij/register_client")
-    cid = resp.json()['cid']
+    resp = client.post(f"{plugin.namespace}/register_session")
+    sid = resp.json()['sid']
     
-    p_client = plugin._clients[cid]
+    p_session = plugin._sessions[sid]
     
     mock_job = MagicMock()
-    p_client._jobs['job.123'] = mock_job
+    p_session._jobs['job.123'] = mock_job
     
-    resp = client.post(f"/psij/cancel/job.123?cid={cid}")
+    resp = client.post(f"{plugin.namespace}/cancel/{sid}/job.123")
     assert resp.status_code == 200
     assert resp.json()['status'] == 'canceled'
     
