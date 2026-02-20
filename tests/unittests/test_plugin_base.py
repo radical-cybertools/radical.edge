@@ -8,11 +8,16 @@ __license__   = 'MIT'
 
 
 import radical.edge
+import radical.edge
 from radical.edge.plugin_base import Plugin
+from radical.edge.plugin_session_base import PluginSession
 
 from fastapi import FastAPI
 from starlette.routing import Route
+from starlette.requests import Request
+from unittest.mock import Mock
 import uuid
+import pytest
 
 
 def test_plugin_initialization():
@@ -154,6 +159,38 @@ def test_plugin_multiple_routes():
         assert route.path.startswith(plugin.namespace)
 
 
+@pytest.mark.asyncio
+async def test_plugin_session_management():
+    '''
+    Test base plugin session management.
+    '''
+    app = FastAPI()
+    plugin = Plugin(app, "test_plugin")
+
+    # Mock request for registration
+    request = Mock(spec=Request)
+    response = await plugin.register_session(request)
+    
+    import json
+    data = json.loads(response.body)
+    sid = data['sid']
+    assert sid in plugin._sessions
+    assert isinstance(plugin._sessions[sid], PluginSession)
+
+    # Test echo
+    request.path_params = {"sid": sid}
+    request.query_params = {"q": "ping"}
+    response = await plugin.echo(request)
+    data = json.loads(response.body)
+    assert data['echo'] == "ping"
+    assert data['sid'] == sid
+
+    # Test unregister
+    request.path_params = {"sid": sid}
+    await plugin.unregister_session(request)
+    assert sid not in plugin._sessions
+
+
 def test_plugin_unique_uids():
     '''
     Test that each plugin instance gets a unique UID.
@@ -168,9 +205,7 @@ def test_plugin_unique_uids():
     assert plugin1.uid != plugin3.uid
     assert plugin2.uid != plugin3.uid
 
-    # Namespaces will be the same if names are the same, but we don't allow
-    # duplicate names for different types in registration now? 
-    # Actually Plugin(app, name) just stores it.
+    # Namespaces will be the same if names are the same
     assert plugin1.namespace == "/test_plugin"
     assert plugin2.namespace == "/test_plugin"
     assert plugin3.namespace == "/another_plugin"

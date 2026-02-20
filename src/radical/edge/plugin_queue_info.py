@@ -13,7 +13,8 @@ from starlette.responses import JSONResponse
 import asyncio
 
 from .plugin_session_base import PluginSession
-from .plugin_session_managed import SessionManagedPlugin
+from .plugin_base import Plugin
+from .client import PluginClient
 from .queue_info import QueueInfoSlurm
 
 
@@ -90,7 +91,56 @@ class QueueInfoSession(PluginSession):
                                       user, force)
 
 
-class PluginQueueInfo(SessionManagedPlugin):
+class QueueInfoClient(PluginClient):
+    """
+    Client-side interface for the QueueInfo plugin.
+    """
+
+    def get_info(self, force: bool = False) -> dict:
+        """
+        Return queue/partition information.
+        """
+        if not self.sid:
+            raise RuntimeError("No active session")
+
+        url = self._url(f"get_info/{self.sid}")
+        params = {"force": str(force).lower()}
+        resp = self._http.get(url, params=params)
+        resp.raise_for_status()
+        return resp.json()
+
+    def list_jobs(self, queue: str, user: str = None, force: bool = False) -> dict:
+        """
+        List jobs in a specified queue/partition.
+        """
+        if not self.sid:
+            raise RuntimeError("No active session")
+
+        url = self._url(f"list_jobs/{self.sid}/{queue}")
+        params = {"force": str(force).lower()}
+        if user:
+            params["user"] = user
+        resp = self._http.get(url, params=params)
+        resp.raise_for_status()
+        return resp.json()
+
+    def list_allocations(self, user: str = None, force: bool = False) -> dict:
+        """
+        List allocations/projects.
+        """
+        if not self.sid:
+            raise RuntimeError("No active session")
+
+        url = self._url(f"list_allocations/{self.sid}")
+        params = {"force": str(force).lower()}
+        if user:
+            params["user"] = user
+        resp = self._http.get(url, params=params)
+        resp.raise_for_status()
+        return resp.json()
+
+
+class PluginQueueInfo(Plugin):
     """
     QueueInfo plugin for Radical Edge.
 
@@ -100,6 +150,7 @@ class PluginQueueInfo(SessionManagedPlugin):
 
     plugin_name = "queue_info"
     session_class = QueueInfoSession
+    client_class = QueueInfoClient
     version = '0.0.1'
 
     def __init__(self, app: FastAPI, instance_name='queue_info', slurm_conf=None):

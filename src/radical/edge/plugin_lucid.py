@@ -15,10 +15,9 @@ import asyncio
 
 import radical.pilot as rp
 
-
-
 from .plugin_session_base import PluginSession
-from .plugin_session_managed import SessionManagedPlugin
+from .plugin_base import Plugin
+from .client import PluginClient
 
 
 class LucidSession(PluginSession):
@@ -107,9 +106,8 @@ class LucidSession(PluginSession):
         return {"tid": tid, "task": task.as_dict()}
 
 
-from .client import PluginClient as RemotePluginClientBase
 
-class LucidRemoteClient(RemotePluginClientBase):
+class LucidClient(PluginClient):
     """
     Client-side interface for the Lucid plugin.
     """
@@ -151,7 +149,7 @@ class LucidRemoteClient(RemotePluginClientBase):
         return resp.json()
 
 
-class PluginLucid(SessionManagedPlugin):
+class PluginLucid(Plugin):
     """
     Lucid plugin for Radical Edge.
 
@@ -161,7 +159,7 @@ class PluginLucid(SessionManagedPlugin):
 
     plugin_name = "lucid"
     session_class = LucidSession
-    remote_client_class = LucidRemoteClient
+    client_class = LucidClient
     version = '0.0.1'
 
     def __init__(self, app: FastAPI):

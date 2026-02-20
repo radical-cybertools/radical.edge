@@ -117,7 +117,7 @@ class EdgeClient:
             log.warning("Plugin class '%s' not found locally. Using generic PluginClient.", plugin_name)
             client_cls = PluginClient
         else:
-            client_cls = getattr(plugin_cls, 'remote_client_class', None)
+            client_cls = getattr(plugin_cls, 'client_class', None)
             if not client_cls:
                 # Fallback to local client_class if appropriate (legacy)
                 client_cls = getattr(plugin_cls, 'client_class', None)
@@ -130,13 +130,10 @@ class EdgeClient:
         client = client_cls(self.http, base_url)
 
         # 4. Handle Session Registration
-        # All plugins now use sessions for state.
+        # All plugins now use sessions for state as they inherit from Plugin.
         try:
             client.register_session()
         except httpx.HTTPStatusError as e:
-            # Some plugins might not have register_session? 
-            # (e.g. if they don't inherit SessionManagedPlugin)
-            # But the user wants 'session' for all stateful entities.
             if e.response.status_code == 404:
                 log.debug("Plugin %s does not support session registration", plugin_name)
             else:

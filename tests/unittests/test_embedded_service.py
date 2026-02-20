@@ -19,7 +19,7 @@ async def test_embedded_service_async_init():
 
     # Mock plugin class
     # Subclassing automatically registers it if plugin_name is set
-    class MockPlugin(re.SessionManagedPlugin):
+    class MockPlugin(re.Plugin):
         plugin_name = "mock_plugin"
         session_class = Mock()
         def __init__(self, app):

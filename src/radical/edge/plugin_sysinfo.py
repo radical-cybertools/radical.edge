@@ -21,6 +21,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from .plugin_base import Plugin
+from .client import PluginClient
 
 log = logging.getLogger("radical.edge")
 
@@ -447,7 +448,7 @@ class SysInfoProvider:
 
 
 from .plugin_session_base import PluginSession
-from .plugin_session_managed import SessionManagedPlugin
+from .plugin_base import Plugin
 
 
 class SysInfoSession(PluginSession):
@@ -468,9 +469,8 @@ class SysInfoSession(PluginSession):
         return self._provider.get_metrics()
 
 
-from .client import PluginClient as RemotePluginClientBase
 
-class SysInfoRemoteClient(RemotePluginClientBase):
+class SysInfoClient(PluginClient):
     """
     Client-side interface for the SysInfo plugin.
     """
@@ -488,7 +488,7 @@ class SysInfoRemoteClient(RemotePluginClientBase):
         return resp.json()
 
 
-class PluginSysInfo(SessionManagedPlugin):
+class PluginSysInfo(Plugin):
     """
     SysInfo plugin for Radical Edge.
 
@@ -497,7 +497,7 @@ class PluginSysInfo(SessionManagedPlugin):
 
     plugin_name = "sysinfo"
     session_class = SysInfoSession
-    remote_client_class = SysInfoRemoteClient
+    client_class = SysInfoClient
     version = '0.0.1'
 
     def __init__(self, app: FastAPI):
@@ -525,3 +525,4 @@ class PluginSysInfo(SessionManagedPlugin):
         """
         sid = request.path_params['sid']
         return await self._forward(sid, SysInfoSession.get_metrics)
+

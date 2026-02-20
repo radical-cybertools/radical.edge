@@ -12,8 +12,10 @@ import psij
 
 
 
-from .plugin_session_managed import SessionManagedPlugin
+from .plugin_base import Plugin
 from .plugin_session_base import PluginSession
+from .client import PluginClient
+
 
 log = logging.getLogger("radical.edge")
 
@@ -104,9 +106,8 @@ class PSIJSession(PluginSession):
             raise HTTPException(status_code=500, detail=str(e)) from e
 
 
-from .client import PluginClient as RemotePluginClientBase
 
-class PSIJRemoteClient(RemotePluginClientBase):
+class PSIJClient(PluginClient):
     """
     Client-side interface for the PSIJ plugin.
     """
@@ -114,11 +115,11 @@ class PSIJRemoteClient(RemotePluginClientBase):
     def submit_job(self, job_spec: dict, executor: str = 'local') -> dict:
         """
         Submit a job.
-        
+
         Args:
             job_spec (dict): The job specification.
             executor (str): The executor to use.
-            
+
         Returns:
              dict: Job submission result (job_id, native_id).
         """
@@ -127,7 +128,7 @@ class PSIJRemoteClient(RemotePluginClientBase):
 
         url = self._url(f"submit/{self.sid}")
         payload = {"job_spec": job_spec, "executor": executor}
-        
+
         resp = self._http.post(url, json=payload)
         resp.raise_for_status()
         return resp.json()
@@ -135,10 +136,10 @@ class PSIJRemoteClient(RemotePluginClientBase):
     def get_job_status(self, job_id: str) -> dict:
         """
         Get the status of a job.
-        
+
         Args:
             job_id (str): The job ID to query.
-            
+
         Returns:
             dict: Job status info.
         """
@@ -146,7 +147,7 @@ class PSIJRemoteClient(RemotePluginClientBase):
             raise RuntimeError("No active session")
 
         url = self._url(f"status/{self.sid}/{job_id}")
-        
+
         resp = self._http.get(url)
         resp.raise_for_status()
         return resp.json()
@@ -154,10 +155,10 @@ class PSIJRemoteClient(RemotePluginClientBase):
     def cancel_job(self, job_id: str) -> dict:
         """
         Cancel a job.
-        
+
         Args:
             job_id (str): The job ID to cancel.
-            
+
         Returns:
             dict: Cancellation result.
         """
@@ -165,13 +166,13 @@ class PSIJRemoteClient(RemotePluginClientBase):
             raise RuntimeError("No active session")
 
         url = self._url(f"cancel/{self.sid}/{job_id}")
-        
+
         resp = self._http.post(url)
         resp.raise_for_status()
         return resp.json()
 
 
-class PluginPSIJ(SessionManagedPlugin):
+class PluginPSIJ(Plugin):
     '''
     PSIJ plugin for Radical Edge.
 
@@ -181,7 +182,7 @@ class PluginPSIJ(SessionManagedPlugin):
 
     plugin_name = "psij"
     session_class = PSIJSession
-    remote_client_class = PSIJRemoteClient
+    client_class = PSIJClient
     version = '0.0.1'
 
     def __init__(self, app: FastAPI, instance_name: str = "psij"):
@@ -210,3 +211,4 @@ class PluginPSIJ(SessionManagedPlugin):
         sid = request.path_params['sid']
         job_id = request.path_params['job_id']
         return await self._forward(sid, PSIJSession.cancel_job, job_id=job_id)
+

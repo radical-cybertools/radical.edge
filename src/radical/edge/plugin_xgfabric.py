@@ -10,7 +10,8 @@ from fastapi import FastAPI
 
 
 from .plugin_session_base import PluginSession
-from .plugin_session_managed import SessionManagedPlugin
+from .plugin_base import Plugin
+from .client import PluginClient
 
 
 class XGFabricSession(PluginSession):
@@ -28,18 +29,24 @@ class XGFabricSession(PluginSession):
     # No additional methods needed for this simple session
 
 
-class PluginXGFabric(SessionManagedPlugin):
+class XGFabricClient(PluginClient):
+    """
+    Client-side interface for the XGFabric plugin.
+    """
+    # Inherits all base session functionality (echo, etc)
+
+
+class PluginXGFabric(Plugin):
     """
     XGFabric plugin for Radical Edge.
 
     This plugin manages multiple XGFabric sessions. It provides routes for
     session registration and an echo service for testing / debugging.
-
-    All session management functionality is inherited from SessionManagedPlugin.
     """
 
     plugin_name = "xgfabric"
     session_class = XGFabricSession
+    client_class = XGFabricClient
     version = '0.0.1'
 
     def __init__(self, app: FastAPI):
