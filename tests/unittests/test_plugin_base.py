@@ -166,6 +166,7 @@ async def test_plugin_session_management():
     '''
     app = FastAPI()
     plugin = Plugin(app, "test_plugin")
+    plugin.session_class = PluginSession  # required — no fallback
 
     # Mock request for registration
     request = Mock(spec=Request)

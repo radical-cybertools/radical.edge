@@ -32,8 +32,15 @@ class SysInfoProvider:
     """
 
     def __init__(self):
-        self._cpu_model = self._detect_cpu_model()
-        self._gpu_info = self._detect_gpus()
+        self._cpu_model = None
+        self._gpu_info  = None
+
+    def _ensure_detected(self):
+        """Run hardware detection once on first use."""
+        if self._cpu_model is None:
+            self._cpu_model = self._detect_cpu_model()
+        if self._gpu_info is None:
+            self._gpu_info = self._detect_gpus()
 
     def _detect_cpu_model(self) -> str:
         """Parse /proc/cpuinfo or platform info for CPU model name."""
@@ -323,6 +330,8 @@ class SysInfoProvider:
 
     def get_metrics(self) -> Dict[str, Any]:
         """Collect current system metrics."""
+
+        self._ensure_detected()
 
         # --- System ---
         boot_time = psutil.boot_time()

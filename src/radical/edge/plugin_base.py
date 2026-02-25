@@ -112,8 +112,7 @@ class Plugin(object):
         Factory method to create a session instance.
         """
         if self.session_class is None:
-            # Fallback to base PluginSession if no specific session class is defined
-            return PluginSession(sid)
+            raise RuntimeError(f"[{self.instance_name}] session_class not defined")
         return self.session_class(sid, **kwargs)
 
     async def register_session(self, request: Request) -> JSONResponse:

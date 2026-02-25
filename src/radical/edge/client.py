@@ -3,7 +3,6 @@ import os
 import httpx
 import logging
 import urllib3
-import importlib
 
 from typing import Optional, List, Any, Dict
 
@@ -82,9 +81,12 @@ class EdgeClient:
     def http(self) -> httpx.Client:
         return self._bc._http
 
-    def get_plugin(self, plugin_name: str) -> "PluginClient":
+    def get_plugin(self, plugin_name: str, **session_kwargs) -> "PluginClient":
         """
         Get a client helper for a plugin loaded on the edge.
+
+        Any extra keyword arguments are forwarded to the client's
+        ``register_session()`` call (e.g. ``backends=['local']``).
         """
 
         # 1. Discover plugin namespace from Bridge
@@ -93,51 +95,32 @@ class EdgeClient:
         data = resp.json().get('data', {})
         edges = data.get('edges', {})
         edge_data = edges.get(self._edge_id)
+
         if not edge_data:
-            raise RuntimeError(f"Edge '{self._edge_id}' not found on bridge")
+            raise RuntimeError(f"Edge '{self._edge_id}' not found")
 
         plugins = edge_data.get('plugins', {})
         plugin_info = plugins.get(plugin_name)
         if not plugin_info:
-             raise RuntimeError(f"Plugin '{plugin_name}' not loaded on edge '{self._edge_id}'")
+             raise RuntimeError(f"Plugin '{plugin_name}' unknown on '{self._edge_id}'")
 
         namespace = plugin_info['namespace']
 
         # 2. Determine Client Helper Class
         plugin_cls = Plugin.get_plugin_class(plugin_name)
         if not plugin_cls:
-            # Maybe try to import it?
-            try:
-                importlib.import_module(f"radical.edge.plugin_{plugin_name}")
-                plugin_cls = Plugin.get_plugin_class(plugin_name)
-            except ImportError:
-                pass
+            raise RuntimeError(f"Plugin class for '{plugin_name}' not found")
 
-        if not plugin_cls:
-            log.warning("Plugin class '%s' not found locally. Using generic PluginClient.", plugin_name)
-            client_cls = PluginClient
-        else:
-            client_cls = getattr(plugin_cls, 'client_class', None)
-            if not client_cls:
-                # Fallback to local client_class if appropriate (legacy)
-                client_cls = getattr(plugin_cls, 'client_class', None)
-
-            if not client_cls:
-                client_cls = PluginClient
+        client_cls = getattr(plugin_cls, 'client_class', None)
+        if not client_cls:
+            raise RuntimeError(f"Plugin client '{plugin_name}': not known")
 
         # 3. Instantiate Client Helper
         base_url = namespace
         client = client_cls(self.http, base_url)
 
-        # 4. Handle Session Registration
-        # All plugins now use sessions for state as they inherit from Plugin.
-        try:
-            client.register_session()
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                log.debug("Plugin %s does not support session registration", plugin_name)
-            else:
-                raise
+        # 4. Register Session
+        client.register_session(**session_kwargs)
 
         return client
 
@@ -161,9 +144,12 @@ class PluginClient:
         """Construct full URL for a path."""
         return f"{self._base_url}/{path.lstrip('/')}"
 
-    def register_session(self):
+    def register_session(self, **kwargs):
         """
         Register a session with the plugin.
+
+        Subclasses may override to accept plugin-specific keyword
+        arguments (e.g. ``backends``).
         """
         resp = self._http.post(self._url("register_session"))
         resp.raise_for_status()

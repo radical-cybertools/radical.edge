@@ -156,6 +156,21 @@ class RhapsodyClient(PluginClient):
     Client-side interface for the Rhapsody plugin.
     """
 
+    def register_session(self, backends: list[str] | None = None):
+        """
+        Register a session, optionally specifying backend names.
+
+        Args:
+            backends: List of backend names (e.g. ``['local']``).
+                      Defaults to ``['dragon_v3']`` on the server side.
+        """
+        payload = {}
+        if backends:
+            payload['backends'] = backends
+        resp = self._http.post(self._url('register_session'), json=payload)
+        resp.raise_for_status()
+        self._sid = resp.json()['sid']
+
     def submit_tasks(self, task_dicts: list[dict]) -> list[dict]:
         """
         Submit tasks to the edge.
@@ -264,6 +279,30 @@ class PluginRhapsody(Plugin):
         self.add_route_get('task/{sid}/{uid}', self.get_task)
         self.add_route_post('cancel/{sid}/{uid}', self.cancel_task)
         self.add_route_get('statistics/{sid}', self.get_statistics)
+
+    async def register_session(self, request: Request) -> JSONResponse:
+        """Register a new Rhapsody session.
+
+        Accepts an optional JSON body with ``{"backends": ["name", ...]}``.
+        """
+        import uuid as _uuid
+        import asyncio as _asyncio
+
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+
+        backend_names = data.get('backends')
+
+        async with self._id_lock:
+            sid = f"session.{_uuid.uuid4().hex[:8]}"
+
+
+        self._sessions[sid] = self._create_session(sid,
+                                                   backend_names=backend_names)
+        log.info(f"[{self.instance_name}] Registered session {sid}")
+        return JSONResponse({"sid": sid})
 
     # -- route handlers -----------------------------------------------------
 
