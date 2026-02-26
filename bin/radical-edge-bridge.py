@@ -11,6 +11,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi import Request, Response, HTTPException
 
 from fastapi.responses       import JSONResponse
+from fastapi.responses       import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from starlette.websockets    import WebSocketState
@@ -187,6 +188,24 @@ def _strip_headers(request: Request) -> dict:
 @app.post("/edge/list")
 async def edge_list(request: Request):
     return JSONResponse({"data": endpoints})
+
+
+@app.get("/")
+async def root():
+    import sys, os
+    bin_dir = os.path.dirname(os.path.abspath(__file__))
+    paths = [
+        # if running from source tree: bin_dir/../examples/edge_explorer.html
+        os.path.join(bin_dir, '..', 'examples', 'edge_explorer.html'),
+        # if installed via pip, usually share/radical.edge/examples/edge_explorer.html
+        os.path.join(sys.prefix, 'share', 'radical.edge', 'examples', 'edge_explorer.html'),
+        os.path.join(sys.prefix, 'local', 'share', 'radical.edge', 'examples', 'edge_explorer.html'),
+    ]
+    for p in paths:
+        if os.path.exists(p):
+            return FileResponse(p)
+    
+    return Response(content="edge_explorer.html not found", status_code=404)
 
 
 # all other edge routes are forwarded
