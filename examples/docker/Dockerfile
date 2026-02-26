@@ -8,22 +8,21 @@ ENV RADICAL_BRIDGE_KEY="/app/private/bridge_key.pem"
 
 RUN apt-get update -y && \
     apt-get install -y --no-install-recommends \
-    build-essential \
-    curl \
-    git \
-    gnupg \
-    jq \
-    openssl \
-    python3-dev \
-    sudo && \
+        build-essential \
+        curl \
+        git \
+        gnupg \
+        jq \
+        openssl \
+        python3-dev \
+        sudo && \
     rm -rf /var/lib/apt/lists/*
 
 RUN python3 -m venv /opt/ve_edge
 
-ARG RADICAL_EDGE_BRANCH=devel
-
 WORKDIR /app
 
+ARG RADICAL_EDGE_BRANCH=master
 RUN git clone -b ${RADICAL_EDGE_BRANCH} https://github.com/radical-cybertools/radical.edge.git
 
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
@@ -33,7 +32,6 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
 ARG GENERATE_BRIDGE_CERT=false
 ARG BRIDGE_IP=127.0.0.1
 ARG BRIDGE_HOSTNAME=localhost
-
 RUN if [ "$GENERATE_BRIDGE_CERT" = "true" ]; then \
         mkdir -p $(dirname "$RADICAL_BRIDGE_CERT") && \
         openssl req -x509 -nodes -days 3650 -newkey rsa:4096 \
