@@ -120,8 +120,8 @@ radical-edge-bridge.py
 
 Example output:
 ```text
-[Bridge] Advertising URL: wss://localhost:8000/register
-INFO:     Started server process [58612]
+[Bridge] URL: https://localhost:8000/register
+INFO:     Started server process [1]
 INFO:     Waiting for application startup.
 INFO:     Application startup complete.
 INFO:     Uvicorn running on https://0.0.0.0:8000 (Press CTRL+C to quit)
@@ -193,12 +193,16 @@ export RADICAL_EDGE_IMAGE=radicalcybertools/radical.edge
 export RADICAL_EDGE_TAG=dev
 # for the demo we use the current `devel` branch
 export RADICAL_EDGE_BRANCH="docs/demo"  # TODO: replace with `devel`
+
+# for the demo we use the hostname for the bridge as `bridge`
+export RADICAL_BRIDGE_HOSTNAME=bridge
 ```
 
 ```shell
 cd examples/docker
 docker build --build-arg GENERATE_BRIDGE_CERT=true \
              --build-arg BRIDGE_IP=127.0.0.1 \
+             --build-arg BRIDGE_HOSTNAME=${RADICAL_BRIDGE_HOSTNAME} \
              --build-arg RADICAL_EDGE_BRANCH=${RADICAL_EDGE_BRANCH} \
              -t ${RADICAL_EDGE_IMAGE}:${RADICAL_EDGE_TAG} .
 ```
@@ -212,7 +216,7 @@ docker exec -it radical-edge-client bash
 cd /app/radical.edge/examples
 python3 example_sysinfo.py
 
-# docker compose logs -f radical-edge
+# docker compose logs -f bridge -f edge
 # stop and remove containers
 #    docker compose down
 ```

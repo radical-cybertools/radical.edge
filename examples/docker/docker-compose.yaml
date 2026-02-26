@@ -13,8 +13,9 @@ services:
       args:
         GENERATE_BRIDGE_CERT: "true"
         BRIDGE_IP: "127.0.0.1"
+        BRIDGE_HOSTNAME: ${RADICAL_BRIDGE_HOSTNAME:-bridge}
     container_name: radical-bridge
-    hostname: bridge
+    hostname: ${RADICAL_BRIDGE_HOSTNAME:-bridge}
     command: [ "radical-edge-bridge.py" ]
     ports:
       - "8000:8000"

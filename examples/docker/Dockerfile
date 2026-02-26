@@ -32,6 +32,7 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
 
 ARG GENERATE_BRIDGE_CERT=false
 ARG BRIDGE_IP=127.0.0.1
+ARG BRIDGE_HOSTNAME=localhost
 
 RUN if [ "$GENERATE_BRIDGE_CERT" = "true" ]; then \
         mkdir -p $(dirname "$RADICAL_BRIDGE_CERT") && \
@@ -39,8 +40,8 @@ RUN if [ "$GENERATE_BRIDGE_CERT" = "true" ]; then \
             -keyout "${RADICAL_BRIDGE_KEY}" \
             -out "${RADICAL_BRIDGE_CERT}" \
             -subj "/CN=${BRIDGE_IP}" \
-            -addext "subjectAltName = IP:${BRIDGE_IP},DNS:localhost,IP:127.0.0.1"; \
-        echo "Certificate generated for ${BRIDGE_IP}"; \
+            -addext "subjectAltName = IP:${BRIDGE_IP},DNS:${BRIDGE_HOSTNAME},IP:127.0.0.1,DNS:localhost"; \
+        echo "Certificate generated for ${BRIDGE_HOSTNAME} and ${BRIDGE_IP}"; \
     else \
         echo "Skipping certificate generation (GENERATE_BRIDGE_CERT is not true)."; \
     fi
