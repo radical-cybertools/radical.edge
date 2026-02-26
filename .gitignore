@@ -1,5 +1,6 @@
 *.py[cod]
 VERSION
+_version.py
 .env
 ve/
 

@@ -21,6 +21,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from .plugin_base import Plugin
+from .client import PluginClient
 
 log = logging.getLogger("radical.edge")
 
@@ -31,8 +32,15 @@ class SysInfoProvider:
     """
 
     def __init__(self):
-        self._cpu_model = self._detect_cpu_model()
-        self._gpu_info = self._detect_gpus()
+        self._cpu_model = None
+        self._gpu_info  = None
+
+    def _ensure_detected(self):
+        """Run hardware detection once on first use."""
+        if self._cpu_model is None:
+            self._cpu_model = self._detect_cpu_model()
+        if self._gpu_info is None:
+            self._gpu_info = self._detect_gpus()
 
     def _detect_cpu_model(self) -> str:
         """Parse /proc/cpuinfo or platform info for CPU model name."""
@@ -323,6 +331,8 @@ class SysInfoProvider:
     def get_metrics(self) -> Dict[str, Any]:
         """Collect current system metrics."""
 
+        self._ensure_detected()
+
         # --- System ---
         boot_time = psutil.boot_time()
         uptime = time.time() - boot_time
@@ -446,6 +456,47 @@ class SysInfoProvider:
         return metrics
 
 
+from .plugin_session_base import PluginSession
+from .plugin_base import Plugin
+
+
+class SysInfoSession(PluginSession):
+    """
+    SysInfo session (Service-side).
+
+    Provides methods to gather system metrics.
+    """
+    def __init__(self, sid: str, provider: SysInfoProvider):
+        super().__init__(sid)
+        self._provider = provider
+
+    async def get_metrics(self) -> dict:
+        """
+        Return current system metrics.
+        """
+        self._check_active()
+        return self._provider.get_metrics()
+
+
+
+class SysInfoClient(PluginClient):
+    """
+    Client-side interface for the SysInfo plugin.
+    """
+
+    def get_metrics(self) -> dict:
+        """
+        Return current system metrics.
+        """
+        if not self.sid:
+            raise RuntimeError("No active session")
+
+        url = self._url(f"metrics/{self.sid}")
+        resp = self._http.get(url)
+        resp.raise_for_status()
+        return resp.json()
+
+
 class PluginSysInfo(Plugin):
     """
     SysInfo plugin for Radical Edge.
@@ -453,7 +504,10 @@ class PluginSysInfo(Plugin):
     Provides system hardware configuration and resource utilization metrics.
     """
 
-    plugin_name = "radical.sysinfo"
+    plugin_name = "sysinfo"
+    session_class = SysInfoSession
+    client_class = SysInfoClient
+    version = '0.0.1'
 
     def __init__(self, app: FastAPI):
         """
@@ -464,11 +518,20 @@ class PluginSysInfo(Plugin):
         self._provider = SysInfoProvider()
 
         # Register routes
-        self.add_route_get('metrics', self.get_metrics_endpoint)
+        self.add_route_get('metrics/{sid}', self.get_metrics_endpoint)
 
-    def get_metrics_endpoint(self, request: Request) -> JSONResponse:
+        self._log_routes()
+
+    def _create_session(self, sid: str, **kwargs) -> SysInfoSession:
         """
-        Return current system metrics.
+        Custom session creation to pass the provider.
         """
-        metrics = self._provider.get_metrics()
-        return JSONResponse(metrics)
+        return SysInfoSession(sid, self._provider)
+
+    async def get_metrics_endpoint(self, request: Request) -> JSONResponse:
+        """
+        Return current system metrics for the specified session.
+        """
+        sid = request.path_params['sid']
+        return await self._forward(sid, SysInfoSession.get_metrics)
+

@@ -6,6 +6,7 @@ import os
 import signal
 import sys
 
+import argparse
 from radical.edge.service import EdgeService
 import radical.edge.logging_config  # noqa: F401 # pylint: disable=unused-import, W0611
 
@@ -13,15 +14,20 @@ import radical.edge.logging_config  # noqa: F401 # pylint: disable=unused-import
 log = logging.getLogger("radical.edge")
 
 
-
 async def main():
     """
     Main entry point for the standalone Radical Edge Service.
     """
-    bridge_url = os.environ.get("BRIDGE_URL")
-    edge_name = sys.argv[1] if len(sys.argv) > 1 else None
+    parser = argparse.ArgumentParser(description="Radical Edge Service")
+    parser.add_argument("--name", "-n", nargs="?", help="Edge name")
+    parser.add_argument("--url", "-u", nargs="?", help="Bridge URL")
 
-    service = EdgeService(bridge_url=bridge_url, name=edge_name)
+    args = parser.parse_args()
+
+    edge_name = args.name
+    edge_url = args.url
+
+    service = EdgeService(bridge_url=edge_url, name=edge_name)
     loop = asyncio.get_running_loop()
     stop_event = asyncio.Event()
 
@@ -45,8 +51,10 @@ async def main():
     finally:
         log.info("Service stopped")
 
+
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
         pass
+

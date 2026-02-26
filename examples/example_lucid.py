@@ -1,104 +1,49 @@
 #!/usr/bin/env python3
 
-import os
-import httpx
-import pprint
-
-BRIDGE_URL = os.environ.get("BRIDGE_URL")
+from radical.edge import BridgeClient
 
 
 def main():
 
-    def check_response(r):
-        try:
-            r.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            print(f"Error response {r.status_code} while requesting {r.url!r}.")
-            print(f"Response content: {r.text}")
-            raise e
+    bc = BridgeClient()
+    eids = bc.list_edges()
 
-        data = r.json()
-      # pprint.pprint(data)
+    if not eids:
+        print("No edges found.")
+        return
 
-        return data
+    eid = eids[0]
+    print(f"Using edge: {eid}")
 
-    with httpx.Client(timeout=60.0,
-                      verify='cert.pem') as http:
+    ec = bc.get_edge_client(eid)
+    lucid = ec.get_plugin('lucid')
 
-        print('=================================')
+    print("Submitting pilot...")
+    res = lucid.pilot_submit({
+        'resource': 'local.localhost',
+        'nodes': 1,
+        'runtime': 10
+    })
+    pid = res['pid']
+    print(f"Pilot ID: {pid}")
 
-        r = http.post(f"{BRIDGE_URL}/edge/list")
-        print('---------------------------------')
-        print("list")
-        data = check_response(r)
-        pprint.pprint(data)
+    print("Submitting tasks...")
+    tids = []
+    for _ in range(3):
+        res = lucid.task_submit({'description': {'executable': 'date'}})
+        tid = res['tid']
+        tids.append(tid)
+        print(f"Task ID: {tid}")
 
-        # load lucid plugin on the edge service
-        r = http.post(f"{BRIDGE_URL}/edge/load_plugin/radical.lucid")
-        print('---------------------------------')
-        print("load_plugin")
-        data = check_response(r)
-        ns   = data["namespace"]
-        base = f"{BRIDGE_URL}{ns}"
-        print(f"namespace: {ns}")
-        print(f"base url : {base}")
+    for tid in tids:
+        print(f"Waiting for task {tid}...")
+        res = lucid.task_wait(tid)
+        stdout = res['task']['stdout'].strip()
+        print(f"Task {tid} result: {stdout}")
 
-        r = http.post(f"{BRIDGE_URL}/edge/list")
-        print('---------------------------------')
-        print("list")
-        data = check_response(r)
-        pprint.pprint(data)
-
-        # register client
-        r = http.post(f"{base}/register_client")
-        print('---------------------------------')
-        print("register_client")
-        data = check_response(r)
-        cid  = data["cid"]
-
-        # GET example (echo)
-        r = http.get(f"{base}/echo/{cid}", params={"q": "from-client"})
-        print('---------------------------------')
-        print("GET /echo/{cid}")
-        check_response(r)
-
-        # submit a pilot
-        r = http.post(f"{base}/pilot_submit/{cid}",
-                      json={'description': {'resource': 'local.localhost',
-                                            'nodes'   : 10,
-                                            'runtime' : 10}})
-        print('---------------------------------')
-        print("POST /submit_pilot/{cid}")
-        check_response(r)
-
-        tids = list()
-        for _ in range(10):
-            r = http.post(f"{base}/task_submit/{cid}",
-                          json={'description': {'executable': 'date'}})
-            print('---------------------------------')
-            print("POST /task_submit/{cid}")
-            data = check_response(r)
-            tid  = data["tid"]
-            tids.append(tid)
-
-        for tid in tids:
-            r = http.get(f"{base}/task_wait/{cid}/{tid}")
-            print('---------------------------------')
-            print("GET /task_wait/{cid}/{tid}")
-            data = check_response(r)
-            ret  = data['task']['stdout'].strip()
-            print(f"task {tid} returned: {ret}")
-
-        # unregister client
-        r = http.post(f"{base}/unregister_client/{cid}")
-        print('---------------------------------')
-        print("unregister_client")
-        check_response(r)
+    bc.close()
 
 
 if __name__ == "__main__":
-
     main()
-
-
 

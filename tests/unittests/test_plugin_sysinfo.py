@@ -1,19 +1,21 @@
 
 # pylint: disable=protected-access,unused-import,unused-variable,not-callable,unused-argument
+import pytest
 from fastapi import FastAPI
 from starlette.testclient import TestClient
 
 from radical.edge.plugin_sysinfo import PluginSysInfo, SysInfoProvider
 
+
 def test_plugin_sysinfo_init():
     app = FastAPI()
     plugin = PluginSysInfo(app)
-    assert plugin.name == 'sysinfo'
-    assert plugin.namespace.startswith('/sysinfo/')
+    assert plugin.instance_name == 'sysinfo'
+    assert plugin.namespace == '/sysinfo'
 
     # Check routes
     routes = [r.path for r in app.router.routes]
-    metric_path = f"{plugin.namespace}/metrics"
+    metric_path = f"{plugin.namespace}/metrics/{{sid}}"
     assert metric_path in routes
 
 
@@ -63,12 +65,19 @@ def test_sysinfo_gpus_structure():
         # Dynamic metrics might not be present if nvidia-smi fails
         # So we only check static fields
 
-def test_endpoint():
+@pytest.mark.asyncio
+async def test_endpoint():
     app = FastAPI()
     plugin = PluginSysInfo(app)
     client = TestClient(app)
 
-    resp = client.get(f"{plugin.namespace}/metrics")
+    # Register session
+    resp = client.post(f"{plugin.namespace}/register_session")
+    assert resp.status_code == 200
+    sid = resp.json()['sid']
+
+    # Get metrics
+    resp = client.get(f"{plugin.namespace}/metrics/{sid}")
     assert resp.status_code == 200
     data = resp.json()
     assert 'system' in data
