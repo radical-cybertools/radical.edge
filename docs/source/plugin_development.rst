@@ -253,7 +253,7 @@ Create tests for your plugin-specific functionality:
     def test_my_service_plugin():
         app = FastAPI()
         plugin = PluginMyService(app)
-        assert plugin._name == "myservice"
+        assert plugin.instance_name == "myservice"
         assert plugin.client_class == MyServiceClient
 
 Base class functionality is already tested, so focus on your specific logic!

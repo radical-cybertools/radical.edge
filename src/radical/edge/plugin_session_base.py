@@ -5,30 +5,30 @@ __copyright__ = 'Copyright 2024, RADICAL@Rutgers'
 __license__   = 'MIT'
 
 
-class PluginClient:
+class PluginSession:
     """
-    Base class for plugin clients.
+    Base class for plugin sessions.
 
-    Provides common functionality for all plugin clients including:
-    - Client ID management
+    Provides common functionality for all plugin sessions including:
+    - Session ID management
     - Session state tracking
     - Echo service for testing
     - Session validation
     """
 
-    def __init__(self, cid: str):
+    def __init__(self, sid: str):
         """
-        Initialize a plugin client.
+        Initialize a plugin session.
 
         Args:
-            cid (str): The unique client ID.
+            sid (str): The unique session ID.
         """
-        self._cid: str = cid
+        self._sid: str = sid
         self._active: bool = True
 
     async def close(self) -> dict:
         """
-        Close this client session.
+        Close this plugin session.
 
         Returns:
             dict: An empty dictionary indicating successful closure.
@@ -44,14 +44,14 @@ class PluginClient:
             q (str): The string to echo. Defaults to "hello".
 
         Returns:
-            dict: A dictionary containing the client ID ('cid') and the
+            dict: A dictionary containing the session ID ('sid') and the
                   echoed string ('echo').
 
         Raises:
             RuntimeError: If the session is closed.
         """
         self._check_active()
-        return {"cid": self._cid, "echo": q + f" -- {self._name}"}
+        return {"sid": self._sid, "echo": q}
 
     def _check_active(self):
         """

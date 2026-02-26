@@ -8,11 +8,16 @@ __license__   = 'MIT'
 
 
 import radical.edge
+import radical.edge
 from radical.edge.plugin_base import Plugin
+from radical.edge.plugin_session_base import PluginSession
 
 from fastapi import FastAPI
 from starlette.routing import Route
+from starlette.requests import Request
+from unittest.mock import Mock
 import uuid
+import pytest
 
 
 def test_plugin_initialization():
@@ -22,12 +27,11 @@ def test_plugin_initialization():
     app = FastAPI()
     plugin = Plugin(app, "test_plugin")
 
-    assert plugin._name == "test_plugin"
+    assert plugin.instance_name == "test_plugin"
     assert isinstance(plugin._uid, str)
     # Verify it's a valid UUID
     assert uuid.UUID(plugin._uid)
-    assert plugin._namespace == f"/test_plugin/{plugin._uid}"
-    assert plugin._routes is app.router.routes
+    assert plugin._namespace == f"/{plugin.instance_name}"
 
 
 def test_plugin_uid_property():
@@ -50,7 +54,7 @@ def test_plugin_namespace_property():
     app = FastAPI()
     plugin = Plugin(app, "test_plugin")
 
-    expected_namespace = f"/test_plugin/{plugin._uid}"
+    expected_namespace = "/test_plugin"
     assert plugin.namespace == expected_namespace
 
 
@@ -155,6 +159,39 @@ def test_plugin_multiple_routes():
         assert route.path.startswith(plugin.namespace)
 
 
+@pytest.mark.asyncio
+async def test_plugin_session_management():
+    '''
+    Test base plugin session management.
+    '''
+    app = FastAPI()
+    plugin = Plugin(app, "test_plugin")
+    plugin.session_class = PluginSession  # required — no fallback
+
+    # Mock request for registration
+    request = Mock(spec=Request)
+    response = await plugin.register_session(request)
+    
+    import json
+    data = json.loads(response.body)
+    sid = data['sid']
+    assert sid in plugin._sessions
+    assert isinstance(plugin._sessions[sid], PluginSession)
+
+    # Test echo
+    request.path_params = {"sid": sid}
+    request.query_params = {"q": "ping"}
+    response = await plugin.echo(request)
+    data = json.loads(response.body)
+    assert data['echo'] == "ping"
+    assert data['sid'] == sid
+
+    # Test unregister
+    request.path_params = {"sid": sid}
+    await plugin.unregister_session(request)
+    assert sid not in plugin._sessions
+
+
 def test_plugin_unique_uids():
     '''
     Test that each plugin instance gets a unique UID.
@@ -169,10 +206,10 @@ def test_plugin_unique_uids():
     assert plugin1.uid != plugin3.uid
     assert plugin2.uid != plugin3.uid
 
-    # All namespaces should be different
-    assert plugin1.namespace != plugin2.namespace
-    assert plugin1.namespace != plugin3.namespace
-    assert plugin2.namespace != plugin3.namespace
+    # Namespaces will be the same if names are the same
+    assert plugin1.namespace == "/test_plugin"
+    assert plugin2.namespace == "/test_plugin"
+    assert plugin3.namespace == "/another_plugin"
 
 
 if __name__ == '__main__':
