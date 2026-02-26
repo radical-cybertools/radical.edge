@@ -99,7 +99,7 @@ export RADICAL_BRIDGE_KEY=`pwd`/bridge_key.pem
 
 Edge service and client endpoints should be provided with the bridge url, 
 either as an argument or as the environment variable (e.g., 
-`export RADICAL_BRIDGE_URL='https://localhost:8000`).
+`export RADICAL_BRIDGE_URL='https://localhost:8000'`).
 
 ## 3. Run demo
 
@@ -130,19 +130,25 @@ INFO:     Uvicorn running on https://0.0.0.0:8000 (Press CTRL+C to quit)
 #### 3.1.B. Terminal 2 (edge)
 
 Run the edge service. NOTE: for production runs, it will be running on the 
-target HPC resource.
+target HPC resource (on the head node and/or from the batch job).
 
 ```shell
-# corresponding virtual environment (e.g., ve_edge) should be active
+# corresponding virtual environment (e.g., ve_edge) should be active,
 # env variables RADICAL_BRIDGE_CERT, RADICAL_BRIDGE_URL should be set
 radical-edge-service.py
 ```
 
 Example output:
 ```text
+INFO:     [Edge] Loaded plugin: lucid
+INFO:     [Edge] Loaded plugin: xgfabric
+INFO:     [Edge] Loaded plugin: queue_info
 INFO:     [Edge] Loaded plugin: sysinfo
-INFO:     Starting Radical Edge Service (wss://localhost:8000)
-INFO:     [Edge] Connected to wss://localhost:8000
+INFO:     [Edge] Loaded plugin: psij
+INFO:     [Edge] Loaded plugin: rhapsody
+INFO:     Starting Radical Edge Service (https://localhost:8000)
+INFO:     [Edge] Connected to https://localhost:8000
+
 ```
 
 The bridge endpoint should confirm the connection coming from the edge service
@@ -154,8 +160,7 @@ terminal 1 related to the bridge.
 Run a test client.
 
 ```shell
-# corresponding virtual environment (e.g., ve_edge) should be active
-# NOTE: provided examples use `httpx` package as a dependency
+# corresponding virtual environment (e.g., ve_edge) should be active,
 # env variable RADICAL_BRIDGE_URL should be set
 #
 # get to the directory with examples (within the Edge repo)
@@ -172,15 +177,15 @@ The following example will try to `submit` a batch job using `PluginPSIJ`.
 python3 example_psij.py
 ```
 
-Since there is no configured SLURM locally, we'll get an error regarding the 
-`sbatch` command.
-
-Example output:
+Since there is no configured SLURM locally, PSI/J will use the `local` backend.
 ```text
-Found edge: 130-199-95-179.dhcp.bnl.gov
-PSIJ Plugin active at: wss://localhost:8000/130-199-95-179.dhcp.bnl.gov/psij
-Registered Client ID: client.0000
-Submission failed: {"detail":"500: [Errno 2] No such file or directory: 'sbatch'"}
+INFO:     HTTP Request: POST https://localhost:8000/edge/list "HTTP/1.1 200 OK"
+Using edge: <edge_hostname>
+INFO:     HTTP Request: POST https://localhost:8000/edge/list "HTTP/1.1 200 OK"
+INFO:     HTTP Request: POST https://localhost:8000/<edge_hostname>/psij/register_session "HTTP/1.1 200 OK"
+Submitting Job...
+INFO:     HTTP Request: POST https://localhost:8000/<edge_hostname>/psij/submit/session.51f7dfdc "HTTP/1.1 200 OK"
+.....
 ```
 
 ### 3.2. Containerized
@@ -199,7 +204,7 @@ export RADICAL_BRIDGE_HOSTNAME=bridge
 ```
 
 ```shell
-cd examples/docker
+cd radical.edge/examples/docker
 docker build --build-arg GENERATE_BRIDGE_CERT=true \
              --build-arg BRIDGE_IP=127.0.0.1 \
              --build-arg BRIDGE_HOSTNAME=${RADICAL_BRIDGE_HOSTNAME} \
@@ -213,6 +218,7 @@ docker compose up -d
 
 # get into the client container and run the example
 docker exec -it radical-edge-client bash
+
 cd /app/radical.edge/examples
 python3 example_sysinfo.py
 
