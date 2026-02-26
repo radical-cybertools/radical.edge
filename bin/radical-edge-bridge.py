@@ -317,8 +317,8 @@ if __name__ == "__main__":
     # Uvicorn config
     host = "0.0.0.0"
     port = 8000
-    ssl_certfile = os.environ.get('RADICAL_EDGE_CERT')
-    ssl_keyfile  = os.environ.get('RADICAL_EDGE_KEY')
+    ssl_certfile = os.environ.get('RADICAL_BRIDGE_CERT')
+    ssl_keyfile  = os.environ.get('RADICAL_BRIDGE_KEY')
 
     # we always need a cert
     if ssl_certfile and not ssl_keyfile:

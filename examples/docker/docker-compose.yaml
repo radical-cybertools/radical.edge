@@ -1,0 +1,67 @@
+x-common-build: &common-build
+  image: ${RADICAL_EDGE_IMAGE:-radicalcybertools/radical.edge}:${RADICAL_EDGE_TAG:-latest}
+  build:
+    context: .
+    dockerfile: Dockerfile
+    args:
+      RADICAL_EDGE_BRANCH: ${RADICAL_EDGE_BRANCH:-master}
+
+services:
+  bridge:
+    <<: *common-build
+    build:
+      args:
+        GENERATE_BRIDGE_CERT: "true"
+        BRIDGE_IP: "127.0.0.1"
+    container_name: radical-bridge
+    hostname: bridge
+    command: [ "radical-edge-bridge.py" ]
+    ports:
+      - "8000:8000"
+    volumes:
+      - radical-edge-volume:/app
+    networks:
+      - radical-edge-network
+
+  edge:
+    <<: *common-build
+    build:
+      args:
+        GENERATE_BRIDGE_CERT: "false"
+    container_name: radical-edge
+    hostname: edge
+    environment:
+      - RADICAL_BRIDGE_URL=https://bridge:8000
+    command: [ "radical-edge-service.py" ]
+    volumes:
+      - radical-edge-volume:/app:ro
+    networks:
+      - radical-edge-network
+    depends_on:
+      - bridge
+
+  client:
+    <<: *common-build
+    build:
+      args:
+        GENERATE_BRIDGE_CERT: "false"
+    container_name: radical-edge-client
+    hostname: client
+    environment:
+      - RADICAL_BRIDGE_URL=https://bridge:8000
+    command: [ "tail", "-f", "/dev/null" ]
+    volumes:
+      - radical-edge-volume:/app:ro
+    networks:
+      - radical-edge-network
+    depends_on:
+      - bridge
+      - edge
+
+volumes:
+  radical-edge-volume:
+    name: radical-edge-volume
+
+networks:
+  radical-edge-network:
+    name: radical-edge-network

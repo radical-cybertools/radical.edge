@@ -1,0 +1,48 @@
+FROM python:3.10-slim
+
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONNOUSERSITE=True
+ENV PATH="/opt/ve_edge/bin:$PATH"
+ENV RADICAL_BRIDGE_CERT="/app/private/bridge_cert.pem"
+ENV RADICAL_BRIDGE_KEY="/app/private/bridge_key.pem"
+
+RUN apt-get update -y && \
+    apt-get install -y --no-install-recommends \
+    build-essential \
+    curl \
+    git \
+    gnupg \
+    jq \
+    openssl \
+    python3-dev \
+    sudo && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN python3 -m venv /opt/ve_edge
+
+ARG RADICAL_EDGE_BRANCH=devel
+
+WORKDIR /app
+
+RUN git clone -b ${RADICAL_EDGE_BRANCH} https://github.com/radical-cybertools/radical.edge.git
+
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir -e /app/radical.edge && \
+    pip install --no-cache-dir git+https://github.com/radical-cybertools/radical.pilot.git@devel
+
+ARG GENERATE_BRIDGE_CERT=false
+ARG BRIDGE_IP=127.0.0.1
+
+RUN if [ "$GENERATE_BRIDGE_CERT" = "true" ]; then \
+        mkdir -p $(dirname "$RADICAL_BRIDGE_CERT") && \
+        openssl req -x509 -nodes -days 3650 -newkey rsa:4096 \
+            -keyout "${RADICAL_BRIDGE_KEY}" \
+            -out "${RADICAL_BRIDGE_CERT}" \
+            -subj "/CN=${BRIDGE_IP}" \
+            -addext "subjectAltName = IP:${BRIDGE_IP},DNS:localhost,IP:127.0.0.1"; \
+        echo "Certificate generated for ${BRIDGE_IP}"; \
+    else \
+        echo "Skipping certificate generation (GENERATE_BRIDGE_CERT is not true)."; \
+    fi
+
+CMD ["bash"]

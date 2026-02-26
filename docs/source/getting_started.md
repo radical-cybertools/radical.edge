@@ -185,10 +185,39 @@ Submission failed: {"detail":"500: [Errno 2] No such file or directory: 'sbatch'
 
 ### 3.2. Containerized
 
-All endpoints run within different \[docker\] containers.
-... TBD ...
+All endpoints run within different Docker containers. We use `dev` tag 
+for the latest, but yet unstable, configuration for the RADICAL-Edge Image.
 
-### 3.2. Remote run
+```shell
+export RADICAL_EDGE_IMAGE=radicalcybertools/radical.edge
+export RADICAL_EDGE_TAG=dev
+# for the demo we use the current `devel` branch
+export RADICAL_EDGE_BRANCH="docs/demo"  # TODO: replace with `devel`
+```
+
+```shell
+cd examples/docker
+docker build --build-arg GENERATE_BRIDGE_CERT=true \
+             --build-arg BRIDGE_IP=127.0.0.1 \
+             --build-arg RADICAL_EDGE_BRANCH=${RADICAL_EDGE_BRANCH} \
+             -t ${RADICAL_EDGE_IMAGE}:${RADICAL_EDGE_TAG} .
+```
+
+```shell
+# start the bridge, edge, and client containers in the background
+docker compose up -d
+
+# get into the client container and run the example
+docker exec -it radical-edge-client bash
+cd /app/radical.edge/examples
+python3 example_sysinfo.py
+
+# docker compose logs -f radical-edge
+# stop and remove containers
+#    docker compose down
+```
+
+### 3.3. Remote run
 
 All endpoints run on different machines.
 ... TBD ...
