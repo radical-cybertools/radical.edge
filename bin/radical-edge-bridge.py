@@ -317,17 +317,23 @@ if __name__ == "__main__":
     # Uvicorn config
     host = "0.0.0.0"
     port = 8000
-    ssl_certfile = os.environ.get('RADICAL_BRIDGE_CERT')
-    ssl_keyfile = os.environ.get('RADICAL_BRIDGE_KEY')
+    ssl_certfile = os.environ.get('RADICAL_EDGE_CERT')
+    ssl_keyfile  = os.environ.get('RADICAL_EDGE_KEY')
 
+    # we always need a cert
+    if ssl_certfile and not ssl_keyfile:
+        print("[Bridge] SSL cert provided without key. Exiting.")
+        exit(1)
+
+    # Construct bridge URL based on config
     # FIXME: get FQHN for 0.0.0.0
     protocol = "wss" if ssl_certfile else "ws"
     advertise_host = "localhost" if host == "0.0.0.0" else host
-    bridge_url = f"{protocol}://{advertise_host}:{port}/register"
+    bridge_url = f"https://{advertise_host}:{port}/register"
 
     endpoints["bridge"]["url"] = bridge_url
 
-    print(f"[Bridge] Advertising URL: {bridge_url}")
+    print(f"[Bridge] URL: {bridge_url}")
 
     uvicorn.run(app,
                 host=host,
