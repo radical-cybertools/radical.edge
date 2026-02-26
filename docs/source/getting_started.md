@@ -47,7 +47,7 @@ allow the remote access.
 
 ```shell
 openssl req -x509 -nodes -days 3650 -newkey rsa:4096 \
-            -keyout edge_key.pem -out edge_cert.pem \
+            -keyout bridge_key.pem -out bridge_cert.pem \
             -subj "/CN=<IPv4>" \
             -addext "subjectAltName = IP:<IPv4>,DNS:localhost,IP:127.0.0.1"
 ```
@@ -88,17 +88,18 @@ git clone https://github.com/radical-cybertools/radical.edge.git
 
 ## 2. Configuration
 
-The bridge endpoint should have environment variables `RADICAL_EDGE_CERT` and
-`RADICAL_EDGE_KEY` to be set before it starts, while the edge service requires 
-to have `RADICAL_EDGE_CERT` only.
+The bridge endpoint should have environment variables `RADICAL_BRIDGE_CERT` and
+`RADICAL_BRIDGE_KEY` to be set before it starts, while the edge service requires 
+to have `RADICAL_BRIDGE_CERT` only.
 
 ```shell
-export RADICAL_EDGE_CERT=`pwd`/edge_cert.pem
-export RADICAL_EDGE_KEY=`pwd`/edge_key.pem
+export RADICAL_BRIDGE_CERT=`pwd`/bridge_cert.pem
+export RADICAL_BRIDGE_KEY=`pwd`/bridge_key.pem
 ```
 
-Edge service and client endpoints should be provided with the bridge url
-`BRIDGE_URL` (e.g., `export BRIDGE_URL=wss://localhost:8000`).
+Edge service and client endpoints should be provided with the bridge url, 
+either as an argument or as the environment variable (e.g., 
+`export RADICAL_BRIDGE_URL='https://localhost:8000`).
 
 ## 3. Run demo
 
@@ -113,7 +114,7 @@ Run the bridge endpoint which bridges between the client and the edge service.
 
 ```shell
 # corresponding virtual environment (e.g., ve_edge) should be active,
-# env variables RADICAL_EDGE_CERT, RADICAL_EDGE_KEY should be set
+# env variables RADICAL_BRIDGE_CERT, RADICAL_BRIDGE_KEY should be set
 radical-edge-bridge.py
 ```
 
@@ -133,7 +134,7 @@ target HPC resource.
 
 ```shell
 # corresponding virtual environment (e.g., ve_edge) should be active
-# env variables RADICAL_EDGE_CERT, BRIDGE_URL should be set
+# env variables RADICAL_BRIDGE_CERT, RADICAL_BRIDGE_URL should be set
 radical-edge-service.py
 ```
 
@@ -155,7 +156,7 @@ Run a test client.
 ```shell
 # corresponding virtual environment (e.g., ve_edge) should be active
 # NOTE: provided examples use `httpx` package as a dependency
-# env variable BRIDGE_URL should be set
+# env variable RADICAL_BRIDGE_URL should be set
 #
 # get to the directory with examples (within the Edge repo)
 cd radical.edge/examples
