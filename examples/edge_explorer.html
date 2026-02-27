@@ -1146,53 +1146,52 @@
         return;
       }
 
-      let html = '';
+      let html = `<div class="card">
+    <div class="card-title" style="margin-bottom:15px">🗂️ Endpoint Hierarchy</div>
+    <div style="font-size: 0.95em; line-height: 1.8;">`;
+
+      // Bridge level
       if (bridge.url) {
-        html += `<div class="card">
-      <div class="card-title">🌉 Bridge</div>
-      <div class="tag-row"><span class="tag">${bridge.url}</span></div>
-    </div>`;
+        html += `<div style="display:flex; align-items:center;">
+          <span style="font-size: 1.1em; margin-right:8px;">🌉</span> <strong style="font-size: 1.1em;">Bridge</strong> 
+          <code style="margin-left:12px; font-size: 0.9em; color:var(--text); background:var(--bg); border:1px solid var(--border); padding:2px 6px; border-radius:4px;">${bridge.url}</code>
+        </div>`;
+      } else {
+        html += `<div style="display:flex; align-items:center;">
+          <span style="font-size: 1.1em; margin-right:8px;">🌉</span> <strong style="font-size: 1.1em;">Bridge</strong>
+        </div>`;
       }
 
-      html += `<div class="card">
-    <div class="card-title">💻 Connected Edges (${edgeNames.length})</div>
-    <table>
-      <thead><tr><th>Edge Name</th><th>Plugins</th><th>Actions</th></tr></thead>
-      <tbody>`;
+      // Edges Level
+      const edgeNamesList = Object.keys(edges);
+      html += `<div style="margin-left: 12px; border-left: 1px dashed var(--muted); padding-left: 20px; margin-top: 5px;">`;
 
-      for (const [ename, edata] of Object.entries(edges)) {
+      for (const ename of edgeNamesList) {
+        html += `<div style="margin-top: 15px; display:flex; align-items:center;">
+          <span style="font-size: 1.1em; margin-right:8px;">💻</span> <strong style="color:var(--accent2); font-size:1.05em;">${ename}</strong>
+        </div>`;
+
+        const edata = edges[ename];
         const plugins = Object.keys(edata.plugins || {});
-        const badges = plugins.map(p =>
-          `<span class="badge badge-blue" style="cursor:pointer"
-             onclick="showPluginPage('${ename}','${p}')">${p}</span>`
-        ).join(' ');
-        html += `<tr>
-      <td><strong>${ename}</strong></td>
-      <td>${badges}</td>
-      <td>${plugins.map(p =>
-          `<button class="btn btn-secondary btn-sm" onclick="showPluginPage('${ename}','${p}')">
-           ${pluginIcon(p)} ${p}
-         </button>`
-        ).join(' ')}</td>
-    </tr>`;
-      }
-
-      html += `</tbody></table></div>`;
-
-      // per-edge plugin detail
-      for (const [ename, edata] of Object.entries(edges)) {
-        for (const [pname, pinfo] of Object.entries(edata.plugins || {})) {
-          html += `<div class="card">
-        <div class="card-title">${pluginIcon(pname)} ${ename} / ${pname}
-          <span class="badge badge-gray" style="margin-left:auto">${pinfo.namespace || ''}</span>
-        </div>
-        <div class="tag-row">`;
-          for (const [k, v] of Object.entries(pinfo)) {
-            html += `<span class="tag">${k}: ${JSON.stringify(v)}</span>`;
+        if (plugins.length > 0) {
+          html += `<div style="margin-left: 12px; border-left: 1px dashed var(--muted); padding-left: 20px; margin-top: 5px; padding-bottom: 5px;">`;
+          for (const pname of plugins) {
+            const pinfo = edata.plugins[pname];
+            html += `<div style="display:flex; align-items:center; cursor:pointer; padding: 4px 8px; border-radius:4px; transition: background 0.2s; margin-top:4px; margin-left:-8px;" 
+                          onmouseover="this.style.background='var(--bg3)'" 
+                          onmouseout="this.style.background='transparent'"
+                          onclick="showPluginPage('${ename}','${pname}')">
+              <span style="width:160px; font-weight:600; display:flex; align-items:center; gap:8px;">
+                 <span>${pluginIcon(pname)}</span> ${pname}
+              </span>
+              <code style="color:var(--text); background:var(--bg); border:1px solid var(--border); padding:2px 6px; border-radius:4px; font-family:monospace; font-size: 0.85em;">${pinfo.namespace || ''}</code>
+            </div>`;
           }
-          html += `</div></div>`;
+          html += `</div>`;
         }
       }
+
+      html += `</div></div></div>`;
 
       document.getElementById('hierarchyContent').innerHTML = html;
     }
