@@ -42,17 +42,27 @@ class RhapsodySession(PluginSession):
         Args:
             sid (str):  Unique session identifier.
             backend_names (list[str] | None):
-                Backends to configure.  Defaults to ``['dragon_v3']``.
+                Backends to configure.  Defaults to ``['concurrent']``.
         """
         super().__init__(sid)
 
         if rh is None:
             raise RuntimeError("rhapsody package is not installed")
 
-        backend_names = backend_names or ['dragon_v3']
-        backends = [rh.get_backend(name) for name in backend_names]
-        self._rh_session = rh.Session(backends=backends, uid=sid)
+        self.backend_names = backend_names or ['concurrent']
+        self._rh_session = None
         self._tasks: dict[str, dict] = {}
+
+    async def initialize(self) -> None:
+        """Asynchronously initialize the session and its backends."""
+        backends = []
+        for name in self.backend_names:
+            b = rh.get_backend(name)
+            if hasattr(b, '__await__'):
+                b = await b
+            backends.append(b)
+
+        self._rh_session = rh.Session(backends=backends, uid=self._sid)
 
     async def submit_tasks(self, task_dicts: list[dict]) -> list[dict]:
         """
@@ -97,7 +107,15 @@ class RhapsodySession(PluginSession):
 
         await self._rh_session.wait_tasks(tasks, timeout=timeout)
 
-        return [dict(t) for t in tasks]
+        return [self._sanitize_task(t) for t in tasks]
+
+    def _sanitize_task(self, t) -> dict:
+        """Sanitize a Rhapsody task dict so it's JSON serializable."""
+        d = dict(t)
+        d.pop('future', None)
+        if 'exception' in d and d['exception'] is not None:
+            d['exception'] = str(d['exception'])
+        return d
 
     async def get_task(self, uid: str) -> dict:
         """
@@ -109,7 +127,7 @@ class RhapsodySession(PluginSession):
         if not task:
             raise HTTPException(status_code=404,
                                 detail=f"task {uid} not found")
-        return dict(task)
+        return self._sanitize_task(task)
 
     async def cancel_task(self, uid: str) -> dict:
         """
@@ -161,8 +179,8 @@ class RhapsodyClient(PluginClient):
         Register a session, optionally specifying backend names.
 
         Args:
-            backends: List of backend names (e.g. ``['local']``).
-                      Defaults to ``['dragon_v3']`` on the server side.
+            backends: List of backend names (e.g. ``['concurrent']``).
+                      Defaults to ``['concurrent']`` on the server side.
         """
         payload = {}
         if backends:
@@ -299,8 +317,10 @@ class PluginRhapsody(Plugin):
             sid = f"session.{_uuid.uuid4().hex[:8]}"
 
 
-        self._sessions[sid] = self._create_session(sid,
-                                                   backend_names=backend_names)
+        session = self._create_session(sid, backend_names=backend_names)
+        if hasattr(session, 'initialize'):
+            await session.initialize()
+        self._sessions[sid] = session
         log.info(f"[{self.instance_name}] Registered session {sid}")
         return JSONResponse({"sid": sid})
 
