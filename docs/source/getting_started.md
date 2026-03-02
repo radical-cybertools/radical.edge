@@ -14,7 +14,7 @@ runs it will be the same environment, while for production runs, each endpoint
 will have its own virtual environment.
 
 > [!NOTE]
-> Python requirements >= **3.NN**
+> Python requirements >= **3.10**
 
 ### 1.1. Create virtual environment
 
@@ -244,26 +244,4 @@ for the edge service, and the local machine for the client.
 - **Client on local machine**
   - Obtain the bridge certificate, set the environment (including env variables for 
     cert and bridge url), run the client.
-
-
-
----
-
-## Feedback
-
-- When the bridge starts, print out `Please copy and execute before starting 
-the edge service and the client: export BRIDGE_URL=wss://localhost:8000`;
-  - `Advertising URL` should NOT include `/register` in it, since the Edge 
-    service adds `/register` on its own;
-- Convert the setup scripts to use `pyproject.toml` only;
-- Clean up the supported python versions - proposal: `python >= 3.10`;
-- `radical.pilot` should be an optional dependency;
-  - All plugins are loaded automatically, and each of them have their own 
-    requirements - should be explicitly set which plugins are required to be 
-    loaded automatically (either during the installation, or during the edge 
-    service start);
-- Should we provide a base class for the client? (user can create its own 
-  client from scratch);
-- No need to print out the full traceback if the exception is raised in the 
-  Edge Service (redirect stderr into a dedicated file?);
 
