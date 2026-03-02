@@ -28,21 +28,22 @@ def main():
     ec = bc.get_edge_client(eid)
     pi = ec.get_plugin('psij')
 
+    job_executor = 'pbs'
     job_spec = {
         "executable": "/bin/sleep",
-        "arguments": ["5"],
+        "arguments": ["10"],
         "attributes": {
             "account": "nnnn",
             "queue_name": "debug",
-            "duration": "180",
+            "duration": "300",  # min 5 minutes on debug queue
         },
         "custom_attributes": {
-            "l": "filesystems=home:eagle",
+            f"{job_executor}.l": "filesystems=home",
         }
     }
 
     print("Submitting Job...")
-    res = pi.submit_job(job_spec, 'pbs')
+    res = pi.submit_job(job_spec, job_executor)
     job_id = res['job_id']
 
     print(f"\nMonitoring Job {job_id}")
