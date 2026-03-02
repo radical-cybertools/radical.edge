@@ -13,7 +13,16 @@ def main():
         print("No edges found.")
         return
 
-    eid = eids[0]
+    eid = None
+    for _eid in eids:
+        if _eid.startswith("polaris"):
+            eid = _eid
+            break
+    
+    if not eid:
+        print("No polaris edge found.")
+        return
+
     print(f"Using edge: {eid}")
 
     ec = bc.get_edge_client(eid)
@@ -23,13 +32,17 @@ def main():
         "executable": "/bin/sleep",
         "arguments": ["5"],
         "attributes": {
-            "account": "fus183",
-            "duration": "100",
+            "account": "nnnn",
+            "queue_name": "debug",
+            "duration": "180",
+        },
+        "custom_attributes": {
+            "l": "filesystems=home:eagle",
         }
     }
 
     print("Submitting Job...")
-    res = pi.submit_job(job_spec)
+    res = pi.submit_job(job_spec, 'pbs')
     job_id = res['job_id']
 
     print(f"\nMonitoring Job {job_id}")

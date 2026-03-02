@@ -229,11 +229,23 @@ python3 example_sysinfo.py
 
 ### 3.3. Remote run
 
-All endpoints run on different machines.
-... TBD ...
-- Configure the bridge (might be used by multiple edge services)
-- Configure the edge service
-  - Distribute certificate to the target machine with the edge service
+All endpoints run on different machines. We will use the RADICAL3 machine 
+for the bridge (might be used by multiple edge services) and ALCF Polaris 
+for the edge service, and the local machine for the client.
+
+- **Bridge on RADICAL3**
+  - Generate the certificate (should be distributed to the edge service and the 
+    client) and the key, set the environment (including env variables for cert 
+    and key), run the bridge endpoint;
+- **Edge on ALCF Polaris**
+  - Obtain the bridge certificate, set the environment (including env variables for 
+    cert and bridge url), run the edge service;
+    - NOTE: might require to add bridge ip to `no_proxy` env variable (`export no_proxy="<bridge_ip>,$no_proxy"`);
+- **Client on local machine**
+  - Obtain the bridge certificate, set the environment (including env variables for 
+    cert and bridge url), run the client.
+
+
 
 ---
 
