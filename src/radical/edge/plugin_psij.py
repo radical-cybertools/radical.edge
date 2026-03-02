@@ -2,7 +2,6 @@
 PSIJ Plugin for Radical Edge.
 '''
 
-from urllib3.util.ssl_ import attr
 import logging
 
 from fastapi import FastAPI, HTTPException, Request
