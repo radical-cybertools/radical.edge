@@ -10,14 +10,38 @@ from typing  import Dict, Any
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi import Request, Response, HTTPException
 
-from fastapi.responses       import JSONResponse
 from fastapi.responses       import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.responses     import StreamingResponse
 
 from starlette.websockets    import WebSocketState
 
 
-app = FastAPI(title="Bridge")
+app = FastAPI(
+    title="RADICAL Edge Bridge",
+    description="""
+RADICAL Edge Bridge - Reverse proxy connecting clients to HPC edge services.
+
+## Overview
+
+The Bridge acts as a public-facing reverse proxy that:
+- Accepts HTTP requests from clients
+- Forwards them to appropriate Edge services over WebSocket
+- Returns responses back to clients
+- Broadcasts real-time notifications via Server-Sent Events (SSE)
+
+## Key Endpoints
+
+- `GET /` - Web UI (Edge Explorer)
+- `GET /events` - SSE stream for real-time updates
+- `GET /edges` - List connected edges and their plugins
+- `POST /edge/list` - Detailed edge/plugin topology
+- `/{edge_name}/{plugin}/{path}` - Proxied requests to edge plugins
+    """,
+    version="0.1.0",
+    docs_url="/docs",
+    redoc_url="/redoc"
+)
 
 # LUCID needs that setting
 app.add_middleware(
@@ -41,6 +65,15 @@ endpoints: Dict[str, Any] = {
 
 HEARTBEAT_INTERVAL = 20
 REQUEST_TIMEOUT    = 45
+
+clients_sse: set = set()
+
+
+async def broadcast_event(topic: str, data: dict):
+    msg = json.dumps({"topic": topic, "data": data})
+    formatted = f"data: {msg}\n\n"
+    for q in list(clients_sse):
+        await q.put(formatted)
 
 
 async def _send_to_edge(edge_name: str, message: dict):
@@ -126,6 +159,16 @@ async def register(ws: WebSocket):
                     # Edge base endpoint (radical.edge)
                     endpoints["edges"][edge_name]["endpoint"] = endpoint_data
 
+                await broadcast_event("topology", endpoints)
+
+            elif data.get("type") == "notification":
+                await broadcast_event("notification", {
+                    "edge": edge_name,
+                    "plugin": data.get("plugin"),
+                    "topic": data.get("topic"),
+                    "data": data.get("data")
+                })
+
             elif data.get("type") == "response":
                 req_id = data["req_id"]
                 # print(f"[Bridge] Response received {req_id}")
@@ -159,6 +202,7 @@ async def register(ws: WebSocket):
                 if edge_name in endpoints["edges"]:
                     print(f"[Bridge] Unregistering edge: {edge_name}")
                     del endpoints["edges"][edge_name]
+                    await broadcast_event("topology", endpoints)
 
                 if edge_name in edges:
                     del edges[edge_name]
@@ -185,14 +229,84 @@ def _strip_headers(request: Request) -> dict:
 
 
 # some routes are handles here:
-@app.post("/edge/list")
+
+@app.get("/events", tags=["Events"])
+async def sse_events(request: Request):
+    """
+    Server-Sent Events stream for real-time notifications.
+
+    Returns a stream of events including:
+    - `topology`: Edge/plugin registration changes
+    - `notification`: Plugin-specific events (task status, job status, etc.)
+
+    Event format:
+    ```
+    data: {"topic": "notification", "data": {...}}
+    ```
+    """
+    q = asyncio.Queue()
+    clients_sse.add(q)
+
+    # optionally yield current syntax first so they get an immediate state sync
+    await q.put(f"data: {json.dumps({'topic': 'topology', 'data': endpoints})}\n\n")
+
+    async def event_generator():
+        try:
+            while True:
+                # wait for new messages
+                msg = await q.get()
+                yield msg
+        except asyncio.CancelledError:
+            pass
+        finally:
+            clients_sse.remove(q)
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+@app.post("/edge/list", tags=["Discovery"])
 async def edge_list(request: Request):
+    """
+    Get detailed edge and plugin topology.
+
+    Returns the full topology including:
+    - Bridge URL
+    - All connected edges
+    - Plugins registered on each edge with their namespaces
+    """
     return JSONResponse({"data": endpoints})
 
 
-@app.get("/")
+@app.get("/edges", tags=["Discovery"])
+async def get_edges():
+    """
+    List all connected edges with their plugins.
+
+    Returns a summary of connected edges including:
+    - Edge names
+    - Registered plugins per edge
+    - Connection status
+    """
+    edge_list = []
+    for edge_name, edge_data in endpoints.get("edges", {}).items():
+        plugins = list(edge_data.get("plugins", {}).keys())
+        connected = edge_name in edges
+        edge_list.append({
+            "name": edge_name,
+            "plugins": plugins,
+            "connected": connected,
+            "plugin_count": len(plugins)
+        })
+    return JSONResponse({
+        "edges": edge_list,
+        "total": len(edge_list)
+    })
+
+
+@app.get("/", tags=["UI"], include_in_schema=False)
 async def root():
-    import sys, os
+    import sys
+    import os
     bin_dir = os.path.dirname(os.path.abspath(__file__))
     paths = [
         # if running from source tree: bin_dir/../examples/edge_explorer.html
@@ -204,14 +318,23 @@ async def root():
     for p in paths:
         if os.path.exists(p):
             return FileResponse(p)
-    
     return Response(content="edge_explorer.html not found", status_code=404)
 
 
 # all other edge routes are forwarded
 @app.api_route("/{full_path:path}",
-               methods=["GET","POST","PUT","PATCH","DELETE","OPTIONS","HEAD"])
+               methods=["GET","POST","PUT","PATCH","DELETE","OPTIONS","HEAD"],
+               tags=["Proxy"],
+               summary="Proxy requests to edge plugins")
 async def proxy(full_path: str, request: Request):
+    """
+    Proxy HTTP requests to edge services.
+
+    Path format: `/{edge_name}/{plugin_name}/{route}`
+
+    The bridge forwards the request to the specified edge's plugin
+    and returns the response.
+    """
 
     # Parse edge_name from path: /edge_name/plugin/...
     parts = full_path.strip('/').split('/', 1)

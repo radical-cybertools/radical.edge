@@ -12,11 +12,12 @@ import radical.edge
 from radical.edge.plugin_base import Plugin
 from radical.edge.plugin_session_base import PluginSession
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from starlette.routing import Route
 from starlette.requests import Request
 from unittest.mock import Mock
 import uuid
+import time
 import pytest
 
 
@@ -210,6 +211,104 @@ def test_plugin_unique_uids():
     assert plugin1.namespace == "/test_plugin"
     assert plugin2.namespace == "/test_plugin"
     assert plugin3.namespace == "/another_plugin"
+
+
+@pytest.mark.asyncio
+async def test_plugin_health_check():
+    '''
+    Test the health check endpoint.
+    '''
+    app = FastAPI()
+    plugin = Plugin(app, "test_plugin")
+    plugin.session_class = PluginSession
+
+    # Register a session first
+    request = Mock(spec=Request)
+    await plugin.register_session(request)
+
+    # Call health check
+    response = await plugin.health_check(request)
+
+    import json
+    data = json.loads(response.body)
+    assert data['status'] == 'healthy'
+    assert data['plugin'] == 'test_plugin'
+    assert data['active_sessions'] == 1
+    assert 'uptime_seconds' in data
+
+
+@pytest.mark.asyncio
+async def test_plugin_session_ttl_expiration():
+    '''
+    Test that sessions expire after TTL.
+    '''
+    import time
+    from fastapi import HTTPException
+
+    app = FastAPI()
+    plugin = Plugin(app, "test_plugin")
+    plugin.session_class = PluginSession
+    plugin.session_ttl = 1  # 1 second TTL
+
+    # Register session
+    request = Mock(spec=Request)
+    response = await plugin.register_session(request)
+
+    import json
+    data = json.loads(response.body)
+    sid = data['sid']
+
+    # Session should work immediately
+    request.path_params = {"sid": sid}
+    request.query_params = {"q": "test"}
+    response = await plugin.echo(request)
+    assert response.status_code == 200
+
+    # Wait for TTL to expire
+    time.sleep(1.5)
+
+    # Session should be expired now
+    with pytest.raises(HTTPException) as exc_info:
+        await plugin._forward(sid, PluginSession.request_echo, q="test")
+    assert exc_info.value.status_code == 410  # Gone
+
+
+@pytest.mark.asyncio
+async def test_plugin_session_cleanup():
+    '''
+    Test cleanup of expired sessions.
+    '''
+    import time
+
+    app = FastAPI()
+    plugin = Plugin(app, "test_plugin")
+    plugin.session_class = PluginSession
+    plugin.session_ttl = 1
+
+    # Create some sessions manually
+    plugin._sessions["old_session"] = PluginSession("old_session")
+    plugin._session_last_access["old_session"] = time.time() - 100  # Expired
+
+    plugin._sessions["new_session"] = PluginSession("new_session")
+    plugin._session_last_access["new_session"] = time.time()  # Fresh
+
+    # Run cleanup
+    cleaned = await plugin._cleanup_expired_sessions()
+
+    assert cleaned == 1
+    assert "old_session" not in plugin._sessions
+    assert "new_session" in plugin._sessions
+
+
+def test_plugin_session_ttl_default():
+    '''
+    Test that session_ttl has a sensible default.
+    '''
+    app = FastAPI()
+    plugin = Plugin(app, "test_plugin")
+
+    # Default should be 3600 (1 hour)
+    assert plugin.session_ttl == 3600
 
 
 if __name__ == '__main__':

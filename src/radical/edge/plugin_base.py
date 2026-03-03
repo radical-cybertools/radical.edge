@@ -1,13 +1,15 @@
 import uuid
 import asyncio
 import logging
+import time
 
-from typing import Type, Optional, Dict
+from typing import Type, Optional, Dict, Callable, Any
 from fastapi import FastAPI, HTTPException, Request
 from starlette.routing import Route
 from starlette.responses import JSONResponse
 
 from .plugin_session_base import PluginSession
+from .exceptions import SessionNotFoundError, SessionClosedError
 
 log = logging.getLogger("radical.edge")
 
@@ -29,12 +31,14 @@ class Plugin(object):
     Subclasses may define:
         client_class: The local helper class for the application-side client.
         version: The version string for the plugin.
+        session_ttl: Session timeout in seconds (default: 3600 = 1 hour, 0 = no timeout)
     """
 
-    _registry: Dict[str, Type] = {}
-    session_class: Type[PluginSession] = None
-    client_class: Type = None
+    _registry: Dict[str, Type["Plugin"]] = {}
+    session_class: Optional[Type[PluginSession]] = None
+    client_class: Optional[Type] = None
     version: str = '0.0.1'
+    session_ttl: int = 3600  # Default: 1 hour session timeout
 
     def __init_subclass__(cls, **kwargs):
         """Auto-register subclasses that define plugin_name."""
@@ -62,16 +66,18 @@ class Plugin(object):
         Also sets up built-in session management.
 
         Args:
-          app (FastAPI): The FastAPI application instance.
-          instance_name (str): The name of the plugin instance, used in the namespace.
+            app: The FastAPI application instance.
+            instance_name: The name of the plugin instance, used in the namespace.
         """
-        self._app = app
+        self._app: FastAPI = app
         self._instance_name: str = instance_name
         self._uid: str = str(uuid.uuid4())
         self._namespace: str = f"/{self._instance_name}"
+        self._start_time: float = time.time()
 
         self._sessions: Dict[str, PluginSession] = {}
-        self._id_lock = asyncio.Lock()
+        self._session_last_access: Dict[str, float] = {}  # Track last access time
+        self._id_lock: asyncio.Lock = asyncio.Lock()
 
         # Built-in session management routes
         self.add_route_post('register_session', self.register_session)
@@ -79,6 +85,7 @@ class Plugin(object):
         self.add_route_get('echo/{sid}', self.echo)
         self.add_route_get('version', self.get_version)
         self.add_route_get('list_sessions', self.list_sessions)
+        self.add_route_get('health', self.health_check)
 
     @property
     def namespace(self) -> str:
@@ -113,7 +120,51 @@ class Plugin(object):
         """
         if self.session_class is None:
             raise RuntimeError(f"[{self.instance_name}] session_class not defined")
-        return self.session_class(sid, **kwargs)
+        session = self.session_class(sid, **kwargs)
+        plugin = self
+
+        def _notify(topic: str, data: dict) -> None:
+            """
+            Schedule a notification to be sent asynchronously.
+            Works from both sync and async contexts.
+            """
+            async def _send_with_error_handling():
+                try:
+                    await plugin.send_notification(topic, data)
+                except Exception as e:
+                    log.error("[%s] Notification send failed for %s: %s",
+                              plugin.instance_name, topic, e)
+
+            try:
+                # Try to get the running loop (works in async context)
+                loop = asyncio.get_running_loop()
+                # Create task with error handling
+                task = loop.create_task(_send_with_error_handling())
+                # Add callback to log any unhandled exceptions
+                task.add_done_callback(
+                    lambda t: log.error("[%s] Notification task failed: %s",
+                                        plugin.instance_name, t.exception())
+                    if t.exception() else None
+                )
+            except RuntimeError:
+                # No running loop - we're being called from a sync context
+                log.warning("[%s] _notify called outside async context for topic %s",
+                            plugin.instance_name, topic)
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        loop.call_soon_threadsafe(
+                            lambda: asyncio.ensure_future(_send_with_error_handling())
+                        )
+                    else:
+                        log.warning("[%s] Event loop not running, notification dropped: %s",
+                                    plugin.instance_name, topic)
+                except Exception as e:
+                    log.warning("[%s] Failed to schedule notification: %s",
+                                plugin.instance_name, e)
+
+        session._notify = _notify
+        return session
 
     async def register_session(self, request: Request) -> JSONResponse:
         """Register a new session and return its unique session ID."""
@@ -121,19 +172,21 @@ class Plugin(object):
             sid = f"session.{uuid.uuid4().hex[:8]}"
 
         self._sessions[sid] = self._create_session(sid)
-        log.info(f"[{self.instance_name}] Registered session {sid}")
+        self._session_last_access[sid] = time.time()
+        log.info("[%s] Registered session %s", self.instance_name, sid)
         return JSONResponse({"sid": sid})
 
     async def unregister_session(self, request: Request) -> JSONResponse:
         """Unregister a session by its session ID and close it."""
         sid = request.path_params['sid']
         inst = self._sessions.pop(sid, None)
+        self._session_last_access.pop(sid, None)
 
         if not inst:
             raise HTTPException(status_code=404, detail=f"unknown session id: {sid}")
 
         await inst.close()
-        log.info(f"[{self.instance_name}] Unregistered session {sid}")
+        log.info("[%s] Unregistered session %s", self.instance_name, sid)
         return JSONResponse({"ok": True})
 
     async def echo(self, request: Request) -> JSONResponse:
@@ -151,27 +204,124 @@ class Plugin(object):
         """Return a list of active session IDs."""
         return JSONResponse({"sessions": list(self._sessions.keys())})
 
-    async def _forward(self, sid: str, func: callable, *args, **kwargs) -> JSONResponse:
+    async def health_check(self, request: Request) -> JSONResponse:
+        """
+        Health check endpoint for monitoring.
+
+        Returns plugin status including:
+        - Plugin name and version
+        - Uptime in seconds
+        - Number of active sessions
+        - Whether the plugin is healthy
+        """
+        uptime = time.time() - self._start_time
+        active_sessions = len(self._sessions)
+
+        # Clean up expired sessions while we're here
+        if self.session_ttl > 0:
+            await self._cleanup_expired_sessions()
+
+        return JSONResponse({
+            "status": "healthy",
+            "plugin": self._instance_name,
+            "version": self.version,
+            "uptime_seconds": round(uptime, 2),
+            "active_sessions": active_sessions
+        })
+
+    async def send_notification(self, topic: str, data: dict):
+        """
+        Broadcast a UI event over the bridge SSE channels.
+        Depends on `app.state.edge_service` having been injected by EdgeService.
+        """
+        edge_svc = getattr(self._app.state, "edge_service", None)
+        if hasattr(edge_svc, "send_notification"):
+            await edge_svc.send_notification(self.instance_name, topic, data)
+        else:
+            log.warning("[%s] Cannot send notification: edge_service unlinked", self.instance_name)
+
+    async def _forward(self, sid: str, func: Callable, *args: Any, **kwargs: Any) -> JSONResponse:
         """
         Forward a request to the specified session instance.
+
+        Args:
+            sid: Session ID to forward to.
+            func: Session method to call.
+            *args: Positional arguments for the method.
+            **kwargs: Keyword arguments for the method.
+
+        Returns:
+            JSONResponse with the method result.
+
+        Raises:
+            HTTPException: If session not found or method fails.
         """
+        # Check for expired session and clean up if needed
+        if self.session_ttl > 0:
+            last_access = self._session_last_access.get(sid)
+            if last_access and (time.time() - last_access) > self.session_ttl:
+                # Session expired - clean it up
+                expired_session = self._sessions.pop(sid, None)
+                self._session_last_access.pop(sid, None)
+                if expired_session:
+                    try:
+                        await expired_session.close()
+                    except Exception:
+                        pass
+                log.info("[%s] Session %s expired due to TTL", self.instance_name, sid)
+                raise HTTPException(status_code=410, detail=f"session expired: {sid}")
+
         session = self._sessions.get(sid)
         if not session:
             raise HTTPException(status_code=404, detail=f"unknown session id: {sid}")
 
+        # Update last access time
+        self._session_last_access[sid] = time.time()
+
         try:
-            log.debug(f"[{self.instance_name}] Forwarding to session {sid}: {func.__name__}")
+            log.debug("[%s] Forwarding to session %s: %s", self.instance_name, sid, func.__name__)
             ret = await func(session, *args, **kwargs)
             return JSONResponse(ret)
+        except HTTPException:
+            raise  # Re-raise HTTP exceptions as-is
         except Exception as e:
-            log.exception(f"[{self.instance_name}] Error in session {sid}: {e}")
+            log.exception("[%s] Error in session %s: %s", self.instance_name, sid, e)
             raise HTTPException(status_code=500, detail=str(e)) from e
 
-    def _log_routes(self):
+    async def _cleanup_expired_sessions(self) -> int:
+        """
+        Clean up sessions that have exceeded their TTL.
+
+        Returns:
+            Number of sessions cleaned up.
+        """
+        if self.session_ttl <= 0:
+            return 0
+
+        now = time.time()
+        expired_sids = [
+            sid for sid, last_access in self._session_last_access.items()
+            if (now - last_access) > self.session_ttl
+        ]
+
+        for sid in expired_sids:
+            session = self._sessions.pop(sid, None)
+            self._session_last_access.pop(sid, None)
+            if session:
+                try:
+                    await session.close()
+                except Exception as e:
+                    log.warning("[%s] Error closing expired session %s: %s",
+                                self.instance_name, sid, e)
+            log.info("[%s] Cleaned up expired session %s", self.instance_name, sid)
+
+        return len(expired_sids)
+
+    def _log_routes(self) -> None:
         """Log all registered routes for debugging."""
-        log.debug(f"[{self.instance_name}] {self.__class__.__name__} routes:")
+        log.debug("[%s] %s routes:", self.instance_name, self.__class__.__name__)
         for route in self._app.router.routes:
             if isinstance(route, Route):
                 if route.path.startswith(self.namespace):
-                    log.debug(f"  {route.path} -> {route.endpoint.__name__}")
+                    log.debug("  %s -> %s", route.path, route.endpoint.__name__)
 

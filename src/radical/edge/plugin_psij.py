@@ -9,6 +9,7 @@ from starlette.responses import JSONResponse
 from datetime import timedelta
 
 import psij
+import os
 
 
 
@@ -34,12 +35,14 @@ class PSIJSession(PluginSession):
         Submit a job via PSIJ.
         '''
         try:
-            # Simple fields first
+
             spec = psij.JobSpec()
-            if 'executable' in job_spec_dict:
-                spec.executable = job_spec_dict['executable']
-            if 'arguments' in job_spec_dict:
-                spec.arguments = job_spec_dict['arguments']
+            executable = job_spec_dict.get('executable')
+            arguments  = job_spec_dict.get('arguments')
+
+            spec.executable = executable
+            if arguments:
+                spec.arguments = arguments
             if 'directory' in job_spec_dict:
                 spec.directory = job_spec_dict['directory']
             if 'environment' in job_spec_dict:
@@ -57,17 +60,54 @@ class PSIJSession(PluginSession):
                 spec.attributes.custom_attributes = dict(
                     job_spec_dict['custom_attributes'])
 
-            # Create Job
+            import tempfile
             job = psij.Job(spec)
 
-            # Get Executor
+            out_path = os.path.join(tempfile.gettempdir(), f"psij_job_{job.id}.out")
+            err_path = os.path.join(tempfile.gettempdir(), f"psij_job_{job.id}.err")
+            spec.stdout_path = out_path
+            spec.stderr_path = err_path
+
             ex = psij.JobExecutor.get_instance(executor_name)
 
-            # Submit
             ex.submit(job)
 
-            # Cache job
             self._jobs[job.id] = job
+
+            # Register a status callback to push notifications on terminal state
+            notify = self._notify
+            job_id = job.id
+            def _on_status(j, status):
+                if str(status.state) in ('COMPLETED', 'FAILED', 'CANCELED',
+                                         'JobState.COMPLETED', 'JobState.FAILED',
+                                         'JobState.CANCELED'):
+                    stdout_content = ""
+                    stderr_content = ""
+                    try:
+                        sp = getattr(j.spec, 'stdout_path', None)
+                        if sp and os.path.exists(str(sp)):
+                            with open(str(sp), 'r') as f:
+                                stdout_content = f.read()
+                    except Exception:
+                        pass
+                    try:
+                        sp = getattr(j.spec, 'stderr_path', None)
+                        if sp and os.path.exists(str(sp)):
+                            with open(str(sp), 'r') as f:
+                                stderr_content = f.read()
+                    except Exception:
+                        pass
+
+                    if notify:
+                        notify("job_status", {
+                            "job_id":    job_id,
+                            "state":     str(status.state),
+                            "exit_code": status.exit_code,
+                            "stdout":    stdout_content,
+                            "stderr":    stderr_content
+                        })
+
+            job.set_job_status_callback(_on_status)
 
             log.info("Submitted job %s to %s", job.id, executor_name)
             return {"job_id": job.id, "native_id": job.native_id}
@@ -85,12 +125,37 @@ class PSIJSession(PluginSession):
             raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
 
         status = job.status
+        stdout_content = ""
+        stderr_content = ""
+
+        try:
+            stdout_path = getattr(job.spec, 'stdout_path', None)
+            if stdout_path:
+                stdout_path_str = str(stdout_path)
+                if os.path.exists(stdout_path_str):
+                    with open(stdout_path_str, 'r') as f:
+                        stdout_content = f.read()
+        except Exception:
+            pass
+
+        try:
+            stderr_path = getattr(job.spec, 'stderr_path', None)
+            if stderr_path:
+                stderr_path_str = str(stderr_path)
+                if os.path.exists(stderr_path_str):
+                    with open(stderr_path_str, 'r') as f:
+                        stderr_content = f.read()
+        except Exception:
+            pass
+
         return {
             "job_id": job_id,
             "state": str(status.state),
             "message": status.message,
             "exit_code": status.exit_code,
-            "time": status.time
+            "time": status.time,
+            "stdout": stdout_content,
+            "stderr": stderr_content
         }
 
     async def cancel_job(self, job_id: str) -> dict:

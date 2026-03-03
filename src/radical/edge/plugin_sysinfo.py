@@ -457,7 +457,6 @@ class SysInfoProvider:
 
 
 from .plugin_session_base import PluginSession
-from .plugin_base import Plugin
 
 
 class SysInfoSession(PluginSession):

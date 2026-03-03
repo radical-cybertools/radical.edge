@@ -4,22 +4,29 @@ import base64
 import json
 import logging
 import os
-import re as _re
+import random
 import ssl
+import socket
 import threading
+import uuid
+from typing import Any, Dict, Optional
+
 import httpx
 import websockets
 from websockets import exceptions as ws_exc
 
-import socket
-from typing import Any, Dict, Type, Union, TYPE_CHECKING
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI
 from httpx import ASGITransport
 
-import radical.edge as re
 import radical.edge.logging_config  # noqa: F401 # pylint: disable=unused-import
 
 from radical.edge.plugin_base import Plugin
+from radical.edge.models import (
+    RequestMessage, PingMessage, ErrorMessage,
+    ResponseMessage, NotificationMessage, RegisterMessage,
+    parse_bridge_message
+)
+from radical.edge.exceptions import BridgeConnectionError
 
 log = logging.getLogger("radical.edge")
 
@@ -39,29 +46,32 @@ class EdgeService:
         app (FastAPI): The internal FastAPI application hosting the plugins.
     """
 
-    def __init__(self, bridge_url: str = None, name: str = None):
+    def __init__(self, bridge_url: Optional[str] = None, name: Optional[str] = None):
         """
         Initialize the Edge Service.
 
         Args:
-            bridge_url (str): WebSocket URL for the Bridge. Defaults to env var
-                              'RADICAL_BRIDGE_URL' or internal default.
-            name (str): Edge service name for identification. Defaults to hostname.
+            bridge_url: WebSocket URL for the Bridge. Defaults to env var
+                        'RADICAL_BRIDGE_URL' or internal default.
+            name: Edge service name for identification. Defaults to hostname.
         """
-        self._bridge_url = bridge_url or os.environ.get("RADICAL_BRIDGE_URL")
-        self._app = FastAPI(title="Embedded Edge Service")
+        self._bridge_url: str = bridge_url or os.environ.get("RADICAL_BRIDGE_URL", "")
+        self._app: FastAPI = FastAPI(title="Embedded Edge Service")
+        self._app.state.bridge_url = self._bridge_url
 
         if not self._bridge_url:
             raise ValueError("Bridge URL missing as argument or RADICAL_BRIDGE_URL")
 
-        self._plugins: Dict[str, Any] = {}
+        self._plugins: Dict[str, Plugin] = {}
         self._name: str = name or socket.gethostname()
-        self._ws = None
-        self._http_client = None
-        self._send_lock = asyncio.Lock()
-        self._stop_event = asyncio.Event()
-        self._running_task = None
-        self._thread = None
+        self._app.state.edge_name = self._name
+        self._app.state.edge_service = self
+        self._ws: Optional[websockets.WebSocketClientProtocol] = None
+        self._http_client: Optional[httpx.AsyncClient] = None
+        self._send_lock: asyncio.Lock = asyncio.Lock()
+        self._stop_event: asyncio.Event = asyncio.Event()
+        self._running_task: Optional[asyncio.Task] = None
+        self._thread: Optional[threading.Thread] = None
 
         self._load_plugins()
 
@@ -87,38 +97,35 @@ class EdgeService:
             except Exception:
                 log.exception("[Edge] Failed to load plugin: %s", pname)
 
-    async def _handle_request(self, data: dict):
+    async def _handle_request(self, msg: RequestMessage) -> None:
         """
         Forward messages received from Bridge to local internal API.
-        """
-        try:
-            if data.get("type") != "request":
-                log.warning("[Edge] unknown message type: %s", data.get('type'))
-                raise ValueError("unknown message type")
 
-            req_id    = data["req_id"]
-            method    = data["method"]
-            path      = data["path"]
-            headers   = data.get("headers") or {}
-            is_binary = data.get("is_binary", False)
-            body      = data.get("body")
+        Args:
+            msg: Validated request message from bridge.
+        """
+        req_id = msg.req_id
+        try:
+            log.debug("[Edge] [req:%s] Handling %s %s", req_id, msg.method, msg.path)
 
             # Rehydrate body
-            content = None
-            if body is not None:
-                if is_binary:
-                    content = base64.b64decode(body)
+            content: Optional[bytes] = None
+            if msg.body is not None:
+                if msg.is_binary:
+                    content = base64.b64decode(msg.body)
                 else:
-                    content = body.encode("utf-8")
+                    content = msg.body.encode("utf-8")
 
             # Call the local Edge FastAPI server (in-memory)
             # URL host doesn't matter for ASGITransport, but must be valid URL
-            url = f"http://local{path}"
+            url = f"http://local{msg.path}"
 
-            resp = await self._http_client.request(method, url,
-                                                   content=content,
-                                                   headers=headers,
-                                                   timeout=40.0)
+            resp = await self._http_client.request(
+                msg.method, url,
+                content=content,
+                headers=msg.headers,
+                timeout=40.0
+            )
 
             resp_is_binary = False
             try:
@@ -129,55 +136,81 @@ class EdgeService:
                 out_body = base64.b64encode(resp.content).decode("ascii")
                 resp_is_binary = True
 
-            message = {
-                "type"      : "response",
-                "req_id"    : req_id,
-                "status"    : resp.status_code,
-                "headers"   : dict(resp.headers),
-                "is_binary" : resp_is_binary,
-                "body"      : out_body
-            }
+            response = ResponseMessage(
+                req_id=req_id,
+                status=resp.status_code,
+                headers=dict(resp.headers),
+                is_binary=resp_is_binary,
+                body=out_body
+            )
+
+            log.debug("[Edge] [req:%s] Response status=%d", req_id, resp.status_code)
 
             async with self._send_lock:
                 if self._ws:
-                    await self._ws.send(json.dumps(message))
+                    await self._ws.send(response.model_dump_json())
 
         except Exception as e:
-            log.exception("[Edge] Error handling request")
+            log.exception("[Edge] [req:%s] Error handling request", req_id)
 
             error_body = {"error": "edge-invoke-failed", "detail": str(e)}
 
-            message = {
-                "type": "response",
-                "req_id": data.get("req_id"),
-                "status": 502,
-                "headers": {"content-type": "application/json"},
-                "is_binary": False,
-                "body": json.dumps(error_body)
-            }
+            response = ResponseMessage(
+                req_id=req_id,
+                status=502,
+                headers={"content-type": "application/json"},
+                is_binary=False,
+                body=json.dumps(error_body)
+            )
 
             async with self._send_lock:
                 if self._ws:
-                    await self._ws.send(json.dumps(message))
+                    await self._ws.send(response.model_dump_json())
 
-    async def run(self):
+    async def send_notification(self, plugin_name: str, topic: str, data: Dict[str, Any]) -> None:
+        """
+        Send an unsolicited notification to the bridge to broadcast to UI clients.
+
+        Args:
+            plugin_name: Name of the plugin sending the notification.
+            topic: Notification topic (e.g., "task_status", "job_status").
+            data: Notification payload data.
+        """
+        if not self._ws:
+            log.warning("[Edge] Cannot send notification, not connected")
+            return
+
+        notification = NotificationMessage(
+            plugin=plugin_name,
+            topic=topic,
+            data=data
+        )
+
+        async with self._send_lock:
+            try:
+                await self._ws.send(notification.model_dump_json())
+                log.debug("[Edge] Sent notification: %s/%s", plugin_name, topic)
+            except Exception as e:
+                log.warning("[Edge] Failed to send notification: %s", e)
+
+    async def run(self) -> None:
         """
         Main async entry point.
         Connects to Bridge and starts processing loop.
         """
         PING_INTERVAL = 20
         PING_TIMEOUT  = 120
+        MAX_BACKOFF   = 30
+        JITTER_FACTOR = 0.3  # Add up to 30% jitter to prevent thundering herd
         backoff = 1
 
         self._stop_event.clear()
         self._running_task = asyncio.current_task()
 
-
         transport = ASGITransport(app=self._app)
 
         while not self._stop_event.is_set():
             try:
-
                 async with httpx.AsyncClient(transport=transport,
                                              base_url="http://local") as http_client:
                     self._http_client = http_client
@@ -193,16 +226,20 @@ class EdgeService:
 
                         # remove trailing slashes
                         ws_url = ws_url.rstrip("/")
+                        if not ws_url.endswith("/register"):
+                            ws_url += "/register"
 
                         # Determine if we need SSL
                         ssl_ctx = None
                         if ws_url.startswith("wss://"):
                             ssl_ctx = ssl.create_default_context()
+                            ssl_ctx.check_hostname = False
+                            ssl_ctx.verify_mode = ssl.CERT_NONE
                             certfile = os.environ.get("RADICAL_BRIDGE_CERT")
                             if certfile and os.path.exists(certfile):
                                 ssl_ctx.load_verify_locations(certfile)
 
-                        async with websockets.connect(ws_url + "/register",
+                        async with websockets.connect(ws_url,
                                                       ssl=ssl_ctx,
                                                       ping_interval=PING_INTERVAL,
                                                       ping_timeout=PING_TIMEOUT,
@@ -212,61 +249,69 @@ class EdgeService:
                             log.info("[Edge] Connected to %s", self._bridge_url)
                             backoff = 1  # Reset backoff on success
 
-                            # Initial Registration
+                            # Initial Registration using Pydantic models
                             async with self._send_lock:
-                                msg = {
-                                    "type": "register",
-                                    "edge_name": self._name,
-                                    "endpoint": {"type": "radical.edge"}
-                                }
-                                await ws.send(json.dumps(msg))
-
+                                base_reg = RegisterMessage(
+                                    edge_name=self._name,
+                                    endpoint={"type": "radical.edge"}
+                                )
+                                await ws.send(base_reg.model_dump_json())
 
                                 for pname, plugin in self._plugins.items():
-                                    p_msg = {
-                                        "type": "register",
-                                        "edge_name": self._name,
-                                        "plugin_name":pname,
-                                        "endpoint": {
-                                            "type": pname,  # name used for lookup
+                                    plugin_reg = RegisterMessage(
+                                        edge_name=self._name,
+                                        plugin_name=pname,
+                                        endpoint={
+                                            "type": pname,
                                             "namespace": f"/{self._name}{plugin.namespace}"
                                         }
-                                    }
-                                    await ws.send(json.dumps(p_msg))
+                                    )
+                                    await ws.send(plugin_reg.model_dump_json())
 
                             # Processing Loop
                             while not self._stop_event.is_set():
                                 try:
-                                    message = await asyncio.wait_for(ws.recv(), timeout=1.0)
-                                    data = json.loads(message)
+                                    raw_msg = await asyncio.wait_for(ws.recv(), timeout=1.0)
+                                    data = json.loads(raw_msg)
 
-                                    if data.get("type") == "error":
-                                        log.error("[Edge] Registration error: %s", data.get('message'))
+                                    try:
+                                        msg = parse_bridge_message(data)
+                                    except ValueError as ve:
+                                        log.warning("[Edge] Invalid message: %s", ve)
+                                        continue
+
+                                    if isinstance(msg, ErrorMessage):
+                                        log.error("[Edge] Registration error: %s", msg.message)
                                         self._stop_event.set()
                                         return  # Fatal error, stop
 
-                                    if data.get("type") == "ping":
+                                    if isinstance(msg, PingMessage):
                                         async with self._send_lock:
-                                            await ws.send(json.dumps({"type": "pong"}))
+                                            await ws.send('{"type": "pong"}')
                                         continue
 
-
-                                    asyncio.create_task(self._handle_request(data))
+                                    if isinstance(msg, RequestMessage):
+                                        asyncio.create_task(self._handle_request(msg))
 
                                 except asyncio.TimeoutError:
                                     continue  # Check stop event
-                                except websockets.exceptions.ConnectionClosed:  # BROKEN_PIPE
+                                except websockets.exceptions.ConnectionClosed:
                                     if self._stop_event.is_set():
                                         break
-                                    log.info("[Edge] Connection closed")  # often expected
+                                    log.info("[Edge] Connection closed")
                                     raise  # Reconnect
 
                     except (ws_exc.ConnectionClosed, OSError) as e:
                         if self._stop_event.is_set():
                             break  # no reconnect
-                        log.warning("[Edge] Connection lost: %s. Reconnecting in %ss...", e, backoff)
-                        await asyncio.sleep(backoff)
-                        backoff = min(backoff * 2, 30)
+
+                        # Add jitter to backoff to prevent thundering herd
+                        jitter = backoff * JITTER_FACTOR * random.random()
+                        sleep_time = backoff + jitter
+                        log.warning("[Edge] Connection lost: %s. Reconnecting in %.1fs...",
+                                    e, sleep_time)
+                        await asyncio.sleep(sleep_time)
+                        backoff = min(backoff * 2, MAX_BACKOFF)
 
             except Exception as e:
                 # Fatal errors set the stop event, so check that first
@@ -274,7 +319,9 @@ class EdgeService:
                     break
 
                 log.exception("[Edge] Unexpected error: %s", e)
-                await asyncio.sleep(5)
+                # Add jitter to error recovery sleep as well
+                jitter = 5 * JITTER_FACTOR * random.random()
+                await asyncio.sleep(5 + jitter)
 
     def stop(self):
         """Signal the service to stop."""

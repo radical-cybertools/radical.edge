@@ -18,6 +18,10 @@ import time
 from radical.edge import BridgeClient
 
 
+def my_notification_cb(topic: str, data: dict):
+    print(f"\n[Notification Receive] topic={topic} data={data}\n")
+
+
 def main():
 
     # ---- connect to the bridge ----
@@ -33,6 +37,9 @@ def main():
 
     ec = bc.get_edge_client(eid)
     rh = ec.get_plugin('rhapsody')
+
+    # Register for asynchronous bridge notifications
+    rh.register_notification_callback(my_notification_cb)
 
     # ---- define tasks ----
     tasks = [

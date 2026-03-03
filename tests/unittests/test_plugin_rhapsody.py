@@ -25,6 +25,7 @@ _mock_rh = MagicMock()
 def _fake_from_dict(d):
     t = MagicMock()
     t.uid = d.get('uid', 'task.000001')
+    t.state = d.get('state', 'SUBMITTED')
     t.get = lambda k, default=None: d.get(k, default)
     t.__getitem__ = lambda self_, k: d[k]
     t.__contains__ = lambda self_, k: k in d
@@ -34,10 +35,21 @@ def _fake_from_dict(d):
 
     # Allow dict(t) to work
     def _dict_conv():
-        return dict(d, uid=t.uid, state=d.get('state'))
+        return dict(d, uid=t.uid, state=t.state)
     # Make dict(t) produce the expected mapping
     t.__iter__ = lambda self_: iter(d)
     t.__len__ = lambda self_: len(d)
+
+    # Provide to_dict() that returns a JSON-serializable dict
+    def _to_dict():
+        return {
+            'uid': t.uid,
+            'state': str(t.state) if t.state else 'SUBMITTED',
+            'executable': d.get('executable', ''),
+            'arguments': d.get('arguments', []),
+        }
+    t.to_dict = _to_dict
+
     return t
 
 _mock_rh.BaseTask.from_dict = _fake_from_dict
@@ -272,7 +284,7 @@ def test_get_task_unknown():
     session._rh_session = MagicMock()
 
     resp = client.get(f"{plugin.namespace}/task/{sid}/no_such_task")
-    assert resp.status_code == 500  # _forward wraps HTTPException in 500
+    assert resp.status_code == 404  # HTTPException re-raised with original status
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,106 @@
+"""
+Pydantic models for WebSocket message validation.
+
+Defines the message types exchanged between Bridge and Edge services
+over the WebSocket connection.
+"""
+
+from typing import Any, Dict, Literal, Optional, Union
+from pydantic import BaseModel, Field
+
+
+# ---------------------------------------------------------------------------
+# Edge -> Bridge Messages
+# ---------------------------------------------------------------------------
+
+class RegisterMessage(BaseModel):
+    """Edge registration message sent when connecting to the bridge."""
+    type: Literal["register"] = "register"
+    edge_name: str = Field(..., description="Name of the edge service")
+    plugin_name: Optional[str] = Field(None, description="Plugin name (if registering a plugin)")
+    endpoint: Dict[str, Any] = Field(default_factory=dict, description="Endpoint metadata")
+
+
+class ResponseMessage(BaseModel):
+    """Response to a proxied request."""
+    type: Literal["response"] = "response"
+    req_id: str = Field(..., description="Request correlation ID")
+    status: int = Field(..., description="HTTP status code")
+    headers: Dict[str, str] = Field(default_factory=dict, description="Response headers")
+    body: Optional[str] = Field(None, description="Response body (text or base64)")
+    is_binary: bool = Field(False, description="Whether body is base64-encoded binary")
+
+
+class NotificationMessage(BaseModel):
+    """Push notification from edge to bridge for SSE broadcast."""
+    type: Literal["notification"] = "notification"
+    plugin: str = Field(..., description="Plugin sending the notification")
+    topic: str = Field(..., description="Notification topic")
+    data: Dict[str, Any] = Field(default_factory=dict, description="Notification payload")
+
+
+class PongMessage(BaseModel):
+    """Heartbeat response."""
+    type: Literal["pong"] = "pong"
+
+
+# ---------------------------------------------------------------------------
+# Bridge -> Edge Messages
+# ---------------------------------------------------------------------------
+
+class RequestMessage(BaseModel):
+    """Proxied HTTP request from bridge to edge."""
+    type: Literal["request"] = "request"
+    req_id: str = Field(..., description="Request correlation ID")
+    method: str = Field(..., description="HTTP method")
+    path: str = Field(..., description="Request path")
+    headers: Dict[str, str] = Field(default_factory=dict, description="Request headers")
+    body: Optional[str] = Field(None, description="Request body (text or base64)")
+    is_binary: bool = Field(False, description="Whether body is base64-encoded binary")
+
+
+class PingMessage(BaseModel):
+    """Heartbeat request."""
+    type: Literal["ping"] = "ping"
+
+
+class ErrorMessage(BaseModel):
+    """Error message from bridge to edge."""
+    type: Literal["error"] = "error"
+    message: str = Field(..., description="Error description")
+
+
+# ---------------------------------------------------------------------------
+# Union types for parsing
+# ---------------------------------------------------------------------------
+
+EdgeToBridgeMessage = Union[RegisterMessage, ResponseMessage, NotificationMessage, PongMessage]
+BridgeToEdgeMessage = Union[RequestMessage, PingMessage, ErrorMessage]
+
+
+def parse_edge_message(data: dict) -> EdgeToBridgeMessage:
+    """Parse a message from edge to bridge."""
+    msg_type = data.get("type")
+    if msg_type == "register":
+        return RegisterMessage(**data)
+    elif msg_type == "response":
+        return ResponseMessage(**data)
+    elif msg_type == "notification":
+        return NotificationMessage(**data)
+    elif msg_type == "pong":
+        return PongMessage(**data)
+    else:
+        raise ValueError(f"Unknown edge message type: {msg_type}")
+
+
+def parse_bridge_message(data: dict) -> BridgeToEdgeMessage:
+    """Parse a message from bridge to edge."""
+    msg_type = data.get("type")
+    if msg_type == "request":
+        return RequestMessage(**data)
+    elif msg_type == "ping":
+        return PingMessage(**data)
+    elif msg_type == "error":
+        return ErrorMessage(**data)
+    else:
+        raise ValueError(f"Unknown bridge message type: {msg_type}")

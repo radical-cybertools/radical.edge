@@ -4,6 +4,10 @@ import time
 from radical.edge import BridgeClient
 
 
+def my_notification_cb(topic: str, data: dict):
+    print(f"\n[Notification] {topic}: {data}\n")
+
+
 def main():
 
     bc = BridgeClient()
@@ -18,6 +22,9 @@ def main():
 
     ec = bc.get_edge_client(eid)
     pi = ec.get_plugin('psij')
+
+    # Register for asynchronous bridge notifications
+    pi.register_notification_callback(my_notification_cb)
 
     job_spec = {
         "executable": "/bin/sleep",
