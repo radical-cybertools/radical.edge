@@ -197,7 +197,7 @@ for the latest, but yet unstable, configuration for the RADICAL-Edge Image.
 export RADICAL_EDGE_IMAGE=radicalcybertools/radical.edge
 export RADICAL_EDGE_TAG=dev
 # for the demo we use the current `devel` branch
-export RADICAL_EDGE_BRANCH="docs/demo"  # TODO: replace with `devel`
+export RADICAL_EDGE_BRANCH="devel"
 
 # for the demo we use the hostname for the bridge as `bridge`
 export RADICAL_BRIDGE_HOSTNAME=bridge
