@@ -122,12 +122,47 @@ class Plugin(object):
             raise RuntimeError(f"[{self.instance_name}] session_class not defined")
         session = self.session_class(sid, **kwargs)
         plugin = self
-        loop = asyncio.get_event_loop()
-        def _notify(topic, data):
-            loop.call_soon_threadsafe(
-                asyncio.ensure_future,
-                plugin.send_notification(topic, data)
-            )
+
+        def _notify(topic: str, data: dict) -> None:
+            """
+            Schedule a notification to be sent asynchronously.
+            Works from both sync and async contexts.
+            """
+            async def _send_with_error_handling():
+                try:
+                    await plugin.send_notification(topic, data)
+                except Exception as e:
+                    log.error("[%s] Notification send failed for %s: %s",
+                              plugin.instance_name, topic, e)
+
+            try:
+                # Try to get the running loop (works in async context)
+                loop = asyncio.get_running_loop()
+                # Create task with error handling
+                task = loop.create_task(_send_with_error_handling())
+                # Add callback to log any unhandled exceptions
+                task.add_done_callback(
+                    lambda t: log.error("[%s] Notification task failed: %s",
+                                        plugin.instance_name, t.exception())
+                    if t.exception() else None
+                )
+            except RuntimeError:
+                # No running loop - we're being called from a sync context
+                log.warning("[%s] _notify called outside async context for topic %s",
+                            plugin.instance_name, topic)
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        loop.call_soon_threadsafe(
+                            lambda: asyncio.ensure_future(_send_with_error_handling())
+                        )
+                    else:
+                        log.warning("[%s] Event loop not running, notification dropped: %s",
+                                    plugin.instance_name, topic)
+                except Exception as e:
+                    log.warning("[%s] Failed to schedule notification: %s",
+                                plugin.instance_name, e)
+
         session._notify = _notify
         return session
 

@@ -99,19 +99,38 @@ class RhapsodySession(PluginSession):
         """Background watcher for a single task: notify as soon as it completes."""
         uid = self._get_attr(task, 'uid')
         uid_str = str(uid) if uid else '?'
-        
-        log.debug(f"[{self._sid}] Watcher started for task {uid_str}")
+
+        log.debug("[%s] Watcher started for task %s", self._sid, uid_str)
         try:
+            # Check session is still valid
+            if not self._rh_session:
+                log.warning("[%s] Session closed before task %s completed", self._sid, uid_str)
+                self._send_error_notification(uid_str, "Session closed")
+                return
+
             await self._rh_session.wait_tasks([task])
-            
+
             # State might be in the object or the dict
             state = self._get_attr(task, 'state')
-            log.info(f"[{self._sid}] Task {uid_str} completed with state: {state}")
-            
+            log.info("[%s] Task %s completed with state: %s", self._sid, uid_str, state)
+
             d = self._sanitize_task(task)
+            log.debug("[%s] Sending notification for task %s: %s", self._sid, uid_str, d)
             self._notify("task_status", d)
+
         except Exception as e:
-            log.warning(f"Rhapsody watch error for task {uid_str}: {e}")
+            log.warning("[%s] Rhapsody watch error for task %s: %s", self._sid, uid_str, e)
+            # Send error notification so UI doesn't stay stuck in SUBMITTED
+            self._send_error_notification(uid_str, str(e))
+
+    def _send_error_notification(self, uid: str, error: str) -> None:
+        """Send a FAILED notification when watcher encounters an error."""
+        if self._notify:
+            self._notify("task_status", {
+                "uid": uid,
+                "state": "FAILED",
+                "error": error
+            })
 
     async def wait_tasks(self, uids: list[str],
                          timeout: float | None = None) -> list[dict]:

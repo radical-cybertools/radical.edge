@@ -1122,6 +1122,10 @@
 
     // Task registry: taskRegistry[edgeName][pluginName] = { id: {state, label, ...} }
     const taskRegistry = {};
+
+    // Pending notifications for elements that don't exist yet (race condition fix)
+    // pendingNotifications[uid] = { data, timestamp }
+    const pendingNotifications = {};
     function registerTask(edgeName, plugin, id, label) {
       if (!taskRegistry[edgeName]) taskRegistry[edgeName] = {};
       if (!taskRegistry[edgeName][plugin]) taskRegistry[edgeName][plugin] = {};
@@ -1140,6 +1144,17 @@
       if (taskRegistry[edgeName]?.[plugin]?.[id]) {
         taskRegistry[edgeName][plugin][id].state = state;
         rebuildSidebar();
+        console.log(`[updateTaskState] Updated ${edgeName}/${plugin}/${id} -> ${state}`);
+      } else {
+        // Task not found - log diagnostic info
+        console.warn(`[updateTaskState] Task not found: edge=${edgeName} plugin=${plugin} id=${id}`);
+        console.warn(`[updateTaskState] Registered edges:`, Object.keys(taskRegistry));
+        if (taskRegistry[edgeName]) {
+          console.warn(`[updateTaskState] Plugins on ${edgeName}:`, Object.keys(taskRegistry[edgeName]));
+          if (taskRegistry[edgeName][plugin]) {
+            console.warn(`[updateTaskState] Tasks on ${edgeName}/${plugin}:`, Object.keys(taskRegistry[edgeName][plugin]));
+          }
+        }
       }
     }
     function rebuildSidebar() {
@@ -1486,16 +1501,48 @@
 
     function buildSidebar(edges) {
       const el = document.getElementById('edgeTree');
-      let html = '';
-      for (const [ename, edata] of Object.entries(edges)) {
+
+      // Build children map based on dot-separated names (same logic as renderHierarchy)
+      const edgeNames = Object.keys(edges);
+      const children = {}; // parentName -> [childNames]
+      const topLevel = [];
+
+      // Sort names by length so we process parents before children
+      const sortedNames = edgeNames.sort((a, b) => a.split('.').length - b.split('.').length);
+
+      sortedNames.forEach(ename => {
+        const parts = ename.split('.');
+        if (parts.length > 1) {
+          // Find longest existing prefix as parent
+          let parentFound = false;
+          for (let i = parts.length - 1; i >= 1; i--) {
+            const prefix = parts.slice(0, i).join('.');
+            if (edges[prefix]) {
+              if (!children[prefix]) children[prefix] = [];
+              children[prefix].push(ename);
+              parentFound = true;
+              break;
+            }
+          }
+          if (!parentFound) topLevel.push(ename);
+        } else {
+          topLevel.push(ename);
+        }
+      });
+
+      function renderEdgeSidebar(ename, depth = 0) {
+        const edata = edges[ename];
         const plugins = edata.plugins || {};
-        html += `<details id="sidebar-edge-${ename}">
-      <summary style="display: list-item; list-style-position: inside; padding: 6px 16px; user-select:none; outline:none; font-weight:bold; cursor:pointer; font-size: 0.85rem; color: var(--accent2); transition: background .15s;" onmouseover="this.style.background='var(--bg3)'" onmouseout="this.style.background='transparent'">
-        <span onclick="showPage('hierarchy'); event.stopPropagation();" style="display:inline-flex; align-items:center; gap:8px;">
-          <span class="icon">💻</span> ${ename}
-        </span>
-      </summary>
-      <ul class="tree" style="margin-top: 2px; padding-left: 16px; border-left: 1px dashed var(--border); margin-left: 24px;">`;
+        const indent = depth * 12;
+        let html = `<details id="sidebar-edge-${ename}">
+          <summary style="display: list-item; list-style-position: inside; padding: 6px 16px; padding-left: ${16 + indent}px; user-select:none; outline:none; font-weight:bold; cursor:pointer; font-size: 0.85rem; color: var(--accent2); transition: background .15s;" onmouseover="this.style.background='var(--bg3)'" onmouseout="this.style.background='transparent'">
+            <span onclick="showPage('hierarchy'); event.stopPropagation();" style="display:inline-flex; align-items:center; gap:8px;">
+              <span class="icon">💻</span> ${ename}
+            </span>
+          </summary>
+          <ul class="tree" style="margin-top: 2px; padding-left: 16px; border-left: 1px dashed var(--border); margin-left: ${24 + indent}px;">`;
+
+        // Render plugins
         for (const pname of Object.keys(plugins)) {
           const pid = `${ename}__${pname}`;
           const icon = pluginIcon(pname);
@@ -1527,7 +1574,23 @@
             html += `</ul></details>`;
           }
         }
+
+        // Render child edges (nested under this edge)
+        if (children[ename]) {
+          for (const cname of children[ename]) {
+            html += `<li style="list-style:none; margin-left:-8px;">`;
+            html += renderEdgeSidebar(cname, depth + 1);
+            html += `</li>`;
+          }
+        }
+
         html += '</ul></details>';
+        return html;
+      }
+
+      let html = '';
+      for (const ename of topLevel) {
+        html += renderEdgeSidebar(ename);
       }
       el.innerHTML = html;
     }
@@ -1919,6 +1982,7 @@
     //  SSE Notification handler
     // ─────────────────────────────────────────────────────────────
     function handleNotification(data) {
+      console.log('[handleNotification] Received:', JSON.stringify(data));
       const plugin = data.plugin;
       const topic = data.topic;
       const d = data.data || {};
@@ -1928,34 +1992,26 @@
         const state = d.state || '?';
         updateTaskState(data.edge || '', 'psij', jobId, state);
 
-        const entry = document.getElementById(`psij-job-${jobId}`);
-        if (!entry) return;
-        const stateEl = entry.querySelector('.psij-job-state');
-        const logEl = entry.querySelector('.psij-job-log');
-        if (!stateEl || !logEl) return;
-
-        const ts = new Date().toLocaleTimeString();
-        const isOk = state.includes('COMPLETED');
-        stateEl.className = `psij-job-state badge ${isOk ? 'badge-green' : 'badge-red'}`;
-        stateEl.textContent = state;
-        entry.open = true;
-
-        const rc = d.exit_code ?? '?';
-        let logHtml = `<span style="color:var(--muted);font-size:0.9em;">[${ts}] <b>${state}</b> rc:${rc}</span>`;
-        if (d.stdout) logHtml += `<pre class="ok">out: ${escHtml(d.stdout).trim()}</pre>`;
-        if (d.stderr) logHtml += `<pre class="err">err: ${escHtml(d.stderr).trim()}</pre>`;
-        logEl.innerHTML = logHtml;
+        // Try to update the DOM element
+        if (!applyPsijNotification(jobId, state, d)) {
+          // Element doesn't exist yet - queue for later (race condition)
+          console.log(`[psij] Queuing notification for ${jobId} (element not ready)`);
+          pendingNotifications[`psij-${jobId}`] = { data: d, state, timestamp: Date.now() };
+        }
 
       } else if (plugin === 'rhapsody' && topic === 'task_status') {
         const uid = d.uid || '';
         const state = d.state || '?';
+        console.log(`[rhapsody] Notification for task ${uid} -> ${state} (edge: ${data.edge})`);
+
         updateTaskState(data.edge || '', 'rhapsody', uid, state);
 
-        const entry = document.getElementById(`rh-task-${uid}`);
-        if (!entry) return;
-        const stateEl = entry.querySelector('.rh-task-state');
-        const logEl = entry.querySelector('.rh-task-log');
-        if (!stateEl || !logEl) return;
+        // Try to update the DOM element
+        if (!applyRhapsodyNotification(uid, state, d)) {
+          // Element doesn't exist yet - queue for later (race condition)
+          console.log(`[rhapsody] Queuing notification for ${uid} (element not ready)`);
+          pendingNotifications[uid] = { data: d, state, timestamp: Date.now() };
+        }
 
         const ts = new Date().toLocaleTimeString();
         const isOk = ['DONE', 'COMPLETED'].some(s => (state || '').toUpperCase().includes(s));
@@ -1970,6 +2026,86 @@
         if (d.exception) logHtml += `<pre class="err">exc: ${escHtml(d.exception).trim()}</pre>`;
         logEl.innerHTML = logHtml;
       }
+    }
+
+    /**
+     * Apply a rhapsody task notification to the DOM.
+     * Returns true if successful, false if element not found.
+     */
+    function applyRhapsodyNotification(uid, state, d) {
+      const entryId = `rh-task-${uid}`;
+      const entry = document.getElementById(entryId);
+      if (!entry) return false;
+
+      const stateEl = entry.querySelector('.rh-task-state');
+      const logEl = entry.querySelector('.rh-task-log');
+      if (!stateEl || !logEl) return false;
+
+      const ts = new Date().toLocaleTimeString();
+      const isOk = ['DONE', 'COMPLETED'].some(s => (state || '').toUpperCase().includes(s));
+      const isFailed = ['FAILED', 'ERROR', 'CANCELED'].some(s => (state || '').toUpperCase().includes(s));
+
+      stateEl.className = `rh-task-state badge ${isOk ? 'badge-green' : isFailed ? 'badge-red' : 'badge-orange'}`;
+      stateEl.textContent = state;
+      entry.open = true;
+
+      const rc = d.exit_code ?? d.retval ?? '?';
+      let logHtml = `<span style="color:var(--muted);font-size:0.9em;">[${ts}] <b>${state}</b> rc:${rc}</span>`;
+      if (d.stdout) logHtml += `<pre class="ok">out: ${escHtml(d.stdout).trim()}</pre>`;
+      if (d.stderr) logHtml += `<pre class="err">err: ${escHtml(d.stderr).trim()}</pre>`;
+      if (d.exception) logHtml += `<pre class="err">exc: ${escHtml(d.exception).trim()}</pre>`;
+      logEl.innerHTML = logHtml;
+
+      console.log(`[rhapsody] Updated DOM for ${uid}: ${state}`);
+      return true;
+    }
+
+    /**
+     * Check for pending notifications after creating a task element.
+     */
+    function processPendingNotification(uid, plugin = 'rhapsody') {
+      const key = plugin === 'psij' ? `psij-${uid}` : uid;
+      const pending = pendingNotifications[key];
+      if (pending) {
+        console.log(`[${plugin}] Processing queued notification for ${uid}`);
+        if (plugin === 'psij') {
+          applyPsijNotification(uid, pending.state, pending.data);
+        } else {
+          applyRhapsodyNotification(uid, pending.state, pending.data);
+        }
+        delete pendingNotifications[key];
+      }
+    }
+
+    /**
+     * Apply a PsiJ job notification to the DOM.
+     * Returns true if successful, false if element not found.
+     */
+    function applyPsijNotification(jobId, state, d) {
+      const entryId = `psij-job-${jobId}`;
+      const entry = document.getElementById(entryId);
+      if (!entry) return false;
+
+      const stateEl = entry.querySelector('.psij-job-state');
+      const logEl = entry.querySelector('.psij-job-log');
+      if (!stateEl || !logEl) return false;
+
+      const ts = new Date().toLocaleTimeString();
+      const isOk = (state || '').includes('COMPLETED');
+      const isFailed = ['FAILED', 'CANCELED'].some(s => (state || '').includes(s));
+
+      stateEl.className = `psij-job-state badge ${isOk ? 'badge-green' : isFailed ? 'badge-red' : 'badge-orange'}`;
+      stateEl.textContent = state;
+      entry.open = true;
+
+      const rc = d.exit_code ?? '?';
+      let logHtml = `<span style="color:var(--muted);font-size:0.9em;">[${ts}] <b>${state}</b> rc:${rc}</span>`;
+      if (d.stdout) logHtml += `<pre class="ok">out: ${escHtml(d.stdout).trim()}</pre>`;
+      if (d.stderr) logHtml += `<pre class="err">err: ${escHtml(d.stderr).trim()}</pre>`;
+      logEl.innerHTML = logHtml;
+
+      console.log(`[psij] Updated DOM for ${jobId}: ${state}`);
+      return true;
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -2032,6 +2168,9 @@
         output.appendChild(jobEntry);
         output.scrollTop = output.scrollHeight;
 
+        // Check if notification arrived before element was created (race condition)
+        processPendingNotification(jobId, 'psij');
+
         // Update the args field for the NEXT submission (increment counter)
         const argsInput = page.querySelector('.p-args');
         const url = BRIDGE.replace(/\/$/, '');
@@ -2077,6 +2216,7 @@
 
         // Create per-task expandable entries — updates arrive via SSE
         for (const uid of uids) {
+          console.log(`[rhapsody-submit] Creating task entry with id=rh-task-${uid} on edge=${edgeName}`);
           registerTask(edgeName, 'rhapsody', uid, `${exec} ${args.join(' ')}`);
 
           const taskEntry = document.createElement('details');
@@ -2093,6 +2233,9 @@
             <div class="task-log rh-task-log"><div style="color:var(--muted);font-style:italic;">Waiting…</div></div>`;
           output.appendChild(taskEntry);
           output.scrollTop = output.scrollHeight;
+
+          // Check if notification arrived before element was created (race condition)
+          processPendingNotification(uid);
         }
 
       } catch (e) {
