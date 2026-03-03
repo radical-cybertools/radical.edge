@@ -82,9 +82,36 @@ class RhapsodySession(PluginSession):
         results = []
         for t in tasks:
             self._tasks[t.uid] = t
-            results.append({"uid": t.uid, "state": t.get("state")})
+            state = t.get("state")
+            if state is not None:
+                state = str(state)
+            results.append({"uid": t.uid, "state": state})
+
+        # Start one background watcher per task so each notifies independently
+        if self._notify:
+            import asyncio
+            for t in tasks:
+                asyncio.ensure_future(self._watch_task(t))
 
         return results
+
+    async def _watch_task(self, task):
+        """Background watcher for a single task: notify as soon as it completes."""
+        uid = self._get_attr(task, 'uid')
+        uid_str = str(uid) if uid else '?'
+        
+        log.debug(f"[{self._sid}] Watcher started for task {uid_str}")
+        try:
+            await self._rh_session.wait_tasks([task])
+            
+            # State might be in the object or the dict
+            state = self._get_attr(task, 'state')
+            log.info(f"[{self._sid}] Task {uid_str} completed with state: {state}")
+            
+            d = self._sanitize_task(task)
+            self._notify("task_status", d)
+        except Exception as e:
+            log.warning(f"Rhapsody watch error for task {uid_str}: {e}")
 
     async def wait_tasks(self, uids: list[str],
                          timeout: float | None = None) -> list[dict]:
@@ -109,12 +136,34 @@ class RhapsodySession(PluginSession):
 
         return [self._sanitize_task(t) for t in tasks]
 
+    def _get_attr(self, obj, attr, default=None):
+        """Helper to get attribute from object or dict."""
+        val = getattr(obj, attr, None)
+        if val is None and isinstance(obj, dict):
+            val = obj.get(attr)
+        return val if val is not None else default
+
     def _sanitize_task(self, t) -> dict:
         """Sanitize a Rhapsody task dict so it's JSON serializable."""
-        d = dict(t)
+        if hasattr(t, 'to_dict'):
+            d = t.to_dict()
+        else:
+            d = dict(t)
+
+        # Ensure 'uid' is present and a string
+        uid = self._get_attr(t, 'uid')
+        if uid:
+            d['uid'] = str(uid)
+
+        # Ensure 'state' is present and a string
+        state = self._get_attr(t, 'state')
+        if state:
+            d['state'] = str(state)
+
         d.pop('future', None)
         if 'exception' in d and d['exception'] is not None:
             d['exception'] = str(d['exception'])
+        
         return d
 
     async def get_task(self, uid: str) -> dict:
@@ -304,7 +353,6 @@ class PluginRhapsody(Plugin):
         Accepts an optional JSON body with ``{"backends": ["name", ...]}``.
         """
         import uuid as _uuid
-        import asyncio as _asyncio
 
         try:
             data = await request.json()

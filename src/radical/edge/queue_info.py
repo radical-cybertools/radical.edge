@@ -388,8 +388,7 @@ class QueueInfoSlurm(QueueInfo):
                                                 .get('wall_clock', {})),
                 'grp_tres'            : assoc.get('max', {})
                                              .get('tres', {})
-                                             .get('total', None)
-                                             or None,
+                                             .get('total', None) or None,
                 'allocated_node_hours': None,
                 'used_node_hours'     : None,
                 'remaining_node_hours': None,

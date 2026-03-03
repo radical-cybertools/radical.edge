@@ -3,8 +3,10 @@ import os
 import httpx
 import logging
 import urllib3
+import json
+import threading
 
-from typing import Optional, List, Any, Dict
+from typing import Optional, List, Callable
 
 from .plugin_base import Plugin
 
@@ -38,8 +40,57 @@ class BridgeClient:
             verify=self._cert if self._cert else False,
             timeout=60.0
         )
+        self._callbacks = {}
+        self._listener_thread = None
+        self._listener_stop = threading.Event()
+
+    def register_callback(self, edge_id: str, plugin_name: str, callback: Callable):
+        """Register a notification callback for a specific plugin on an edge."""
+        key = (edge_id, plugin_name)
+        if key not in self._callbacks:
+            self._callbacks[key] = []
+        self._callbacks[key].append(callback)
+        self._ensure_listener()
+
+    def unregister_callback(self, edge_id: str, plugin_name: str, callback: Callable):
+        """Unregister a notification callback."""
+        key = (edge_id, plugin_name)
+        if key in self._callbacks and callback in self._callbacks[key]:
+            self._callbacks[key].remove(callback)
+
+    def _ensure_listener(self):
+        if self._listener_thread is None or not self._listener_thread.is_alive():
+            self._listener_stop.clear()
+            self._listener_thread = threading.Thread(target=self._listen_sse, daemon=True)
+            self._listener_thread.start()
+
+    def _listen_sse(self):
+        try:
+            with httpx.stream("GET", f"{self._url}/events", verify=self._cert if self._cert else False, timeout=None) as response:
+                for line in response.iter_lines():
+                    if self._listener_stop.is_set():
+                        break
+                    if line.startswith("data: "):
+                        data_str = line[6:]
+                        if not data_str:
+                            continue
+                        try:
+                            payload = json.loads(data_str)
+                            if payload.get("topic") == "notification":
+                                notif = payload.get("data", {})
+                                e_id = notif.get("edge")
+                                p_name = notif.get("plugin")
+                                key = (e_id, p_name)
+                                for cb in self._callbacks.get(key, []):
+                                    cb(notif.get("topic"), notif.get("data"))
+                        except Exception as e:
+                            log.error("Error parsing SSE event: %s", e)
+        except Exception as e:
+            if not self._listener_stop.is_set():
+                log.debug("SSE listener stopped: %s", e)
 
     def close(self):
+        self._listener_stop.set()
         self._http.close()
 
     def __enter__(self):
@@ -102,7 +153,7 @@ class EdgeClient:
         plugins = edge_data.get('plugins', {})
         plugin_info = plugins.get(plugin_name)
         if not plugin_info:
-             raise RuntimeError(f"Plugin '{plugin_name}' unknown on '{self._edge_id}'")
+            raise RuntimeError(f"Plugin '{plugin_name}' unknown on '{self._edge_id}'")
 
         namespace = plugin_info['namespace']
 
@@ -117,7 +168,7 @@ class EdgeClient:
 
         # 3. Instantiate Client Helper
         base_url = namespace
-        client = client_cls(self.http, base_url)
+        client = client_cls(self.http, base_url, bridge_client=self._bc, edge_id=self._edge_id, plugin_name=plugin_name)
 
         # 4. Register Session
         client.register_session(**session_kwargs)
@@ -130,10 +181,28 @@ class PluginClient:
     Base helper class for Edge Plugins (Application side).
     """
 
-    def __init__(self, http_client: httpx.Client, base_url: str):
+    def __init__(self, http_client: httpx.Client, base_url: str, bridge_client: "BridgeClient" = None, edge_id: str = None, plugin_name: str = None):
         self._http = http_client
         self._base_url = base_url.rstrip('/')
+        self._bc = bridge_client
+        self._edge_id = edge_id
+        self._plugin_name = plugin_name
         self._sid: Optional[str] = None
+
+    def register_notification_callback(self, callback: Callable):
+        """
+        Register a callback function to receive asynchronous notifications from this plugin.
+        The callback should accept two arguments: `topic` (str) and `data` (dict).
+        """
+        if not self._bc or not self._edge_id or not self._plugin_name:
+            raise RuntimeError("Missing edge tracking info; cannot register notifications.")
+        self._bc.register_callback(self._edge_id, self._plugin_name, callback)
+
+    def unregister_notification_callback(self, callback: Callable):
+        """Unregister a previously registered callback."""
+        if not self._bc or not self._edge_id or not self._plugin_name:
+            raise RuntimeError("Missing edge tracking info.")
+        self._bc.unregister_callback(self._edge_id, self._plugin_name, callback)
 
     @property
     def sid(self) -> Optional[str]:
