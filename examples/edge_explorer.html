@@ -2133,7 +2133,7 @@
 
       const job_spec = { executable: exec, arguments: args, attributes: {} };
       if (queue) job_spec.attributes.queue_name = queue;
-      if (account) job_spec.attributes.project_name = account;
+      if (account) job_spec.attributes.account = account;
       if (duration) job_spec.attributes.duration = duration;
 
       // Clear placeholder
