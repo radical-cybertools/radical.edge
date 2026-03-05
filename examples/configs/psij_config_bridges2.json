@@ -1,0 +1,15 @@
+{
+    "edge_id_match": "bridges2.",
+    "job_executor": "slurm",
+    "job_spec": {
+        "executable": "/bin/sleep",
+        "arguments": [
+            "15"
+        ],
+        "attributes": {
+            "account": "dmr170002p",
+            "queue_name": "RM-shared",
+            "duration": "120"
+        }
+    }
+}

@@ -54,8 +54,11 @@ class PSIJSession(PluginSession):
                 if duration:
                     spec.attributes.duration = timedelta(seconds=int(duration))
                 spec.attributes.queue_name = attribs.get("queue_name")
-                spec.attributes.project_name = attribs.get("project_name")
+                spec.attributes.account = attribs.get("account")
                 spec.attributes.reservation_id = attribs.get("reservation_id")
+            if 'custom_attributes' in job_spec_dict:
+                spec.attributes.custom_attributes = dict(
+                    job_spec_dict['custom_attributes'])
 
             import tempfile
             job = psij.Job(spec)
