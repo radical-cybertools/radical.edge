@@ -54,11 +54,16 @@ class PSIJSession(PluginSession):
                 if duration:
                     spec.attributes.duration = timedelta(seconds=int(duration))
                 spec.attributes.queue_name = attribs.get("queue_name")
-                spec.attributes.project_name = attribs.get("project_name")
+                spec.attributes.account = attribs.get("account")
                 spec.attributes.reservation_id = attribs.get("reservation_id")
+
                 node_count = attribs.get("node_count")
                 if node_count:
                     spec.attributes.resource_count = int(node_count)
+
+            if 'custom_attributes' in job_spec_dict:
+                spec.attributes.custom_attributes = dict(
+                    job_spec_dict['custom_attributes'])
 
             import tempfile
             job = psij.Job(spec)

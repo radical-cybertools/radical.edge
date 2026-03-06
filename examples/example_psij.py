@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 
+import argparse
+import json
+import sys
 import time
 from radical.edge import BridgeClient
 
@@ -8,7 +11,44 @@ def my_notification_cb(topic: str, data: dict):
     print(f"\n[Notification] {topic}: {data}\n")
 
 
+def get_config(config_path: str = None) -> dict:
+
+    # Default configuration
+    config = {
+        "edge_id_match": None,
+        "edge_id_prefix": None,
+        "job_executor": None,
+        "job_spec": {
+            "executable": "/bin/sleep",
+            "arguments": ["5"],
+            "attributes": {
+                "account": "local",
+                "queue_name": None,
+                "duration": "100",
+            }
+        }
+    }
+
+    if config_path:
+        try:
+            with open(config_path, 'r') as f:
+                user_config = json.load(f)
+        except Exception as e:
+            print(f"Failed to load config file {config_path}: {e}")
+            sys.exit(1)
+        else:
+            config.update(user_config)
+
+    return config
+
+
 def main():
+    parser = argparse.ArgumentParser(description="PSI/J Job Submission Example")
+    parser.add_argument('--config', type=str, default=None,
+                        help="Path to JSON configuration file")
+    args = parser.parse_args()
+
+    config = get_config(args.config)
 
     bc = BridgeClient()
     eids = bc.list_edges()
@@ -17,7 +57,29 @@ def main():
         print("No edges found.")
         return
 
-    eid = eids[0]
+    eid = None
+    edge_id_match = config.get("edge_id_match")
+    edge_id_prefix = config.get("edge_id_prefix")
+    
+    if edge_id_match:
+        for _eid in eids:
+            if edge_id_match in _eid:
+                eid = _eid
+                break
+        if not eid:
+            print(f"No edge found matching '{edge_id_match}'.")
+            return
+    elif edge_id_prefix:
+        for _eid in eids:
+            if _eid.startswith(edge_id_prefix):
+                eid = _eid
+                break
+        if not eid:
+            print(f"No edge found starting with prefix '{edge_id_prefix}'.")
+            return
+    else:
+        eid = eids[0]
+
     print(f"Using edge: {eid}")
 
     ec = bc.get_edge_client(eid)
@@ -26,17 +88,15 @@ def main():
     # Register for asynchronous bridge notifications
     pi.register_notification_callback(my_notification_cb)
 
-    job_spec = {
-        "executable": "/bin/sleep",
-        "arguments": ["5"],
-        "attributes": {
-            "project_name": "fus183",
-            "duration": "100",
-        }
-    }
+    job_spec = config.get("job_spec")
+    job_executor = config.get("job_executor")
 
     print("Submitting Job...")
-    res = pi.submit_job(job_spec)
+    if job_executor:
+        res = pi.submit_job(job_spec, job_executor)
+    else:
+        res = pi.submit_job(job_spec)
+        
     job_id = res['job_id']
 
     print(f"\nMonitoring Job {job_id}")

@@ -1,0 +1,18 @@
+{
+    "edge_id_prefix": "polaris",
+    "job_executor": "pbs",
+    "job_spec": {
+        "executable": "/bin/sleep",
+        "arguments": [
+            "15"
+        ],
+        "attributes": {
+            "account": "lucid",
+            "queue_name": "debug",
+            "duration": "300"
+        },
+        "custom_attributes": {
+            "pbs.l": "filesystems=home"
+        }
+    }
+}
