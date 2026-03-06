@@ -12,6 +12,9 @@ except ImportError:
 
 from .plugin_base           import Plugin  # noqa: F401
 from .plugin_session_base   import PluginSession  # noqa: F401
+from .ui_schema             import (UIConfig, UIForm, UIField,  # noqa: F401
+                                    UIMonitor, UINotifications,
+                                    ui_config_to_dict)
 
 from .service           import EdgeService  # noqa: F401
 from .client            import BridgeClient, EdgeClient, PluginClient  # noqa: F401

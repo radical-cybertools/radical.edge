@@ -3,7 +3,9 @@
 import asyncio
 import base64
 import json
+import logging
 import os
+import traceback
 import uuid
 
 from typing  import Dict, Any
@@ -15,6 +17,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses     import StreamingResponse
 
 from starlette.websockets    import WebSocketState
+
+log = logging.getLogger("radical.edge.bridge")
 
 
 app = FastAPI(
@@ -51,6 +55,53 @@ app.add_middleware(
     allow_methods=["*"],              # or ["GET", "POST", ...]
     allow_headers=["*"],              # or a list of headers
 )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Centralized exception handlers
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    """Handle HTTP exceptions with consistent JSON format."""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error": True,
+            "status_code": exc.status_code,
+            "detail": exc.detail
+        }
+    )
+
+
+@app.exception_handler(ValueError)
+async def value_error_handler(request: Request, exc: ValueError) -> JSONResponse:
+    """Handle ValueError as 400 Bad Request."""
+    log.warning("[Bridge] ValueError: %s", exc)
+    return JSONResponse(
+        status_code=400,
+        content={
+            "error": True,
+            "status_code": 400,
+            "detail": str(exc)
+        }
+    )
+
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Catch-all handler for unexpected exceptions."""
+    log.exception("[Bridge] Unhandled exception: %s", exc)
+    # In production, don't expose internal error details
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": True,
+            "status_code": 500,
+            "detail": "Internal server error"
+        }
+    )
+
 
 edges: Dict[str, WebSocket] = {}
 pending: Dict[str, asyncio.Future] = dict()
@@ -305,19 +356,45 @@ async def get_edges():
 
 @app.get("/", tags=["UI"], include_in_schema=False)
 async def root():
-    import sys
     import os
-    bin_dir = os.path.dirname(os.path.abspath(__file__))
-    paths = [
-        # if running from source tree: bin_dir/../examples/edge_explorer.html
-        os.path.join(bin_dir, '..', 'examples', 'edge_explorer.html'),
-        # if installed via pip, usually share/radical.edge/examples/edge_explorer.html
-        os.path.join(sys.prefix, 'share', 'radical.edge', 'examples', 'edge_explorer.html'),
-        os.path.join(sys.prefix, 'local', 'share', 'radical.edge', 'examples', 'edge_explorer.html'),
-    ]
-    for p in paths:
-        if os.path.exists(p):
-            return FileResponse(p)
+
+    # Try to find edge_explorer.html via importlib.resources (works with editable installs)
+    html_path = None
+    try:
+        # Python 3.9+ with importlib.resources.files
+        from importlib.resources import files
+        data_dir = files('radical.edge').joinpath('data')
+        candidate = data_dir.joinpath('edge_explorer.html')
+        # For editable installs, this returns a Traversable that we can get the path from
+        if hasattr(candidate, '__fspath__'):
+            html_path = os.fspath(candidate)
+        else:
+            # For installed packages, we may need to extract to a temp file
+            # But typically the path is directly accessible
+            html_path = str(candidate)
+        if not os.path.exists(html_path):
+            html_path = None
+    except Exception:
+        pass
+
+    # Fallback: try pkg_resources
+    if not html_path:
+        try:
+            import pkg_resources
+            html_path = pkg_resources.resource_filename('radical.edge', 'data/edge_explorer.html')
+            if not os.path.exists(html_path):
+                html_path = None
+        except Exception:
+            pass
+
+    if html_path and os.path.exists(html_path):
+        # Disable caching for development - ensures latest version is served
+        return FileResponse(html_path, headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0"
+        })
+
     return Response(content="edge_explorer.html not found", status_code=404)
 
 

@@ -3,13 +3,14 @@ import asyncio
 import logging
 import time
 
-from typing import Type, Optional, Dict, Callable, Any
+from typing import Type, Optional, Dict, Callable, Any, Union
 from fastapi import FastAPI, HTTPException, Request
 from starlette.routing import Route
 from starlette.responses import JSONResponse
 
 from .plugin_session_base import PluginSession
 from .exceptions import SessionNotFoundError, SessionClosedError
+from .ui_schema import UIConfig, ui_config_to_dict
 
 log = logging.getLogger("radical.edge")
 
@@ -32,6 +33,7 @@ class Plugin(object):
         client_class: The local helper class for the application-side client.
         version: The version string for the plugin.
         session_ttl: Session timeout in seconds (default: 3600 = 1 hour, 0 = no timeout)
+        ui_config: UI configuration dict for portal rendering (see ui_schema.py)
     """
 
     _registry: Dict[str, Type["Plugin"]] = {}
@@ -39,6 +41,7 @@ class Plugin(object):
     client_class: Optional[Type] = None
     version: str = '0.0.1'
     session_ttl: int = 3600  # Default: 1 hour session timeout
+    ui_config: Union[Dict, UIConfig, None] = None  # UI configuration for portal
 
     def __init_subclass__(cls, **kwargs):
         """Auto-register subclasses that define plugin_name."""
@@ -86,6 +89,7 @@ class Plugin(object):
         self.add_route_get('version', self.get_version)
         self.add_route_get('list_sessions', self.list_sessions)
         self.add_route_get('health', self.health_check)
+        self.add_route_get('ui_config', self.get_ui_config)
 
     @property
     def namespace(self) -> str:
@@ -199,6 +203,21 @@ class Plugin(object):
     async def get_version(self, request: Request) -> JSONResponse:
         """Return the plugin version."""
         return JSONResponse({"version": self.version})
+
+    async def get_ui_config(self, request: Request) -> JSONResponse:
+        """
+        Return UI configuration for portal rendering.
+
+        External plugins can define ui_config to describe their forms,
+        monitors, and notification handlers, enabling seamless portal integration.
+        """
+        plugin_name = getattr(self.__class__, 'plugin_name', self._instance_name)
+        return JSONResponse({
+            "plugin_name": plugin_name,
+            "instance_name": self._instance_name,
+            "version": self.version,
+            "ui": ui_config_to_dict(self.ui_config)
+        })
 
     async def list_sessions(self, request: Request) -> JSONResponse:
         """Return a list of active session IDs."""

@@ -6,7 +6,7 @@ import urllib3
 import json
 import threading
 
-from typing import Optional, List, Callable
+from typing import Any, Dict, List, Optional, Callable, Tuple
 
 from .plugin_base import Plugin
 
@@ -21,30 +21,30 @@ class BridgeClient:
     Client for interacting with the Radical Edge Bridge.
     """
 
-    def __init__(self, url: str = None, cert: str = None):
+    def __init__(self, url: Optional[str] = None, cert: Optional[str] = None):
         """
         Initialize the Bridge Client.
 
         Args:
-            url (str): The bridge URL. Defaults to env 'RADICAL_BRIDGE_URL'.
-            cert (str): Path to CA cert. Defaults to env 'RADICAL_BRIDGE_CERT'.
+            url: The bridge URL. Defaults to env 'RADICAL_BRIDGE_URL'.
+            cert: Path to CA cert. Defaults to env 'RADICAL_BRIDGE_CERT'.
         """
-        self._url = (url or os.environ.get("RADICAL_BRIDGE_URL", "")).rstrip('/')
-        self._cert = cert or os.environ.get("RADICAL_BRIDGE_CERT")
+        self._url: str = (url or os.environ.get("RADICAL_BRIDGE_URL", "")).rstrip('/')
+        self._cert: Optional[str] = cert or os.environ.get("RADICAL_BRIDGE_CERT")
 
         if not self._url:
             raise ValueError("Bridge URL required (arg or RADICAL_BRIDGE_URL)")
 
-        self._http = httpx.Client(
+        self._http: httpx.Client = httpx.Client(
             base_url=self._url,
             verify=self._cert if self._cert else False,
             timeout=60.0
         )
-        self._callbacks = {}
-        self._listener_thread = None
-        self._listener_stop = threading.Event()
+        self._callbacks: Dict[Tuple[str, str], List[Callable]] = {}
+        self._listener_thread: Optional[threading.Thread] = None
+        self._listener_stop: threading.Event = threading.Event()
 
-    def register_callback(self, edge_id: str, plugin_name: str, callback: Callable):
+    def register_callback(self, edge_id: str, plugin_name: str, callback: Callable) -> None:
         """Register a notification callback for a specific plugin on an edge."""
         key = (edge_id, plugin_name)
         if key not in self._callbacks:
@@ -52,19 +52,19 @@ class BridgeClient:
         self._callbacks[key].append(callback)
         self._ensure_listener()
 
-    def unregister_callback(self, edge_id: str, plugin_name: str, callback: Callable):
+    def unregister_callback(self, edge_id: str, plugin_name: str, callback: Callable) -> None:
         """Unregister a notification callback."""
         key = (edge_id, plugin_name)
         if key in self._callbacks and callback in self._callbacks[key]:
             self._callbacks[key].remove(callback)
 
-    def _ensure_listener(self):
+    def _ensure_listener(self) -> None:
         if self._listener_thread is None or not self._listener_thread.is_alive():
             self._listener_stop.clear()
             self._listener_thread = threading.Thread(target=self._listen_sse, daemon=True)
             self._listener_thread.start()
 
-    def _listen_sse(self):
+    def _listen_sse(self) -> None:
         try:
             with httpx.stream("GET", f"{self._url}/events", verify=self._cert if self._cert else False, timeout=None) as response:
                 for line in response.iter_lines():
@@ -89,14 +89,14 @@ class BridgeClient:
             if not self._listener_stop.is_set():
                 log.debug("SSE listener stopped: %s", e)
 
-    def close(self):
+    def close(self) -> None:
         self._listener_stop.set()
         self._http.close()
 
-    def __enter__(self):
+    def __enter__(self) -> "BridgeClient":
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         self.close()
 
     def list_edges(self) -> List[str]:
@@ -189,7 +189,7 @@ class PluginClient:
         self._plugin_name = plugin_name
         self._sid: Optional[str] = None
 
-    def register_notification_callback(self, callback: Callable):
+    def register_notification_callback(self, callback: Callable) -> None:
         """
         Register a callback function to receive asynchronous notifications from this plugin.
         The callback should accept two arguments: `topic` (str) and `data` (dict).
@@ -198,7 +198,7 @@ class PluginClient:
             raise RuntimeError("Missing edge tracking info; cannot register notifications.")
         self._bc.register_callback(self._edge_id, self._plugin_name, callback)
 
-    def unregister_notification_callback(self, callback: Callable):
+    def unregister_notification_callback(self, callback: Callable) -> None:
         """Unregister a previously registered callback."""
         if not self._bc or not self._edge_id or not self._plugin_name:
             raise RuntimeError("Missing edge tracking info.")
@@ -213,7 +213,7 @@ class PluginClient:
         """Construct full URL for a path."""
         return f"{self._base_url}/{path.lstrip('/')}"
 
-    def register_session(self, **kwargs):
+    def register_session(self, **kwargs: Any) -> None:
         """
         Register a session with the plugin.
 
@@ -224,7 +224,7 @@ class PluginClient:
         resp.raise_for_status()
         self._sid = resp.json()['sid']
 
-    def unregister_session(self):
+    def unregister_session(self) -> None:
         """
         Unregister the current session.
         """
@@ -233,7 +233,7 @@ class PluginClient:
             resp.raise_for_status()
             self._sid = None
 
-    def close(self):
+    def close(self) -> None:
         """
         Close the client helper. Unregisters session if active.
         """

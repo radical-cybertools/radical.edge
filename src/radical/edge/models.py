@@ -34,6 +34,7 @@ class ResponseMessage(BaseModel):
 class NotificationMessage(BaseModel):
     """Push notification from edge to bridge for SSE broadcast."""
     type: Literal["notification"] = "notification"
+    edge: str = Field(..., description="Name of the edge sending the notification")
     plugin: str = Field(..., description="Plugin sending the notification")
     topic: str = Field(..., description="Notification topic")
     data: Dict[str, Any] = Field(default_factory=dict, description="Notification payload")

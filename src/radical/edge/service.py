@@ -9,6 +9,7 @@ import ssl
 import socket
 import threading
 import uuid
+from importlib.metadata import entry_points
 from typing import Any, Dict, Optional
 
 import httpx
@@ -27,6 +28,7 @@ from radical.edge.models import (
     parse_bridge_message
 )
 from radical.edge.exceptions import BridgeConnectionError
+from radical.edge.ui_schema import ui_config_to_dict
 
 log = logging.getLogger("radical.edge")
 
@@ -81,11 +83,27 @@ class EdgeService:
         """Get the current Bridge URL."""
         return self._bridge_url
 
-    def _load_plugins(self):
+    def _load_plugins(self) -> None:
         """
-        Load all known and enabled plugin into the service.
-        """
+        Load all known and enabled plugins into the service.
 
+        This method:
+        1. Discovers external plugins via 'radical.edge.plugins' entry points
+        2. Instantiates all registered plugins (built-in and external)
+        """
+        # Discover and import external plugins via entry points
+        try:
+            eps = entry_points(group='radical.edge.plugins')
+            for ep in eps:
+                try:
+                    ep.load()  # This imports the module and triggers auto-registration
+                    log.info("[Edge] Discovered external plugin: %s", ep.name)
+                except Exception:
+                    log.exception("[Edge] Failed to load entry point: %s", ep.name)
+        except Exception:
+            log.debug("[Edge] No external plugins found via entry points")
+
+        # Instantiate all registered plugins
         for pname in Plugin.get_plugin_names():
 
             try:
@@ -181,6 +199,7 @@ class EdgeService:
             return
 
         notification = NotificationMessage(
+            edge=self._name,
             plugin=plugin_name,
             topic=topic,
             data=data
@@ -263,7 +282,11 @@ class EdgeService:
                                         plugin_name=pname,
                                         endpoint={
                                             "type": pname,
-                                            "namespace": f"/{self._name}{plugin.namespace}"
+                                            "namespace": f"/{self._name}{plugin.namespace}",
+                                            "version": getattr(plugin, 'version', '0.0.1'),
+                                            "ui_config": ui_config_to_dict(
+                                                getattr(plugin, 'ui_config', None)
+                                            )
                                         }
                                     )
                                     await ws.send(plugin_reg.model_dump_json())

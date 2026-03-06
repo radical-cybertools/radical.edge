@@ -508,6 +508,20 @@ class PluginSysInfo(Plugin):
     client_class = SysInfoClient
     version = '0.0.1'
 
+    ui_config = {
+        "icon": "🖥️",
+        "title": "System Info",
+        "description": "Live CPU, memory, disk, network and GPU metrics.",
+        "refresh_button": True,
+        "monitors": [{
+            "id": "metrics",
+            "title": "System Metrics",
+            "type": "metrics",
+            "css_class": "sysinfo-content",
+            "auto_load": "metrics/{sid}"
+        }]
+    }
+
     def __init__(self, app: FastAPI):
         """
         Initialize the SysInfo plugin.

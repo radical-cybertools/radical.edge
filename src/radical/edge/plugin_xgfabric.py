@@ -49,6 +49,13 @@ class PluginXGFabric(Plugin):
     client_class = XGFabricClient
     version = '0.0.1'
 
+    ui_config = {
+        "icon": "🕸️",
+        "title": "XGFabric",
+        "description": "XGFabric session management.",
+        "stub_message": "Advanced web interface for XGFabric is not yet available."
+    }
+
     def __init__(self, app: FastAPI):
         """
         Initialize the XGFabric plugin with the FastAPI app.

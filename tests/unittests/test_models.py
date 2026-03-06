@@ -66,11 +66,13 @@ class TestEdgeToBridgeMessages:
     def test_notification_message(self):
         """Test NotificationMessage creation."""
         msg = NotificationMessage(
+            edge="test-edge",
             plugin="rhapsody",
             topic="task_status",
             data={"uid": "task-123", "state": "COMPLETED"}
         )
         assert msg.type == "notification"
+        assert msg.edge == "test-edge"
         assert msg.plugin == "rhapsody"
         assert msg.data["uid"] == "task-123"
 
@@ -149,12 +151,14 @@ class TestMessageParsing:
         """Test parsing a notification message."""
         data = {
             "type": "notification",
+            "edge": "test-edge",
             "plugin": "psij",
             "topic": "job_status",
             "data": {"job_id": "j123"}
         }
         msg = parse_edge_message(data)
         assert isinstance(msg, NotificationMessage)
+        assert msg.edge == "test-edge"
         assert msg.topic == "job_status"
 
     def test_parse_pong_message(self):

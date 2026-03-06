@@ -3,15 +3,15 @@ PSIJ Plugin for Radical Edge.
 '''
 
 import logging
+import os
+
+from datetime import timedelta
+from typing import Any, Dict
 
 from fastapi import FastAPI, HTTPException, Request
 from starlette.responses import JSONResponse
-from datetime import timedelta
 
 import psij
-import os
-
-
 
 from .plugin_base import Plugin
 from .plugin_session_base import PluginSession
@@ -26,11 +26,11 @@ class PSIJSession(PluginSession):
     Session-specific PSIJ state.
     '''
 
-    def __init__(self, sid, **kwargs):
+    def __init__(self, sid: str, **kwargs: Any):
         super().__init__(sid)
-        self._jobs = {}  # local job cache: job_id -> psij.Job
+        self._jobs: Dict[str, Any] = {}  # local job cache: job_id -> psij.Job
 
-    async def submit_job(self, job_spec_dict: dict, executor_name: str = 'local') -> dict:
+    async def submit_job(self, job_spec_dict: Dict[str, Any], executor_name: str = 'local') -> Dict[str, Any]:
         '''
         Submit a job via PSIJ.
         '''
@@ -56,6 +56,9 @@ class PSIJSession(PluginSession):
                 spec.attributes.queue_name = attribs.get("queue_name")
                 spec.attributes.project_name = attribs.get("project_name")
                 spec.attributes.reservation_id = attribs.get("reservation_id")
+                node_count = attribs.get("node_count")
+                if node_count:
+                    spec.attributes.resource_count = int(node_count)
 
             import tempfile
             job = psij.Job(spec)
@@ -113,7 +116,7 @@ class PSIJSession(PluginSession):
             log.exception("Job submission failed: %s", e)
             raise HTTPException(status_code=500, detail=str(e)) from e
 
-    async def get_job_status(self, job_id: str) -> dict:
+    async def get_job_status(self, job_id: str) -> Dict[str, Any]:
         '''
         Get job status.
         '''
@@ -155,7 +158,7 @@ class PSIJSession(PluginSession):
             "stderr": stderr_content
         }
 
-    async def cancel_job(self, job_id: str) -> dict:
+    async def cancel_job(self, job_id: str) -> Dict[str, Any]:
         '''
         Cancel a job.
         '''
@@ -177,7 +180,7 @@ class PSIJClient(PluginClient):
     Client-side interface for the PSIJ plugin.
     """
 
-    def submit_job(self, job_spec: dict, executor: str = 'local') -> dict:
+    def submit_job(self, job_spec: Dict[str, Any], executor: str = 'local') -> Dict[str, Any]:
         """
         Submit a job.
 
@@ -198,15 +201,15 @@ class PSIJClient(PluginClient):
         resp.raise_for_status()
         return resp.json()
 
-    def get_job_status(self, job_id: str) -> dict:
+    def get_job_status(self, job_id: str) -> Dict[str, Any]:
         """
         Get the status of a job.
 
         Args:
-            job_id (str): The job ID to query.
+            job_id: The job ID to query.
 
         Returns:
-            dict: Job status info.
+            Job status info.
         """
         if not self.sid:
             raise RuntimeError("No active session")
@@ -217,15 +220,15 @@ class PSIJClient(PluginClient):
         resp.raise_for_status()
         return resp.json()
 
-    def cancel_job(self, job_id: str) -> dict:
+    def cancel_job(self, job_id: str) -> Dict[str, Any]:
         """
         Cancel a job.
 
         Args:
-            job_id (str): The job ID to cancel.
+            job_id: The job ID to cancel.
 
         Returns:
-            dict: Cancellation result.
+            Cancellation result.
         """
         if not self.sid:
             raise RuntimeError("No active session")
@@ -249,6 +252,53 @@ class PluginPSIJ(Plugin):
     session_class = PSIJSession
     client_class = PSIJClient
     version = '0.0.1'
+
+    ui_config = {
+        "icon": "🚀",
+        "title": "PsiJ Jobs",
+        "description": "Submit and monitor HPC batch jobs via PsiJ.",
+        "forms": [{
+            "id": "submit",
+            "title": "📝 Submit Job",
+            "layout": "grid2",
+            "fields": [
+                {"name": "exec", "type": "text", "label": "Executable",
+                 "default": "radical-edge-service.py", "css_class": "p-exec",
+                 "column": 0},
+                {"name": "args", "type": "text", "label": "Arguments (space-separated)",
+                 "placeholder": "auto-filled with --url and --name",
+                 "css_class": "p-args", "column": 0},
+                {"name": "executor", "type": "select", "label": "Executor",
+                 "options": ["local", "slurm", "pbs", "lsf"],
+                 "css_class": "p-executor", "column": 0},
+                {"name": "queue", "type": "text", "label": "Queue / Partition",
+                 "placeholder": "optional", "required": False,
+                 "css_class": "p-queue", "column": 1},
+                {"name": "account", "type": "text", "label": "Account / Project",
+                 "placeholder": "optional", "required": False,
+                 "css_class": "p-account", "column": 1},
+                {"name": "duration", "type": "text", "label": "Duration (seconds)",
+                 "placeholder": "e.g. 600", "required": False,
+                 "css_class": "p-duration", "column": 1},
+                {"name": "node_count", "type": "number", "label": "Number of Nodes",
+                 "placeholder": "e.g. 1", "required": False,
+                 "css_class": "p-node-count", "column": 1},
+            ],
+            "submit": {"label": "🚀 Submit Job", "style": "success"}
+        }],
+        "monitors": [{
+            "id": "jobs",
+            "title": "📊 Job Monitor",
+            "type": "task_list",
+            "css_class": "psij-output",
+            "empty_text": "No jobs submitted yet."
+        }],
+        "notifications": {
+            "topic": "job_status",
+            "id_field": "job_id",
+            "state_field": "state"
+        }
+    }
 
     def __init__(self, app: FastAPI, instance_name: str = "psij"):
         super().__init__(app, instance_name)

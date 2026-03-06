@@ -153,6 +153,20 @@ class PluginQueueInfo(Plugin):
     client_class = QueueInfoClient
     version = '0.0.1'
 
+    ui_config = {
+        "icon": "📋",
+        "title": "Queue Info",
+        "description": "Inspect Slurm partitions, jobs and allocations.",
+        "refresh_button": True,
+        "monitors": [{
+            "id": "partitions",
+            "title": "Partitions / Queues",
+            "type": "table",
+            "css_class": "queueinfo-content",
+            "auto_load": "get_info/{sid}"
+        }]
+    }
+
     def __init__(self, app: FastAPI, instance_name='queue_info', slurm_conf=None):
         """
         Initialize the QueueInfo plugin.

@@ -357,6 +357,39 @@ class PluginRhapsody(Plugin):
     client_class = RhapsodyClient
     version = '0.0.1'
 
+    ui_config = {
+        "icon": "🎼",
+        "title": "Rhapsody Tasks",
+        "description": "Submit compute tasks, wait for results, view stdout/stderr.",
+        "forms": [{
+            "id": "submit",
+            "title": "📝 Submit Task",
+            "layout": "single",
+            "fields": [
+                {"name": "exec", "type": "text", "label": "Executable",
+                 "default": "/bin/echo", "css_class": "rh-exec"},
+                {"name": "args", "type": "text", "label": "Arguments (space-separated)",
+                 "default": "hello from rhapsody", "css_class": "rh-args"},
+                {"name": "backends", "type": "select", "label": "Backend",
+                 "options": ["concurrent", "dragon_v3"],
+                 "css_class": "rh-backends"},
+            ],
+            "submit": {"label": "▶ Submit Task", "style": "success"}
+        }],
+        "monitors": [{
+            "id": "tasks",
+            "title": "📊 Task Monitor",
+            "type": "task_list",
+            "css_class": "rh-output",
+            "empty_text": "No tasks submitted yet."
+        }],
+        "notifications": {
+            "topic": "task_status",
+            "id_field": "uid",
+            "state_field": "state"
+        }
+    }
+
     def __init__(self, app: FastAPI, instance_name: str = "rhapsody"):
         super().__init__(app, instance_name)
 

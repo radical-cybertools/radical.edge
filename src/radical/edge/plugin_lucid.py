@@ -162,6 +162,13 @@ class PluginLucid(Plugin):
     client_class = LucidClient
     version = '0.0.1'
 
+    ui_config = {
+        "icon": "🧠",
+        "title": "Lucid",
+        "description": "Radical Pilot session management.",
+        "stub_message": "Advanced web interface for Lucid is not yet available."
+    }
+
     def __init__(self, app: FastAPI):
         """
         Initialize the Lucid plugin with the FastAPI app. Set up routes for

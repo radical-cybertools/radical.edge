@@ -311,6 +311,70 @@ def test_plugin_session_ttl_default():
     assert plugin.session_ttl == 3600
 
 
+@pytest.mark.asyncio
+async def test_plugin_ui_config_endpoint():
+    '''
+    Test the ui_config endpoint.
+    '''
+    app = FastAPI()
+    plugin = Plugin(app, "test_plugin")
+    plugin.session_class = PluginSession
+
+    # Call ui_config endpoint
+    request = Mock(spec=Request)
+    response = await plugin.get_ui_config(request)
+
+    import json
+    data = json.loads(response.body)
+
+    # Verify response structure
+    assert 'plugin_name' in data
+    assert 'instance_name' in data
+    assert 'version' in data
+    assert 'ui' in data
+    assert data['instance_name'] == 'test_plugin'
+
+
+@pytest.mark.asyncio
+async def test_plugin_ui_config_with_custom_config():
+    '''
+    Test ui_config endpoint with a custom ui_config.
+    '''
+
+    class CustomPlugin(Plugin):
+        plugin_name = "custom"
+        session_class = PluginSession
+        ui_config = {
+            "icon": "🔧",
+            "title": "Custom Plugin",
+            "description": "A custom plugin"
+        }
+
+    app = FastAPI()
+    plugin = CustomPlugin(app, "custom")
+
+    request = Mock(spec=Request)
+    response = await plugin.get_ui_config(request)
+
+    import json
+    data = json.loads(response.body)
+
+    assert data['plugin_name'] == 'custom'
+    assert data['ui']['icon'] == '🔧'
+    assert data['ui']['title'] == 'Custom Plugin'
+
+
+def test_plugin_ui_config_default():
+    '''
+    Test that ui_config has a sensible default (None).
+    '''
+    app = FastAPI()
+    plugin = Plugin(app, "test_plugin")
+
+    # Default should be None
+    assert plugin.ui_config is None
+
+
 if __name__ == '__main__':
 
     test_plugin_initialization()
