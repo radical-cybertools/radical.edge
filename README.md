@@ -64,6 +64,38 @@ Inherits from `PluginSession`. Represents a stateful context for a specific plug
 ### 3. Client API Shim (`client.py`)
 Inherits from `PluginClient`. An abstraction layer enabling local Python developers to effortlessly instantiate new sessions and seamlessly invoke the REST API operations behind native Python instance methods (without manually unpacking JSON responses).
 
+## Programming with Radical Edge
+
+You can interact with Edge services pragmatically using the Python `BridgeClient` SDK. Example scripts reside in the `examples/` directory.
+
+### Submitting PsiJ Jobs
+The `psij` plugin exposes a normalized interface for interacting with different HPC batch system schedulers via PSI/J.
+
+```python
+job_spec = {
+    "executable": "/bin/sleep",
+    "arguments": ["5"],
+    "attributes": {
+        "queue_name": "debug",    # Batch queue
+        "account": "my_account",  # Target allocation
+        "duration": "100",        # Walltime in seconds
+        # You can also pass custom scheduling constraints directly:
+        "slurm.constraint": "V100"
+    }
+}
+pi = ec.get_plugin('psij')
+pi.submit_job(job_spec)
+```
+
+### Accessing Queue Info
+You can query batch scheduling resources programmatically to auto-discover appropriate queues and limits before job submission.
+
+```python
+qi = ec.get_plugin('queue_info')
+info = qi.get_info()           # Returns cluster hardware topologies and queue states
+allocs = qi.list_allocations() # Returns active account allocations for the user
+```
+
 ## Portal Integration
 
 The interactive Portal interface (`examples/edge_explorer.html`) serves as a comprehensive browser client showcasing direct interaction with the Bridge HTTP interface.

@@ -133,8 +133,14 @@ class QueueInfo(ABC):
     def list_allocations(self, user=None, force=False):
         """
         List allocations/projects.  If user is set, filter to that user.
-        When user=None, returns both account-level and per-user rows.
+        When user=None, defaults to the current user. To return all
+        rows, pass user='*'.
         """
+        if user is None:
+            import getpass
+            user = getpass.getuser()
+        elif user == '*':
+            user = None
 
         key = f'alloc:{user}'
         return self._get_cached(key, force, self._collect_allocations, user)

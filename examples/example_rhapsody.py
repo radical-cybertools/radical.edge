@@ -58,6 +58,9 @@ def main():
     ]
 
     # ---- submit ----
+    # To submit to a specific Rhapsody backend (e.g., dragon, flux), you can
+    # pass the `backend` argument. E.g.:
+    # submitted = rh.submit_tasks(tasks, backend="dragon_v3")
     print(f"\nSubmitting {len(tasks)} tasks ...")
     submitted = rh.submit_tasks(tasks)
 
