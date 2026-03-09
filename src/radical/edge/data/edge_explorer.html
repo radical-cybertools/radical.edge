@@ -1286,7 +1286,7 @@
       // Check for pending state update that arrived before registration
       const pendingKey = `${edgeName}/${plugin}/${id}`;
       const pending = pendingStateUpdates[pendingKey];
-      const initialState = pending ? pending.state : 'SUBMITTED';
+      const initialState = pending ? pending.state : 'PENDING';
       if (pending) delete pendingStateUpdates[pendingKey];
 
       taskRegistry[edgeName][plugin][id] = { state: initialState, label };
@@ -1605,7 +1605,7 @@
         const prefix = pluginName === 'psij' ? 'psij-job' : pluginName === 'rhapsody' ? 'rh-task' : `${pluginName}-task`;
         const entryId = `${prefix}-${edgeName}-${taskId}`;
         const icon = ui.icon || '🔌';
-        const state = r[stateField] || 'SUBMITTED';
+        const state = r[stateField] || 'PENDING';
 
         const taskEntry = document.createElement('details');
         taskEntry.className = 'task-entry';
@@ -2917,9 +2917,10 @@
       const ts = new Date().toLocaleTimeString();
       const stateUpper = (state || '').toUpperCase();
       const isOk = ['DONE', 'COMPLETED'].some(s => stateUpper.includes(s));
+      const isRunning = stateUpper.includes('RUNNING') || stateUpper.includes('ACTIVE');
       const isFailed = ['FAILED', 'ERROR', 'CANCELED'].some(s => stateUpper.includes(s));
 
-      stateEl.className = `${config.stateClass} badge ${isOk ? 'badge-green' : isFailed ? 'badge-red' : 'badge-orange'}`;
+      stateEl.className = `${config.stateClass} badge ${isOk ? 'badge-green' : isRunning ? 'badge-blue' : isFailed ? 'badge-red' : 'badge-orange'}`;
       stateEl.textContent = state;
 
       const rc = d.exit_code ?? d.retval ?? '?';
@@ -3022,7 +3023,7 @@
           <summary>
             <span class="task-summary-content">
               <strong style="margin-right:6px;">🚀 ${jobId.slice(0, 8)}…</strong>
-              <span class="psij-job-state badge badge-orange" style="font-size:.65rem;padding:1px 4px;">SUBMITTED</span>
+              <span class="psij-job-state badge badge-orange" style="font-size:.65rem;padding:1px 4px;">PENDING</span>
               <code style="font-size:0.8em;color:var(--muted);margin-left:8px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${exec} ${args.join(' ')}</code>
             </span>
           </summary>
@@ -3086,7 +3087,7 @@
             <summary>
               <span class="task-summary-content">
                 <strong style="margin-right:6px;">🎼 ${uid.slice(0, 12)}…</strong>
-                <span class="rh-task-state badge badge-orange" style="font-size:.65rem;padding:1px 4px;">SUBMITTED</span>
+                <span class="rh-task-state badge badge-orange" style="font-size:.65rem;padding:1px 4px;">PENDING</span>
                 <code style="font-size:0.8em;color:var(--muted);margin-left:8px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${exec} ${args.join(' ')}</code>
               </span>
             </summary>

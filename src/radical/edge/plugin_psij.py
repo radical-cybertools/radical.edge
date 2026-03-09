@@ -20,15 +20,21 @@ from .client import PluginClient
 
 log = logging.getLogger("radical.edge")
 
+# Default poll interval for job status updates (in seconds)
+PSIJ_POLL_INTERVAL = 10.0
+
 
 class PSIJSession(PluginSession):
     '''
     Session-specific PSIJ state.
     '''
 
+    poll_interval = PSIJ_POLL_INTERVAL
+
     def __init__(self, sid: str, **kwargs: Any):
         super().__init__(sid)
         self._jobs: Dict[str, Any] = {}  # local job cache: job_id -> psij.Job
+        self._poll_interval = kwargs.get('poll_interval', self.poll_interval)
 
     async def submit_job(self, job_spec_dict: Dict[str, Any], executor_name: str = 'local') -> Dict[str, Any]:
         '''
@@ -75,19 +81,36 @@ class PSIJSession(PluginSession):
 
             ex = psij.JobExecutor.get_instance(executor_name)
 
+            # Set poll interval for status updates
+            if hasattr(ex, 'poll_interval'):
+                ex.poll_interval = self._poll_interval
+
             ex.submit(job)
 
             self._jobs[job.id] = job
 
-            # Register a status callback to push notifications on terminal state
+            # Register a status callback to push notifications on state changes
             notify = self._notify
             job_id = job.id
+            last_state = [None]  # Use list to allow mutation in closure
+
             def _on_status(j, status):
-                if str(status.state) in ('COMPLETED', 'FAILED', 'CANCELED',
-                                         'JobState.COMPLETED', 'JobState.FAILED',
-                                         'JobState.CANCELED'):
-                    stdout_content = ""
-                    stderr_content = ""
+                state_str = str(status.state)
+                # Normalize state string (remove 'JobState.' prefix if present)
+                if state_str.startswith('JobState.'):
+                    state_str = state_str[9:]
+
+                # Skip if state hasn't changed
+                if state_str == last_state[0]:
+                    return
+                last_state[0] = state_str
+
+                # Check if this is a terminal state
+                is_terminal = state_str in ('COMPLETED', 'FAILED', 'CANCELED')
+
+                stdout_content = ""
+                stderr_content = ""
+                if is_terminal:
                     try:
                         sp = getattr(j.spec, 'stdout_path', None)
                         if sp and os.path.exists(str(sp)):
@@ -103,14 +126,14 @@ class PSIJSession(PluginSession):
                     except Exception:
                         pass
 
-                    if notify:
-                        notify("job_status", {
-                            "job_id":    job_id,
-                            "state":     str(status.state),
-                            "exit_code": status.exit_code,
-                            "stdout":    stdout_content,
-                            "stderr":    stderr_content
-                        })
+                if notify:
+                    notify("job_status", {
+                        "job_id":    job_id,
+                        "state":     state_str,
+                        "exit_code": status.exit_code if is_terminal else None,
+                        "stdout":    stdout_content,
+                        "stderr":    stderr_content
+                    })
 
             job.set_job_status_callback(_on_status)
 
