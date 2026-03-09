@@ -639,9 +639,18 @@
     /* QueueInfo expands fully - scrolling happens on main pane */
     .queueinfo-content,
     .monitor-area.queueinfo-content {
-      max-height: none;
-      overflow-y: visible;
+      max-height: none !important;
+      overflow-y: visible !important;
       overflow-x: auto;
+      background: transparent;
+      border: none;
+      padding: 0;
+    }
+    /* Remove card wrapper styling for queue_info monitor */
+    .partitions-card {
+      background: transparent;
+      border: none;
+      padding: 0;
     }
 
     /* task entries in job monitor */
@@ -1640,7 +1649,18 @@
               if (pluginName === 'sysinfo') {
                 content.innerHTML = renderSysinfo(data);
               } else if (pluginName === 'queue_info') {
-                content.innerHTML = renderQueueInfo(data, edgeName, sid, ns);
+                // Fetch allocations to go with queue info
+                let allocs = { allocations: [] };
+                try {
+                  allocs = await apiFetch(`${ns}/list_allocations/${sid}`);
+                } catch (e) { console.warn("Could not fetch allocations:", e); }
+
+                const queuesObj = data.partitions || data.queues || data || {};
+                const queues = Array.isArray(queuesObj) ? queuesObj : Object.values(queuesObj);
+                const allocations = allocs.allocations || [];
+                queueDataCache[edgeName] = { queues, allocations };
+
+                content.innerHTML = renderQueueInfo(queues, allocations, edgeName, sid, ns);
               } else {
                 content.innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
               }
