@@ -69,7 +69,9 @@ class QueueInfoSession(PluginSession):
 
         Args:
             queue (str): Partition name.
-            user (str): Optional user name to filter on.
+            user (str): User to filter jobs for. When None (default),
+                defaults to the current user. Pass user='*' to return all
+                jobs (admin view).
             force (bool): Bypass cache if True.
 
         Returns:
@@ -127,6 +129,16 @@ class QueueInfoClient(PluginClient):
     def list_jobs(self, queue: str, user: str = None, force: bool = False) -> dict:
         """
         List jobs in a specified queue/partition.
+
+        Args:
+            queue (str): Partition name to list jobs for.
+            user (str): User to filter jobs for. When None (default),
+                uses the edge service user. Pass user='*' to return all
+                jobs (admin view).
+            force (bool): Bypass cache if True.
+
+        Returns:
+            dict: Job listing filtered by user.
         """
         if not self.sid:
             raise RuntimeError("No active session")

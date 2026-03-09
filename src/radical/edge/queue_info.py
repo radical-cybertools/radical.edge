@@ -141,7 +141,24 @@ class QueueInfo(ABC):
 
 
     def list_jobs(self, queue, user=None, force=False):
-        """List jobs in a queue.  If user is set, filter to that user."""
+        """
+        List jobs in a queue.
+
+        Args:
+            queue (str): Partition name to list jobs for.
+            user (str): User to filter jobs for. When None (default),
+                defaults to the current user. Pass user='*' to return all
+                jobs (admin view).
+            force (bool): Bypass cache if True.
+
+        Returns:
+            dict: {"jobs": [<job_dict>, ...]}
+        """
+        if user is None:
+            import getpass
+            user = getpass.getuser()
+        elif user == '*':
+            user = None
 
         key = f'jobs:{queue}:{user}'
         return self._get_cached(key, force, self._collect_jobs, queue, user)

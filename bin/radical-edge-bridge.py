@@ -5,7 +5,6 @@ import base64
 import json
 import logging
 import os
-import traceback
 import uuid
 
 from typing  import Dict, Any
@@ -19,6 +18,9 @@ from starlette.responses     import StreamingResponse
 from starlette.websockets    import WebSocketState
 
 log = logging.getLogger("radical.edge.bridge")
+
+# Global shutdown event for graceful termination
+shutdown_event: asyncio.Event = None
 
 
 app = FastAPI(
@@ -120,6 +122,23 @@ REQUEST_TIMEOUT    = 45
 clients_sse: set = set()
 
 
+@app.on_event("startup")
+async def startup_event():
+    """Initialize the shutdown event on startup."""
+    global shutdown_event
+    shutdown_event = asyncio.Event()
+
+
+@app.on_event("shutdown")
+async def shutdown_handler():
+    """Signal all tasks to shutdown gracefully."""
+    if shutdown_event:
+        shutdown_event.set()
+    # Wake up all SSE clients so they can exit
+    for q in list(clients_sse):
+        await q.put(None)  # Sentinel to signal shutdown
+
+
 async def broadcast_event(topic: str, data: dict):
     msg = json.dumps({"topic": topic, "data": data})
     formatted = f"data: {msg}\n\n"
@@ -145,8 +164,16 @@ async def register(ws: WebSocket):
 
     # Heartbeat
     async def pinger():
-        while True:
-            await asyncio.sleep(HEARTBEAT_INTERVAL)
+        elapsed = 0
+        while not (shutdown_event and shutdown_event.is_set()):
+            try:
+                await asyncio.sleep(1.0)
+                elapsed += 1
+            except asyncio.CancelledError:
+                return
+            if elapsed < HEARTBEAT_INTERVAL:
+                continue
+            elapsed = 0
             if ws.client_state != WebSocketState.CONNECTED:
                 return
             try:
@@ -160,8 +187,11 @@ async def register(ws: WebSocket):
         # start the ping task - it will run as long as the endpoint is connected
         ping_task = asyncio.create_task(pinger())
 
-        while True:
-            msg = await ws.receive_text()
+        while not (shutdown_event and shutdown_event.is_set()):
+            try:
+                msg = await asyncio.wait_for(ws.receive_text(), timeout=1.0)
+            except asyncio.TimeoutError:
+                continue  # Check shutdown_event again
             data = json.loads(msg)
 
             if data.get("type") == "pong":
@@ -303,14 +333,19 @@ async def sse_events(request: Request):
 
     async def event_generator():
         try:
-            while True:
-                # wait for new messages
-                msg = await q.get()
-                yield msg
+            while not (shutdown_event and shutdown_event.is_set()):
+                try:
+                    # Use timeout to periodically check shutdown status
+                    msg = await asyncio.wait_for(q.get(), timeout=1.0)
+                    if msg is None:  # Shutdown sentinel
+                        break
+                    yield msg
+                except asyncio.TimeoutError:
+                    continue  # Check shutdown_event again
         except asyncio.CancelledError:
             pass
         finally:
-            clients_sse.remove(q)
+            clients_sse.discard(q)
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 

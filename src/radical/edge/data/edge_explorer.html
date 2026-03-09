@@ -908,6 +908,108 @@
       color: var(--muted);
       line-height: 1.5;
     }
+
+    /* Overlay / Modal */
+    .overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.6);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity 0.2s, visibility 0.2s;
+    }
+    .overlay.visible {
+      opacity: 1;
+      visibility: visible;
+    }
+    .overlay-content {
+      background: var(--card-bg);
+      border-radius: 8px;
+      max-width: 90vw;
+      max-height: 85vh;
+      min-width: 500px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+    }
+    .overlay-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      background: var(--sidebar-bg);
+    }
+    .overlay-header h3 {
+      margin: 0;
+      font-size: 1rem;
+    }
+    .overlay-close {
+      background: none;
+      border: none;
+      font-size: 1.3rem;
+      cursor: pointer;
+      color: var(--muted);
+      padding: 4px 8px;
+    }
+    .overlay-close:hover {
+      color: var(--danger);
+    }
+    .overlay-body {
+      padding: 16px;
+      overflow-y: auto;
+      flex: 1;
+    }
+    .overlay-body table {
+      width: 100%;
+    }
+    .job-row {
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .job-row:hover {
+      background: var(--hover-bg);
+    }
+    .job-row.selected {
+      background: rgba(59, 130, 246, 0.15);
+      border-left: 3px solid var(--primary);
+    }
+    .job-detail-panel {
+      background: var(--sidebar-bg);
+      border-radius: 6px;
+      padding: 12px 16px;
+      margin-top: 12px;
+      font-size: 0.85rem;
+    }
+    .job-detail-panel h4 {
+      margin: 0 0 10px 0;
+      font-size: 0.95rem;
+    }
+    .job-detail-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 8px 16px;
+    }
+    .job-detail-item {
+      display: flex;
+      flex-direction: column;
+    }
+    .job-detail-item .label {
+      font-size: 0.75rem;
+      color: var(--muted);
+      text-transform: uppercase;
+    }
+    .job-detail-item .value {
+      font-weight: 500;
+    }
   </style>
 </head>
 
@@ -1125,6 +1227,19 @@
 
   <!-- Toast notification container -->
   <div id="toast-container"></div>
+
+  <!-- Jobs overlay modal -->
+  <div id="jobs-overlay" class="overlay" onclick="if(event.target===this) hideJobsOverlay()">
+    <div class="overlay-content">
+      <div class="overlay-header">
+        <h3 id="jobs-overlay-title">📄 Jobs</h3>
+        <button class="overlay-close" onclick="hideJobsOverlay()">✕</button>
+      </div>
+      <div class="overlay-body" id="jobs-overlay-body">
+        <!-- Job list will be inserted here -->
+      </div>
+    </div>
+  </div>
 
   <script>
     // ─────────────────────────────────────────────────────────────
@@ -2565,29 +2680,152 @@
       return html;
     }
 
+    // Store current jobs for detail view
+    let currentJobsData = [];
+
+    function showJobsOverlay() {
+      document.getElementById('jobs-overlay').classList.add('visible');
+    }
+
+    function hideJobsOverlay() {
+      document.getElementById('jobs-overlay').classList.remove('visible');
+    }
+
+    function formatTimestamp(ts) {
+      if (!ts || ts === 0) return '-';
+      // Handle Unix timestamp (seconds)
+      const date = new Date(ts * 1000);
+      if (isNaN(date.getTime())) return '-';
+      return date.toLocaleString();
+    }
+
+    function formatDuration(seconds) {
+      if (!seconds || seconds <= 0) return '-';
+      const h = Math.floor(seconds / 3600);
+      const m = Math.floor((seconds % 3600) / 60);
+      const s = seconds % 60;
+      if (h > 0) return `${h}h ${m}m ${s}s`;
+      if (m > 0) return `${m}m ${s}s`;
+      return `${s}s`;
+    }
+
+    function showJobDetail(jobId) {
+      const job = currentJobsData.find(j => (j.job_id || j.id) === jobId);
+      if (!job) return;
+
+      const detailPanel = document.getElementById('job-detail-panel');
+      if (!detailPanel) return;
+
+      const st = job.state || job.job_state || '-';
+      const badge = { 'RUNNING': 'badge-green', 'PENDING': 'badge-orange', 'COMPLETED': 'badge-blue', 'FAILED': 'badge-red' }[st] || 'badge-gray';
+
+      detailPanel.innerHTML = `
+        <h4>📋 Job Details: ${job.job_id || job.id || '-'}</h4>
+        <div class="job-detail-grid">
+          <div class="job-detail-item">
+            <span class="label">Job Name</span>
+            <span class="value">${job.job_name || job.name || '-'}</span>
+          </div>
+          <div class="job-detail-item">
+            <span class="label">State</span>
+            <span class="value"><span class="badge ${badge}">${st}</span></span>
+          </div>
+          <div class="job-detail-item">
+            <span class="label">User</span>
+            <span class="value">${job.user || job.user_name || '-'}</span>
+          </div>
+          <div class="job-detail-item">
+            <span class="label">Partition</span>
+            <span class="value">${job.partition || '-'}</span>
+          </div>
+          <div class="job-detail-item">
+            <span class="label">Account</span>
+            <span class="value">${job.account || '-'}</span>
+          </div>
+          <div class="job-detail-item">
+            <span class="label">Nodes</span>
+            <span class="value">${job.nodes || job.num_nodes || '-'}</span>
+          </div>
+          <div class="job-detail-item">
+            <span class="label">CPUs</span>
+            <span class="value">${job.cpus || '-'}</span>
+          </div>
+          <div class="job-detail-item">
+            <span class="label">Node List</span>
+            <span class="value">${job.node_list || '-'}</span>
+          </div>
+          <div class="job-detail-item">
+            <span class="label">Submit Time</span>
+            <span class="value">${formatTimestamp(job.submit_time)}</span>
+          </div>
+          <div class="job-detail-item">
+            <span class="label">Start Time</span>
+            <span class="value">${formatTimestamp(job.start_time)}</span>
+          </div>
+          <div class="job-detail-item">
+            <span class="label">Time Limit</span>
+            <span class="value">${job.time_limit ? formatDuration(job.time_limit * 60) : '-'}</span>
+          </div>
+          <div class="job-detail-item">
+            <span class="label">Time Used</span>
+            <span class="value">${formatDuration(job.time_used)}</span>
+          </div>
+          <div class="job-detail-item">
+            <span class="label">Priority</span>
+            <span class="value">${job.priority || '-'}</span>
+          </div>
+        </div>
+      `;
+      detailPanel.style.display = 'block';
+
+      // Highlight selected row
+      document.querySelectorAll('.job-row').forEach(r => r.classList.remove('selected'));
+      const selectedRow = document.querySelector(`.job-row[data-job-id="${jobId}"]`);
+      if (selectedRow) selectedRow.classList.add('selected');
+    }
+
     async function loadQueueJobs(edgeName, sid, ns, queue, btn) {
       btn.disabled = true; btn.textContent = '…';
       try {
         const data = await apiFetch(`${ns}/list_jobs/${sid}/${encodeURIComponent(queue)}`);
         const jobs = data.jobs || data || [];
-        const area = document.getElementById('qi-jobs-area');
+        currentJobsData = jobs;
+
+        const title = document.getElementById('jobs-overlay-title');
+        const body = document.getElementById('jobs-overlay-body');
+
+        title.textContent = `📄 Jobs in ${queue}`;
+
         if (!jobs.length) {
-          area.innerHTML = `<div class="card"><p style="color:var(--muted)">No jobs in <strong>${queue}</strong>.</p></div>`;
+          body.innerHTML = `<p style="color:var(--muted)">No jobs found in <strong>${queue}</strong> for current user.</p>`;
+          showJobsOverlay();
           return;
         }
-        let html = `<div class="card"><div class="card-title">📄 Jobs in ${queue}</div><table>
-      <thead><tr><th>Job ID</th><th>Name</th><th>User</th><th>State</th><th>Nodes</th><th>Time</th></tr></thead><tbody>`;
+
+        let html = `<table>
+          <thead><tr>
+            <th>Job ID</th><th>Name</th><th>User</th><th>State</th><th>Nodes</th><th>Time Used</th>
+          </tr></thead><tbody>`;
+
         for (const j of jobs) {
+          const jobId = j.job_id || j.id || '-';
           const st = j.state || j.job_state || '-';
           const badge = { 'RUNNING': 'badge-green', 'PENDING': 'badge-orange', 'COMPLETED': 'badge-blue', 'FAILED': 'badge-red' }[st] || 'badge-gray';
-          html += `<tr>
-        <td>${j.job_id || j.id || '-'}</td><td>${j.name || '-'}</td><td>${j.user_id || j.user || '-'}</td>
-        <td><span class="badge ${badge}">${st}</span></td>
-        <td>${j.num_nodes || j.nodes || '-'}</td><td>${j.run_time || j.time || '-'}</td>
-      </tr>`;
+          html += `<tr class="job-row" data-job-id="${jobId}" onclick="showJobDetail('${jobId}')">
+            <td><strong>${jobId}</strong></td>
+            <td>${j.job_name || j.name || '-'}</td>
+            <td>${j.user || j.user_name || '-'}</td>
+            <td><span class="badge ${badge}">${st}</span></td>
+            <td>${j.nodes || j.num_nodes || '-'}</td>
+            <td>${formatDuration(j.time_used)}</td>
+          </tr>`;
         }
-        html += '</tbody></table></div>';
-        area.innerHTML = html;
+        html += '</tbody></table>';
+        html += '<div id="job-detail-panel" class="job-detail-panel" style="display:none;"></div>';
+
+        body.innerHTML = html;
+        showJobsOverlay();
+
       } catch (e) {
         flash('Error loading jobs: ' + e.message, false);
       } finally {
@@ -2882,6 +3120,16 @@
         }
       });
     })();
+
+    // Keyboard handler for overlay (Escape to close)
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape') {
+        const overlay = document.getElementById('jobs-overlay');
+        if (overlay && overlay.classList.contains('visible')) {
+          hideJobsOverlay();
+        }
+      }
+    });
 
     // Auto-fill form and auto-connect if served from bridge (HTTP/HTTPS).
     if (window.location.protocol.startsWith('http')) {
