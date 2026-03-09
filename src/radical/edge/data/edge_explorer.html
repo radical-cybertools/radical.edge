@@ -1052,7 +1052,7 @@
           <div class="grid2">
             <div>
               <div class="form-group"><label>Executable</label><input class="p-exec" type="text"
-                  value="radical-edge-service.py" />
+                  value="radical-edge-wrapper.sh" />
               </div>
               <div class="form-group"><label>Arguments (space-separated)</label><input class="p-args" type="text"
                   value="" placeholder="auto-filled with --url and --name" /></div>
@@ -1074,6 +1074,15 @@
                   placeholder="e.g. 600" /></div>
             </div>
           </div>
+            </div>
+          </div>
+          
+          <div class="card-title" style="margin-top: 15px; font-size: 0.85rem;">🔧 Custom Attributes</div>
+          <div class="psij-attributes-container" style="margin-bottom: 14px;">
+            <div class="psij-attribute-rows"></div>
+            <button class="btn btn-secondary btn-sm" onclick="addPsijAttributeRow(this)" style="margin-top:8px;">➕ Add Attribute</button>
+          </div>
+          
           <button class="btn btn-success" onclick="submitPsijJob(this)">🚀 Submit Job</button>
         </div>
         <div class="card psij-jobs-card">
@@ -1124,6 +1133,7 @@
     let eventSource = null;
     const sessions = {};   // key: "edgeName/pluginName" -> sid
     const edgeData = {};   // edgeName -> plugin info from /edge/list
+    const queueDataCache = {}; // edgeName -> { queues: {...}, allocations: [...] }
 
     // Task registry: taskRegistry[edgeName][pluginName] = { id: {state, label, ...} }
     const taskRegistry = {};
@@ -2227,6 +2237,48 @@
         const childName = getNextEdgeChildName(edgeName);
         argsInput.value = `--url ${url} --name ${childName}`;
       }
+      
+      // Populate Queue/Account selectors from cache if available
+      const qCache = queueDataCache[edgeName];
+      if (qCache) {
+        const queueInput = page.querySelector('.p-queue');
+        if (queueInput && queueInput.tagName === 'INPUT') {
+          const select = document.createElement('select');
+          select.className = 'p-queue';
+          
+          const qList = Object.values(qCache.queues || {});
+          const getQName = q => q.name || q.partition || q;
+          
+          // Priority selection logic: debug > interactive > first available
+          const pb = qList.find(q => getQName(q) === 'debug');
+          const pi = qList.find(q => getQName(q) === 'interactive');
+          const defaultQ = (pb || pi || qList[0]);
+          const defaultQName = defaultQ ? getQName(defaultQ) : "";
+          
+          select.innerHTML = '<option value="">(none)</option>' + qList.map(q => {
+            const qn = getQName(q);
+            return `<option value="${qn}" ${qn === defaultQName ? 'selected' : ''}>${qn}</option>`;
+          }).join('');
+          queueInput.parentNode.replaceChild(select, queueInput);
+        }
+        
+        const accountInput = page.querySelector('.p-account');
+        if (accountInput && accountInput.tagName === 'INPUT') {
+          const select = document.createElement('select');
+          select.className = 'p-account';
+          
+          // Extract unique accounts
+          const accountSet = new Set();
+          (qCache.allocations || []).forEach(a => {
+            if (a.account) accountSet.add(a.account);
+          });
+          const accounts = Array.from(accountSet);
+          const defaultAcc = accounts.length > 0 ? accounts[0] : "";
+          
+          select.innerHTML = '<option value="">(none)</option>' + accounts.map(a => `<option value="${a}" ${a === defaultAcc ? 'selected' : ''}>${a}</option>`).join('');
+          accountInput.parentNode.replaceChild(select, accountInput);
+        }
+      }
     }
 
     function updateEdgeLaunchArgs(page, edgeName, selector) {
@@ -2398,8 +2450,17 @@
       try {
         const sid = await registerSession(edgeName, 'queue_info');
         const ns = getNs(edgeName, 'queue_info');
-        const info = await apiFetch(`${ns}/get_info/${sid}`);
-        content.innerHTML = renderQueueInfo(info, edgeName, sid, ns);
+        const [info, allocs] = await Promise.all([
+          apiFetch(`${ns}/get_info/${sid}`),
+          apiFetch(`${ns}/list_allocations/${sid}`)
+        ]);
+        
+        const queuesObj = info.partitions || info.queues || info || {};
+        const queues = Array.isArray(queuesObj) ? queuesObj : Object.values(queuesObj);
+        const allocations = allocs.allocations || [];
+        queueDataCache[edgeName] = { queues, allocations };
+        
+        content.innerHTML = renderQueueInfo(queues, allocations, edgeName, sid, ns);
       } catch (e) {
         content.innerHTML = `<div class="card"><p style="color:var(--danger)">Error: ${e.message}</p></div>`;
         flash('QueueInfo error: ' + e.message, false);
@@ -2411,32 +2472,50 @@
       autoLoadQueueInfo(page);
     }
 
-    function renderQueueInfo(info, edgeName, sid, ns) {
-      const partitions = info.partitions || info.queues || info || [];
+    function renderQueueInfo(partitions, allocations, edgeName, sid, ns) {
+      let html = "";
+      
       if (!Array.isArray(partitions) || !partitions.length) {
-        return `<div class="card"><p style="color:var(--muted)">No partition data returned. Raw response:</p>
-      <div class="output-box" style="margin-top:10px">${JSON.stringify(info, null, 2)}</div></div>`;
+        html += `<div class="card"><p style="color:var(--muted)">No partition data returned.</p></div>`;
+      } else {
+        html += `<div class="card"><div class="card-title">📋 Partitions / Queues</div>
+      <table><thead><tr><th>Name</th><th>State</th><th>Nodes</th><th>CPUs</th><th>Jobs</th><th>Actions</th></tr></thead><tbody>`;
+
+        for (const p of partitions) {
+          const name = p.name || p.partition || JSON.stringify(p).slice(0, 30);
+          const state = p.state || p.avail || '-';
+          const stateBadge = state.toLowerCase().includes('up') ? 'badge-green' : 'badge-orange';
+          html += `<tr>
+        <td><strong>${name}</strong></td>
+        <td><span class="badge ${stateBadge}">${state}</span></td>
+        <td>${p.nodes || p.total_nodes || '-'}</td>
+        <td>${p.cpus || p.total_cpus || '-'}</td>
+        <td>${p.jobs || '-'}</td>
+        <td><button class="btn btn-secondary btn-sm"
+            onclick="loadQueueJobs('${edgeName}','${sid}','${ns}','${name}',this)">
+            View Jobs</button></td>
+      </tr>`;
+        }
+        html += '</tbody></table></div>';
+      }
+      
+      if (Array.isArray(allocations) && allocations.length > 0) {
+        html += `<div class="card"><div class="card-title">💼 Allocations / Projects</div>
+      <table><thead><tr><th>Account</th><th>User</th><th>Fairshare</th><th>QoS</th><th>Max Jobs</th></tr></thead><tbody>`;
+
+        for (const a of allocations) {
+          html += `<tr>
+        <td><strong>${a.account || '-'}</strong></td>
+        <td>${a.user || '-'}</td>
+        <td>${a.fairshare || '-'}</td>
+        <td><span class="badge badge-gray">${a.qos || '-'}</span></td>
+        <td>${a.max_jobs || '-'}</td>
+      </tr>`;
+        }
+        html += '</tbody></table></div>';
       }
 
-      let html = `<div class="card"><div class="card-title">📋 Partitions / Queues</div>
-    <table><thead><tr><th>Name</th><th>State</th><th>Nodes</th><th>CPUs</th><th>Jobs</th><th>Actions</th></tr></thead><tbody>`;
-
-      for (const p of partitions) {
-        const name = p.name || p.partition || JSON.stringify(p).slice(0, 30);
-        const state = p.state || p.avail || '-';
-        const stateBadge = state.toLowerCase().includes('up') ? 'badge-green' : 'badge-orange';
-        html += `<tr>
-      <td><strong>${name}</strong></td>
-      <td><span class="badge ${stateBadge}">${state}</span></td>
-      <td>${p.nodes || p.total_nodes || '-'}</td>
-      <td>${p.cpus || p.total_cpus || '-'}</td>
-      <td>${p.jobs || '-'}</td>
-      <td><button class="btn btn-secondary btn-sm"
-          onclick="loadQueueJobs('${edgeName}','${sid}','${ns}','${name}',this)">
-          View Jobs</button></td>
-    </tr>`;
-      }
-      html += '</tbody></table></div><div id="qi-jobs-area"></div>';
+      html += '<div id="qi-jobs-area"></div>';
       return html;
     }
 
@@ -2563,6 +2642,20 @@
       return `${edgeName}.${psijEdgeCounters[edgeName]}`;
     }
 
+    function addPsijAttributeRow(btn) {
+      const container = btn.previousElementSibling;
+      const row = document.createElement('div');
+      row.style.display = 'flex';
+      row.style.gap = '10px';
+      row.style.marginBottom = '8px';
+      row.innerHTML = `
+        <input class="p-attr-key" type="text" placeholder="Key (e.g. slurm.constraint)" style="flex:1;" />
+        <input class="p-attr-val" type="text" placeholder="Value (e.g. cpu_gen_1)" style="flex:2;" />
+        <button class="btn btn-secondary btn-sm" onclick="this.parentElement.remove()" style="padding: 4px 10px;">❌</button>
+      `;
+      container.appendChild(row);
+    }
+
     async function submitPsijJob(btn) {
       const page = btn.closest('.page');
       const edgeName = page.dataset.edgeName;
@@ -2579,6 +2672,15 @@
       if (queue) job_spec.attributes.queue_name = queue;
       if (account) job_spec.attributes.project_name = account;
       if (duration) job_spec.attributes.duration = duration;
+
+      const attrRows = page.querySelectorAll('.psij-attribute-rows > div');
+      attrRows.forEach(row => {
+        const key = row.querySelector('.p-attr-key').value.trim();
+        const val = row.querySelector('.p-attr-val').value.trim();
+        if (key && val) {
+          job_spec.attributes[key] = val;
+        }
+      });
 
       // Clear placeholder
       if (output.textContent === 'No jobs submitted yet.') output.innerHTML = '';
