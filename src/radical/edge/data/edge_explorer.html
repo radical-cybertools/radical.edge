@@ -636,6 +636,14 @@
       max-height: none;
     }
 
+    /* QueueInfo expands fully - scrolling happens on main pane */
+    .queueinfo-content,
+    .monitor-area.queueinfo-content {
+      max-height: none;
+      overflow-y: visible;
+      overflow-x: auto;
+    }
+
     /* task entries in job monitor */
     .task-entry {
       margin: 0;
@@ -1492,7 +1500,7 @@
           executor: rawData.executor || 'local'
         };
         if (rawData.queue) data.job_spec.attributes.queue_name = rawData.queue;
-        if (rawData.account) data.job_spec.attributes.project_name = rawData.account;
+        if (rawData.account) data.job_spec.attributes.account = rawData.account;
         if (rawData.duration) data.job_spec.attributes.duration = rawData.duration;
         if (rawData.node_count) data.job_spec.attributes.node_count = parseInt(rawData.node_count, 10);
 
@@ -2956,7 +2964,7 @@
 
       const job_spec = { executable: exec, arguments: args, attributes: {} };
       if (queue) job_spec.attributes.queue_name = queue;
-      if (account) job_spec.attributes.project_name = account;
+      if (account) job_spec.attributes.account = account;
       if (duration) job_spec.attributes.duration = duration;
       if (nodeCount) job_spec.attributes.node_count = parseInt(nodeCount, 10);
 
