@@ -46,18 +46,22 @@ class QueueInfoSession(PluginSession):
         self._backend = None
         return await super().close()
 
-    async def get_info(self, force=False):
+    async def get_info(self, user=None, force=False):
         """
         Return queue/partition info.
 
         Args:
+            user (str): User to filter partitions for. When None (default),
+                defaults to the current user. Pass user='*' to return all
+                partitions (admin view).
             force (bool): Bypass cache if True.
 
         Returns:
             dict: Queue information from the backend.
         """
         self._check_active()
-        return await asyncio.to_thread(self._backend.get_info, force)
+        return await asyncio.to_thread(self._backend.get_info,
+                                       user=user, force=force)
 
     async def list_jobs(self, queue, user=None, force=False):
         """
@@ -96,15 +100,26 @@ class QueueInfoClient(PluginClient):
     Client-side interface for the QueueInfo plugin.
     """
 
-    def get_info(self, force: bool = False) -> dict:
+    def get_info(self, user: str = None, force: bool = False) -> dict:
         """
         Return queue/partition information.
+
+        Args:
+            user (str): User to filter partitions for. When None (default),
+                uses the edge service user. Pass user='*' to return all
+                partitions (admin view).
+            force (bool): Bypass cache if True.
+
+        Returns:
+            dict: Queue information filtered by user access.
         """
         if not self.sid:
             raise RuntimeError("No active session")
 
         url = self._url(f"get_info/{self.sid}")
         params = {"force": str(force).lower()}
+        if user:
+            params["user"] = user
         resp = self._http.get(url, params=params)
         resp.raise_for_status()
         return resp.json()
@@ -206,10 +221,11 @@ class PluginQueueInfo(Plugin):
         """Return queue/partition information."""
         data = request.path_params
         sid = data['sid']
+        user = request.query_params.get('user')
         force = request.query_params.get('force', '').lower() == 'true'
 
         return await self._forward(sid, QueueInfoSession.get_info,
-                                   force=force)
+                                   user=user, force=force)
 
     async def list_jobs(self, request: Request) -> JSONResponse:
         """List jobs in a specified queue/partition."""

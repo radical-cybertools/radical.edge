@@ -1074,6 +1074,14 @@
                   placeholder="optional" /></div>
               <div class="form-group"><label>Duration (seconds)</label><input class="p-duration" type="text"
                   placeholder="e.g. 600" /></div>
+              <div class="form-group"><label>Number of Nodes</label><input class="p-node-count" type="number"
+                  placeholder="e.g. 1" /></div>
+              <div class="form-group"><label>🔧 Custom Attributes</label>
+                <div class="psij-attributes-container" style="margin-bottom: 4px;">
+                  <div class="psij-attribute-rows"></div>
+                  <button type="button" class="btn btn-secondary btn-sm" onclick="addPsijAttributeRow(this)" style="margin-top:8px;">➕ Add Attribute</button>
+                </div>
+              </div>
             </div>
           </div>
           <button class="btn btn-success" onclick="submitPsijJob(this)">🚀 Submit Job</button>
@@ -2705,11 +2713,14 @@
       const queue = page.querySelector('.p-queue').value.trim();
       const account = page.querySelector('.p-account').value.trim();
       const duration = page.querySelector('.p-duration').value.trim();
+      const nodeCountEl = page.querySelector('.p-node-count');
+      const nodeCount = nodeCountEl ? nodeCountEl.value.trim() : '';
 
       const job_spec = { executable: exec, arguments: args, attributes: {} };
       if (queue) job_spec.attributes.queue_name = queue;
       if (account) job_spec.attributes.project_name = account;
       if (duration) job_spec.attributes.duration = duration;
+      if (nodeCount) job_spec.attributes.node_count = parseInt(nodeCount, 10);
 
       const attrRows = page.querySelectorAll('.psij-attribute-rows > div');
       attrRows.forEach(row => {

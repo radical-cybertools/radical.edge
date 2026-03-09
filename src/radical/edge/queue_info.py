@@ -117,10 +117,27 @@ class QueueInfo(ABC):
         return result
 
 
-    def get_info(self, force=False):
-        """Return queue/partition info. force=True bypasses cache."""
+    def get_info(self, user=None, force=False):
+        """
+        Return queue/partition info. force=True bypasses cache.
 
-        return self._get_cached('info', force, self._collect_info)
+        Args:
+            user (str): User to filter partitions for. When None (default),
+                defaults to the current user. Pass user='*' to return all
+                partitions (admin view).
+            force (bool): Bypass cache if True.
+
+        Returns:
+            dict: {"queues": {<partition_name>: {...}, ...}}
+        """
+        if user is None:
+            import getpass
+            user = getpass.getuser()
+        elif user == '*':
+            user = None
+
+        key = f'info:{user}'
+        return self._get_cached(key, force, self._collect_info_filtered, user)
 
 
     def list_jobs(self, queue, user=None, force=False):
@@ -146,6 +163,29 @@ class QueueInfo(ABC):
         return self._get_cached(key, force, self._collect_allocations, user)
 
 
+    def _collect_info_filtered(self, user):
+        """
+        Collect queue/partition info filtered by user access.
+
+        Args:
+            user (str): User to filter for. None means no filtering.
+
+        Returns:
+            dict: {"queues": {<partition_name>: {...}, ...}}
+        """
+        info = self._collect_info()
+        if user is None:
+            return info
+
+        allowed = self._get_user_partitions(user)  # pylint: disable=E1128
+        if allowed is None:
+            # Backend doesn't support filtering, return all
+            return info
+
+        filtered = {k: v for k, v in info.get('queues', {}).items()
+                    if k in allowed}
+        return {'queues': filtered}
+
     @abstractmethod
     def _collect_info(self):
         raise NotImplementedError
@@ -157,6 +197,21 @@ class QueueInfo(ABC):
     @abstractmethod
     def _collect_allocations(self, user):
         raise NotImplementedError
+
+    def _get_user_partitions(self, user):
+        """
+        Return the set of partition names the user has access to.
+
+        Override in subclasses that support partition-level access control.
+        Return None to indicate no filtering is supported.
+
+        Args:
+            user (str): Username to check access for.
+
+        Returns:
+            set | None: Set of allowed partition names, or None if not supported.
+        """
+        return None
 
 
 class QueueInfoSlurm(QueueInfo):
@@ -342,6 +397,75 @@ class QueueInfoSlurm(QueueInfo):
             return self._collect_allocations_json(user)
         except Exception:
             return self._collect_allocations_parsable(user)
+
+    def _get_user_partitions(self, user):
+        """
+        Return the set of partition names the user has access to.
+
+        Queries sacctmgr for the user's associations and extracts allowed
+        partitions. If any association has an empty partition field, the
+        user has access to all partitions (returns None to indicate no
+        filtering).
+
+        Args:
+            user (str): Username to check access for.
+
+        Returns:
+            set | None: Set of allowed partition names, or None if user
+                has access to all partitions.
+        """
+        try:
+            partitions = self._collect_user_partitions_json(user)
+        except Exception:
+            partitions = self._collect_user_partitions_parsable(user)
+
+        # None in the set means at least one association grants access to all
+        if None in partitions:
+            return None
+
+        return partitions
+
+    def _collect_user_partitions_json(self, user):
+        """Collect user's allowed partitions via sacctmgr --json."""
+
+        cmd = ['sacctmgr', 'show', 'assoc', '--json', f'Users={user}']
+        stdout = self._run(cmd)
+        data   = json.loads(stdout)
+        assocs = data.get('associations') or data.get('association', [])
+
+        partitions = set()
+        for assoc in assocs:
+            part = assoc.get('partition', '')
+            if not part:
+                # Empty partition = access to all partitions
+                partitions.add(None)
+            else:
+                partitions.add(part)
+
+        return partitions
+
+    def _collect_user_partitions_parsable(self, user):
+        """
+        Fallback: collect user's allowed partitions via sacctmgr -P -n.
+
+        Partition is at index 3 in the output.
+        """
+
+        cmd = ['sacctmgr', 'show', 'assoc', '-P', '-n', f'Users={user}']
+        stdout = self._run(cmd)
+
+        partitions = set()
+        for line in stdout.strip().splitlines():
+            fields = line.split('|')
+            if len(fields) < 4:
+                continue
+            part = fields[3].strip()
+            if not part:
+                partitions.add(None)
+            else:
+                partitions.add(part)
+
+        return partitions
 
 
     def _collect_allocations_json(self, user):
