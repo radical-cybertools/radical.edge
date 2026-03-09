@@ -5,6 +5,7 @@ import base64
 import json
 import logging
 import os
+import signal
 import uuid
 
 from typing  import Dict, Any
@@ -122,11 +123,22 @@ REQUEST_TIMEOUT    = 45
 clients_sse: set = set()
 
 
+def _signal_handler(signum, frame):
+    """Handle SIGINT/SIGTERM by setting shutdown event immediately."""
+    print(f"\n[Bridge] Received signal {signum}, initiating shutdown...")
+    if shutdown_event:
+        shutdown_event.set()
+
+
 @app.on_event("startup")
 async def startup_event():
     """Initialize the shutdown event on startup."""
     global shutdown_event
     shutdown_event = asyncio.Event()
+
+    # Install signal handlers to trigger shutdown_event immediately
+    signal.signal(signal.SIGINT, _signal_handler)
+    signal.signal(signal.SIGTERM, _signal_handler)
 
 
 @app.on_event("shutdown")
@@ -134,9 +146,21 @@ async def shutdown_handler():
     """Signal all tasks to shutdown gracefully."""
     if shutdown_event:
         shutdown_event.set()
+
     # Wake up all SSE clients so they can exit
     for q in list(clients_sse):
-        await q.put(None)  # Sentinel to signal shutdown
+        try:
+            await q.put(None)  # Sentinel to signal shutdown
+        except Exception:
+            pass
+
+    # Close all WebSocket connections
+    for edge_name, ws in list(edges.items()):
+        try:
+            await ws.close(code=1001, reason="Server shutting down")
+        except Exception:
+            pass
+    edges.clear()
 
 
 async def broadcast_event(topic: str, data: dict):
@@ -334,6 +358,9 @@ async def sse_events(request: Request):
     async def event_generator():
         try:
             while not (shutdown_event and shutdown_event.is_set()):
+                # Check if client disconnected
+                if await request.is_disconnected():
+                    break
                 try:
                     # Use timeout to periodically check shutdown status
                     msg = await asyncio.wait_for(q.get(), timeout=1.0)
@@ -344,6 +371,8 @@ async def sse_events(request: Request):
                     continue  # Check shutdown_event again
         except asyncio.CancelledError:
             pass
+        except Exception:
+            pass  # Client disconnected or other error
         finally:
             clients_sse.discard(q)
 
@@ -576,5 +605,6 @@ if __name__ == "__main__":
                 reload=False,
                 ssl_certfile=ssl_certfile,
                 ssl_keyfile=ssl_keyfile,
-                log_level="info")
+                log_level="info",
+                timeout_graceful_shutdown=3)  # Force exit after 3 seconds
 
