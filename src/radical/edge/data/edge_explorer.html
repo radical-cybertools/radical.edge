@@ -377,12 +377,14 @@
       background: rgba(108, 99, 255, .12);
       font-weight: 700;
       color: #a5b4fc;
+      border-left: 3px solid var(--accent);
     }
 
     .tree-item.plugin {
       padding-left: 20px;
       color: var(--muted);
       font-size: .8rem;
+      border-left: 3px solid transparent;
     }
 
     .tree-item.plugin.active {
@@ -1074,15 +1076,6 @@
                   placeholder="e.g. 600" /></div>
             </div>
           </div>
-            </div>
-          </div>
-          
-          <div class="card-title" style="margin-top: 15px; font-size: 0.85rem;">🔧 Custom Attributes</div>
-          <div class="psij-attributes-container" style="margin-bottom: 14px;">
-            <div class="psij-attribute-rows"></div>
-            <button class="btn btn-secondary btn-sm" onclick="addPsijAttributeRow(this)" style="margin-top:8px;">➕ Add Attribute</button>
-          </div>
-          
           <button class="btn btn-success" onclick="submitPsijJob(this)">🚀 Submit Job</button>
         </div>
         <div class="card psij-jobs-card">
@@ -1131,12 +1124,12 @@
     // ─────────────────────────────────────────────────────────────
     let BRIDGE = '';
     let eventSource = null;
-    const sessions = {};   // key: "edgeName/pluginName" -> sid
-    const edgeData = {};   // edgeName -> plugin info from /edge/list
-    const queueDataCache = {}; // edgeName -> { queues: {...}, allocations: [...] }
+    let sessions = {};   // key: "edgeName/pluginName" -> sid
+    let edgeData = {};   // edgeName -> plugin info from /edge/list
+    let queueDataCache = {}; // edgeName -> { queues: {...}, allocations: [...] }
 
     // Task registry: taskRegistry[edgeName][pluginName] = { id: {state, label, ...} }
-    const taskRegistry = {};
+    let taskRegistry = {};
 
     // Pending notifications for elements that don't exist yet (race condition fix)
     // pendingNotifications[uid] = { data, timestamp }
@@ -1221,6 +1214,14 @@
         case 'checkbox':
           const checked = field.default === 'true' || field.default === true ? 'checked' : '';
           input = `<input class="${cssClass}" type="checkbox" ${checked} />`;
+          break;
+        case 'custom_attributes':
+          input = `
+            <div class="psij-attributes-container" style="margin-bottom: 4px;">
+              <div class="psij-attribute-rows"></div>
+              <button type="button" class="btn btn-secondary btn-sm" onclick="addPsijAttributeRow(this)" style="margin-top:8px;">➕ Add Attribute</button>
+            </div>
+          `;
           break;
         default:
           input = `<input class="${cssClass}" type="text" value="${escHtml(field.default || '')}" placeholder="${escHtml(field.placeholder || '')}" ${required ? 'required' : ''} />`;
@@ -1371,6 +1372,16 @@
         if (rawData.account) data.job_spec.attributes.project_name = rawData.account;
         if (rawData.duration) data.job_spec.attributes.duration = rawData.duration;
         if (rawData.node_count) data.job_spec.attributes.node_count = parseInt(rawData.node_count, 10);
+
+        const attrRows = page.querySelectorAll('.psij-attribute-rows > div');
+        attrRows.forEach(row => {
+          const key = row.querySelector('.p-attr-key')?.value.trim();
+          const val = row.querySelector('.p-attr-val')?.value.trim();
+          if (key && val) {
+            if (!data.job_spec.custom_attributes) data.job_spec.custom_attributes = {};
+            data.job_spec.custom_attributes[key] = val;
+          }
+        });
       } else if (pluginName === 'rhapsody') {
         // Rhapsody expects: {tasks: [{executable, arguments, ...}]}
         const args = rawData.args ? rawData.args.trim().split(/\s+/) : [];
@@ -1787,6 +1798,8 @@
       isConnected = false;
       BRIDGE = '';
       edgeData = {};
+      sessions = {};
+      queueDataCache = {};
       window.lastEdges = {};
       window.lastBridge = {};
 
@@ -2213,8 +2226,14 @@
       const navEl = document.getElementById(`nav-${pid}`);
       if (navEl) navEl.classList.add('active');
 
-      // Auto-load data for monitors with auto_load
       const page = activeDynamicPages[pid];
+      
+      // Update queue and account dynamically every time PsiJ page is shown
+      if (pluginName === 'psij') {
+        replaceQueueAccountDropdowns(page, edgeName);
+      }
+
+      // Auto-load data for monitors with auto_load
       const ui = page.dataset.uiConfig ? JSON.parse(page.dataset.uiConfig) : null;
       if (ui) {
         // Dynamic page - auto-load monitors
@@ -2237,14 +2256,16 @@
         const childName = getNextEdgeChildName(edgeName);
         argsInput.value = `--url ${url} --name ${childName}`;
       }
-      
+    }
+
+    function replaceQueueAccountDropdowns(page, edgeName) {
       // Populate Queue/Account selectors from cache if available
       const qCache = queueDataCache[edgeName];
       if (qCache) {
         const queueInput = page.querySelector('.p-queue');
-        if (queueInput && queueInput.tagName === 'INPUT') {
+        if (queueInput) {
           const select = document.createElement('select');
-          select.className = 'p-queue';
+          select.className = queueInput.className;
           
           const qList = Object.values(qCache.queues || {});
           const getQName = q => q.name || q.partition || q;
@@ -2255,17 +2276,19 @@
           const defaultQ = (pb || pi || qList[0]);
           const defaultQName = defaultQ ? getQName(defaultQ) : "";
           
+          const currentVal = queueInput.value;
           select.innerHTML = '<option value="">(none)</option>' + qList.map(q => {
             const qn = getQName(q);
-            return `<option value="${qn}" ${qn === defaultQName ? 'selected' : ''}>${qn}</option>`;
+            const isSelected = (currentVal && currentVal === qn) || (!currentVal && qn === defaultQName);
+            return `<option value="${qn}" ${isSelected ? 'selected' : ''}>${qn}</option>`;
           }).join('');
           queueInput.parentNode.replaceChild(select, queueInput);
         }
         
         const accountInput = page.querySelector('.p-account');
-        if (accountInput && accountInput.tagName === 'INPUT') {
+        if (accountInput) {
           const select = document.createElement('select');
-          select.className = 'p-account';
+          select.className = accountInput.className;
           
           // Extract unique accounts
           const accountSet = new Set();
@@ -2275,7 +2298,11 @@
           const accounts = Array.from(accountSet);
           const defaultAcc = accounts.length > 0 ? accounts[0] : "";
           
-          select.innerHTML = '<option value="">(none)</option>' + accounts.map(a => `<option value="${a}" ${a === defaultAcc ? 'selected' : ''}>${a}</option>`).join('');
+          const currentVal = accountInput.value;
+          select.innerHTML = '<option value="">(none)</option>' + accounts.map(a => {
+            const isSelected = (currentVal && currentVal === a) || (!currentVal && a === defaultAcc);
+            return `<option value="${a}" ${isSelected ? 'selected' : ''}>${a}</option>`;
+          }).join('');
           accountInput.parentNode.replaceChild(select, accountInput);
         }
       }
@@ -2306,7 +2333,18 @@
         if (pluginName === 'sysinfo') {
           content.innerHTML = renderSysinfo(data);
         } else if (pluginName === 'queue_info') {
-          content.innerHTML = renderQueueInfo(data, edgeName, sid, ns);
+          // Fetch allocations to go with queue info
+          let allocs = { allocations: [] };
+          try {
+            allocs = await apiFetch(`${ns}/list_allocations/${sid}`);
+          } catch (e) { console.warn("Could not fetch allocations:", e); }
+          
+          const queuesObj = data.partitions || data.queues || data || {};
+          const queues = Array.isArray(queuesObj) ? queuesObj : Object.values(queuesObj);
+          const allocations = allocs.allocations || [];
+          queueDataCache[edgeName] = { queues, allocations };
+          
+          content.innerHTML = renderQueueInfo(queues, allocations, edgeName, sid, ns);
         } else {
           content.innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
         }
@@ -2678,7 +2716,8 @@
         const key = row.querySelector('.p-attr-key').value.trim();
         const val = row.querySelector('.p-attr-val').value.trim();
         if (key && val) {
-          job_spec.attributes[key] = val;
+          if (!job_spec.custom_attributes) job_spec.custom_attributes = {};
+          job_spec.custom_attributes[key] = val;
         }
       });
 

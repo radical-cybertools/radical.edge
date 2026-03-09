@@ -288,6 +288,8 @@ class PluginPSIJ(Plugin):
                 {"name": "node_count", "type": "number", "label": "Number of Nodes",
                  "placeholder": "e.g. 1", "required": False,
                  "css_class": "p-node-count", "column": 1},
+                {"name": "custom", "type": "custom_attributes", "label": "🔧 Custom Attributes",
+                 "required": False, "css_class": "p-custom-attr", "column": 1},
             ],
             "submit": {"label": "🚀 Submit Job", "style": "success"}
         }],
