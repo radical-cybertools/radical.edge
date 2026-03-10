@@ -21,16 +21,12 @@ def test_queue_info_session_initialization():
     '''
     Test QueueInfoSession initialization.
     '''
-    with patch('radical.edge.plugin_queue_info.QueueInfoSlurm') as MockSlurm:
-        mock_backend = Mock()
-        MockSlurm.return_value = mock_backend
+    mock_backend = Mock()
+    session = QueueInfoSession("test_session_001", backend=mock_backend)
 
-        session = QueueInfoSession("test_session_001")
-
-        assert session._sid == "test_session_001"
-        assert session._active is True
-        assert session._backend == mock_backend
-        MockSlurm.assert_called_once_with(slurm_conf=None)
+    assert session._sid == "test_session_001"
+    assert session._active is True
+    assert session._backend == mock_backend
 
 
 @pytest.mark.asyncio
@@ -38,17 +34,15 @@ async def test_queue_info_session_close():
     '''
     Test closing a QueueInfoSession.
     '''
-    with patch('radical.edge.plugin_queue_info.QueueInfoSlurm') as MockSlurm:
-        mock_backend = Mock()
-        MockSlurm.return_value = mock_backend
+    mock_backend = Mock()
+    session = QueueInfoSession("test_session_001", backend=mock_backend)
 
-        session = QueueInfoSession("test_session_001")
+    result = await session.close()
 
-        result = await session.close()
-
-        assert result == {}
-        assert session._active is False
-        assert session._backend is None
+    assert result == {}
+    assert session._active is False
+    # Backend is now shared, so it should still be set after close
+    assert session._backend == mock_backend
 
 
 @pytest.mark.asyncio
@@ -56,12 +50,12 @@ async def test_queue_info_session_echo():
     '''
     Test echo functionality.
     '''
-    with patch('radical.edge.plugin_queue_info.QueueInfoSlurm'):
-        session = QueueInfoSession("test_session_001")
-        result = await session.request_echo("test message")
+    mock_backend = Mock()
+    session = QueueInfoSession("test_session_001", backend=mock_backend)
+    result = await session.request_echo("test message")
 
-        assert result["sid"] == "test_session_001"
-        assert result["echo"] == "test message"
+    assert result["sid"] == "test_session_001"
+    assert result["echo"] == "test message"
 
 
 @pytest.mark.asyncio
@@ -69,12 +63,12 @@ async def test_queue_info_session_echo_default():
     '''
     Test echo with default parameter.
     '''
-    with patch('radical.edge.plugin_queue_info.QueueInfoSlurm'):
-        session = QueueInfoSession("test_session_001")
-        result = await session.request_echo()
+    mock_backend = Mock()
+    session = QueueInfoSession("test_session_001", backend=mock_backend)
+    result = await session.request_echo()
 
-        assert result["sid"] == "test_session_001"
-        assert result["echo"] == "hello"
+    assert result["sid"] == "test_session_001"
+    assert result["echo"] == "hello"
 
 
 @pytest.mark.asyncio
@@ -82,12 +76,12 @@ async def test_queue_info_session_echo_after_close():
     '''
     Test that echo raises error after session is closed.
     '''
-    with patch('radical.edge.plugin_queue_info.QueueInfoSlurm'):
-        session = QueueInfoSession("test_session_001")
-        await session.close()
+    mock_backend = Mock()
+    session = QueueInfoSession("test_session_001", backend=mock_backend)
+    await session.close()
 
-        with pytest.raises(RuntimeError, match="session is closed"):
-            await session.request_echo()
+    with pytest.raises(RuntimeError, match="session is closed"):
+        await session.request_echo()
 
 
 @pytest.mark.asyncio
@@ -95,17 +89,15 @@ async def test_queue_info_session_get_info():
     '''
     Test getting queue info.
     '''
-    with patch('radical.edge.plugin_queue_info.QueueInfoSlurm') as MockSlurm:
-        mock_backend = Mock()
-        mock_backend.get_info = Mock(return_value={"queues": {"test": {}}})
-        MockSlurm.return_value = mock_backend
+    mock_backend = Mock()
+    mock_backend.get_info = Mock(return_value={"queues": {"test": {}}})
 
-        session = QueueInfoSession("test_session_001")
+    session = QueueInfoSession("test_session_001", backend=mock_backend)
 
-        result = await session.get_info()
+    result = await session.get_info()
 
-        assert "queues" in result
-        mock_backend.get_info.assert_called_once_with(user=None, force=False)
+    assert "queues" in result
+    mock_backend.get_info.assert_called_once_with(user=None, force=False)
 
 
 @pytest.mark.asyncio
@@ -113,16 +105,14 @@ async def test_queue_info_session_get_info_force():
     '''
     Test getting queue info with force refresh.
     '''
-    with patch('radical.edge.plugin_queue_info.QueueInfoSlurm') as MockSlurm:
-        mock_backend = Mock()
-        mock_backend.get_info = Mock(return_value={"queues": {}})
-        MockSlurm.return_value = mock_backend
+    mock_backend = Mock()
+    mock_backend.get_info = Mock(return_value={"queues": {}})
 
-        session = QueueInfoSession("test_session_001")
+    session = QueueInfoSession("test_session_001", backend=mock_backend)
 
-        result = await session.get_info(force=True)
+    result = await session.get_info(force=True)
 
-        mock_backend.get_info.assert_called_once_with(user=None, force=True)
+    mock_backend.get_info.assert_called_once_with(user=None, force=True)
 
 
 @pytest.mark.asyncio
@@ -130,12 +120,12 @@ async def test_queue_info_session_get_info_closed_session():
     '''
     Test that get_info raises error when session is closed.
     '''
-    with patch('radical.edge.plugin_queue_info.QueueInfoSlurm'):
-        session = QueueInfoSession("test_session_001")
-        await session.close()
+    mock_backend = Mock()
+    session = QueueInfoSession("test_session_001", backend=mock_backend)
+    await session.close()
 
-        with pytest.raises(RuntimeError, match="session is closed"):
-            await session.get_info()
+    with pytest.raises(RuntimeError, match="session is closed"):
+        await session.get_info()
 
 
 @pytest.mark.asyncio
@@ -143,17 +133,15 @@ async def test_queue_info_session_list_jobs():
     '''
     Test listing jobs.
     '''
-    with patch('radical.edge.plugin_queue_info.QueueInfoSlurm') as MockSlurm:
-        mock_backend = Mock()
-        mock_backend.list_jobs = Mock(return_value={"jobs": []})
-        MockSlurm.return_value = mock_backend
+    mock_backend = Mock()
+    mock_backend.list_jobs = Mock(return_value={"jobs": []})
 
-        session = QueueInfoSession("test_session_001")
+    session = QueueInfoSession("test_session_001", backend=mock_backend)
 
-        result = await session.list_jobs("test_queue")
+    result = await session.list_jobs("test_queue")
 
-        assert "jobs" in result
-        mock_backend.list_jobs.assert_called_once_with("test_queue", None, False)
+    assert "jobs" in result
+    mock_backend.list_jobs.assert_called_once_with("test_queue", None, False)
 
 
 @pytest.mark.asyncio
@@ -161,16 +149,14 @@ async def test_queue_info_session_list_jobs_with_user():
     '''
     Test listing jobs filtered by user.
     '''
-    with patch('radical.edge.plugin_queue_info.QueueInfoSlurm') as MockSlurm:
-        mock_backend = Mock()
-        mock_backend.list_jobs = Mock(return_value={"jobs": []})
-        MockSlurm.return_value = mock_backend
+    mock_backend = Mock()
+    mock_backend.list_jobs = Mock(return_value={"jobs": []})
 
-        session = QueueInfoSession("test_session_001")
+    session = QueueInfoSession("test_session_001", backend=mock_backend)
 
-        result = await session.list_jobs("test_queue", user="testuser", force=True)
+    result = await session.list_jobs("test_queue", user="testuser", force=True)
 
-        mock_backend.list_jobs.assert_called_once_with("test_queue", "testuser", True)
+    mock_backend.list_jobs.assert_called_once_with("test_queue", "testuser", True)
 
 
 @pytest.mark.asyncio
@@ -178,17 +164,15 @@ async def test_queue_info_session_list_allocations():
     '''
     Test listing allocations.
     '''
-    with patch('radical.edge.plugin_queue_info.QueueInfoSlurm') as MockSlurm:
-        mock_backend = Mock()
-        mock_backend.list_allocations = Mock(return_value={"allocations": []})
-        MockSlurm.return_value = mock_backend
+    mock_backend = Mock()
+    mock_backend.list_allocations = Mock(return_value={"allocations": []})
 
-        session = QueueInfoSession("test_session_001")
+    session = QueueInfoSession("test_session_001", backend=mock_backend)
 
-        result = await session.list_allocations()
+    result = await session.list_allocations()
 
-        assert "allocations" in result
-        mock_backend.list_allocations.assert_called_once_with(None, False)
+    assert "allocations" in result
+    mock_backend.list_allocations.assert_called_once_with(None, False)
 
 
 @pytest.mark.asyncio
@@ -196,17 +180,14 @@ async def test_queue_info_session_list_allocations_with_user():
     '''
     Test listing allocations filtered by user.
     '''
-    with patch('radical.edge.plugin_queue_info.QueueInfoSlurm') as MockSlurm:
-        mock_backend = Mock()
-        mock_backend.list_allocations = Mock(return_value={"allocations": []})
-        MockSlurm.return_value = mock_backend
+    mock_backend = Mock()
+    mock_backend.list_allocations = Mock(return_value={"allocations": []})
 
-        session = QueueInfoSession("test_session_001")
+    session = QueueInfoSession("test_session_001", backend=mock_backend)
 
-        result = await session.list_allocations(user="testuser", force=True)
+    result = await session.list_allocations(user="testuser", force=True)
 
-        mock_backend.list_allocations.assert_called_once_with("testuser", True)
-
+    mock_backend.list_allocations.assert_called_once_with("testuser", True)
 
 
 @patch('radical.edge.plugin_queue_info.QueueInfoSlurm')
@@ -214,6 +195,9 @@ def test_plugin_queue_info_initialization(mock_slurm):
     '''
     Test PluginQueueInfo initialization.
     '''
+    mock_backend = Mock()
+    mock_slurm.return_value = mock_backend
+
     app = FastAPI()
     plugin = PluginQueueInfo(app)
 
@@ -221,8 +205,9 @@ def test_plugin_queue_info_initialization(mock_slurm):
     assert plugin._sessions == {}
     assert plugin._id_lock is not None
 
-    # Backend is created PER SESSION, not in plugin initialization
-    mock_slurm.assert_not_called()
+    # Backend is now created at plugin level and shared
+    assert plugin._backend == mock_backend
+    mock_slurm.assert_called_once_with(slurm_conf=None)
 
     # Check that routes were added
     route_paths = [route.path for route in app.router.routes]
@@ -239,12 +224,15 @@ def test_plugin_queue_info_custom_name_and_conf(mock_slurm):
     '''
     Test PluginQueueInfo with custom name and SLURM config.
     '''
+    mock_backend = Mock()
+    mock_slurm.return_value = mock_backend
+
     app = FastAPI()
     plugin = PluginQueueInfo(app, instance_name="custom_queue", slurm_conf="/custom/slurm.conf")
 
     assert plugin._instance_name == "custom_queue"
-    assert plugin._slurm_conf == "/custom/slurm.conf"
-    mock_slurm.assert_not_called()
+    # Backend is created with custom slurm_conf
+    mock_slurm.assert_called_once_with(slurm_conf="/custom/slurm.conf")
 
 
 @pytest.mark.asyncio

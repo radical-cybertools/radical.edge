@@ -91,6 +91,26 @@ class QueueInfo(ABC):
         self._cache_time : dict        = {}
         self._cache_lock : threading.Lock = threading.Lock()
 
+    def start_prefetch(self):
+        """
+        Start a background thread to prefetch queue info and allocations.
+
+        This lazily fills the cache so later queries are faster.
+        """
+        def _prefetch():
+            import getpass
+            user = getpass.getuser()
+            try:
+                # Prefetch queue info for current user
+                self.get_info(user=user)
+                # Prefetch allocations for current user
+                self.list_allocations(user=user)
+            except Exception:
+                pass  # Silently ignore prefetch failures
+
+        thread = threading.Thread(target=_prefetch, daemon=True)
+        thread.start()
+
 
     def _get_cached(self, key, force, collector, *args):
         """

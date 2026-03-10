@@ -35,6 +35,23 @@ class SysInfoProvider:
         self._cpu_model = None
         self._gpu_info  = None
 
+    def start_prefetch(self):
+        """
+        Start a background thread to prefetch hardware detection.
+
+        This lazily fills the detection cache so later queries are faster.
+        """
+        import threading
+
+        def _prefetch():
+            try:
+                self._ensure_detected()
+            except Exception:
+                pass  # Silently ignore prefetch failures
+
+        thread = threading.Thread(target=_prefetch, daemon=True)
+        thread.start()
+
     def _ensure_detected(self):
         """Run hardware detection once on first use."""
         if self._cpu_model is None:
@@ -529,6 +546,9 @@ class PluginSysInfo(Plugin):
         super().__init__(app, 'sysinfo')
 
         self._provider = SysInfoProvider()
+
+        # Start background prefetch for hardware detection
+        self._provider.start_prefetch()
 
         # Register routes
         self.add_route_get('metrics/{sid}', self.get_metrics_endpoint)

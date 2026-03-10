@@ -20,30 +20,31 @@ from .queue_info import QueueInfoSlurm
 
 class QueueInfoSession(PluginSession):
     """
-    QueueInfo session with per-session backend.
+    QueueInfo session with shared backend.
 
-    Each session creates its own QueueInfoSlurm backend instance.
+    All sessions share a single backend instance for cache efficiency.
     """
 
-    def __init__(self, sid: str, slurm_conf=None):
+    def __init__(self, sid: str, backend: QueueInfoSlurm):
         """
         Initialize a QueueInfoSession instance.
 
         Args:
             sid (str): The unique session ID.
-            slurm_conf (str): Optional path to slurm.conf for the target cluster.
+            backend (QueueInfoSlurm): Shared backend instance from the plugin.
         """
         super().__init__(sid)
-        self._backend = QueueInfoSlurm(slurm_conf=slurm_conf)
+        self._backend = backend
 
     async def close(self) -> dict:
         """
-        Close this session and clean up backend.
+        Close this session.
+
+        Note: Backend is shared and not cleaned up here.
 
         Returns:
             dict: An empty dictionary indicating successful closure.
         """
-        self._backend = None
         return await super().close()
 
     async def get_info(self, user=None, force=False):
@@ -203,11 +204,15 @@ class PluginQueueInfo(Plugin):
             instance_name (str): Plugin instance name (used in namespace). Defaults to
                 'queue_info'. Override for multi-cluster setups.
             slurm_conf (str): Optional path to slurm.conf for the target
-                cluster. This will be passed to each session.
+                cluster. This will be passed to the shared backend.
         """
         super().__init__(app, instance_name)
 
-        self._slurm_conf = slurm_conf
+        # Create shared backend for all sessions
+        self._backend = QueueInfoSlurm(slurm_conf=slurm_conf)
+
+        # Start background prefetch to populate cache
+        self._backend.start_prefetch()
 
         # Register QueueInfo-specific routes
         self.add_route_get('get_info/{sid}', self.get_info)
@@ -218,16 +223,16 @@ class PluginQueueInfo(Plugin):
 
     def _create_session(self, sid: str, **kwargs):
         """
-        Override to pass slurm_conf to each session.
+        Override to pass shared backend to each session.
 
         Args:
             sid (str): The session ID.
             **kwargs: Additional keyword arguments (unused).
 
         Returns:
-            QueueInfoSession: A new session instance with its own backend.
+            QueueInfoSession: A new session instance using the shared backend.
         """
-        return self.session_class(sid, slurm_conf=self._slurm_conf)
+        return self.session_class(sid, backend=self._backend)
 
     async def get_info(self, request: Request) -> JSONResponse:
         """Return queue/partition information."""
