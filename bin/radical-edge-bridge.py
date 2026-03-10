@@ -5,9 +5,9 @@ import base64
 import json
 import logging
 import os
-import signal
 import uuid
 
+from contextlib import asynccontextmanager
 from typing  import Dict, Any
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi import Request, Response, HTTPException
@@ -24,8 +24,35 @@ log = logging.getLogger("radical.edge.bridge")
 shutdown_event: asyncio.Event = None
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan context manager for startup/shutdown."""
+    global shutdown_event
+    shutdown_event = asyncio.Event()
+    print("[Bridge] Started")
+    yield
+    # Shutdown
+    print("[Bridge] Shutting down...")
+    shutdown_event.set()
+    # Wake up all SSE clients
+    for q in list(clients_sse):
+        try:
+            await q.put(None)
+        except Exception:
+            pass
+    # Close WebSocket connections
+    for edge_name, ws in list(edges.items()):
+        try:
+            await ws.close(code=1001, reason="Server shutting down")
+        except Exception:
+            pass
+    edges.clear()
+    print("[Bridge] Shutdown complete")
+
+
 app = FastAPI(
     title="RADICAL Edge Bridge",
+    lifespan=lifespan,
     description="""
 RADICAL Edge Bridge - Reverse proxy connecting clients to HPC edge services.
 
@@ -121,46 +148,6 @@ HEARTBEAT_INTERVAL = 20
 REQUEST_TIMEOUT    = 45
 
 clients_sse: set = set()
-
-
-def _signal_handler(signum, frame):
-    """Handle SIGINT/SIGTERM by setting shutdown event immediately."""
-    print(f"\n[Bridge] Received signal {signum}, initiating shutdown...")
-    if shutdown_event:
-        shutdown_event.set()
-
-
-@app.on_event("startup")
-async def startup_event():
-    """Initialize the shutdown event on startup."""
-    global shutdown_event
-    shutdown_event = asyncio.Event()
-
-    # Install signal handlers to trigger shutdown_event immediately
-    signal.signal(signal.SIGINT, _signal_handler)
-    signal.signal(signal.SIGTERM, _signal_handler)
-
-
-@app.on_event("shutdown")
-async def shutdown_handler():
-    """Signal all tasks to shutdown gracefully."""
-    if shutdown_event:
-        shutdown_event.set()
-
-    # Wake up all SSE clients so they can exit
-    for q in list(clients_sse):
-        try:
-            await q.put(None)  # Sentinel to signal shutdown
-        except Exception:
-            pass
-
-    # Close all WebSocket connections
-    for edge_name, ws in list(edges.items()):
-        try:
-            await ws.close(code=1001, reason="Server shutting down")
-        except Exception:
-            pass
-    edges.clear()
 
 
 async def broadcast_event(topic: str, data: dict):

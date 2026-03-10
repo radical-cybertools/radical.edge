@@ -704,6 +704,28 @@
       font-family: 'JetBrains Mono', monospace;
     }
 
+    /* cancel button in task entries */
+    .task-cancel-btn {
+      background: transparent;
+      border: none;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 0.9em;
+      padding: 2px 6px;
+      margin-left: auto;
+      border-radius: 4px;
+      transition: color 0.2s, background 0.2s;
+      flex-shrink: 0;
+    }
+    .task-cancel-btn:hover {
+      color: var(--danger);
+      background: rgba(255, 77, 109, 0.15);
+    }
+    .task-cancel-btn:disabled {
+      opacity: 0.3;
+      cursor: not-allowed;
+    }
+
     /* spinner */
     .spinner {
       display: inline-block;
@@ -1000,11 +1022,12 @@
       border-left: 3px solid var(--primary);
     }
     .job-detail-panel {
-      background: var(--sidebar-bg);
+      background: rgba(30, 35, 50, 0.5);
       border-radius: 6px;
       padding: 12px 16px;
       margin-top: 12px;
       font-size: 0.85rem;
+      border: 1px solid var(--border);
     }
     .job-detail-panel h4 {
       margin: 0 0 10px 0;
@@ -1607,6 +1630,14 @@
         const icon = ui.icon || '🔌';
         const state = r[stateField] || 'PENDING';
 
+        // Add cancel button for psij and rhapsody
+        let cancelBtn = '';
+        if (pluginName === 'psij') {
+          cancelBtn = `<button class="task-cancel-btn" onclick="cancelPsijJob(event, '${edgeName}', '${taskId}')" title="Cancel job">✕</button>`;
+        } else if (pluginName === 'rhapsody') {
+          cancelBtn = `<button class="task-cancel-btn" onclick="cancelRhapsodyTask(event, '${edgeName}', '${taskId}')" title="Cancel task">✕</button>`;
+        }
+
         const taskEntry = document.createElement('details');
         taskEntry.className = 'task-entry';
         taskEntry.id = entryId;
@@ -1616,6 +1647,7 @@
               <strong style="margin-right:6px;">${icon} ${taskId.slice(0, 12)}…</strong>
               <span class="${prefix}-state badge badge-orange" style="font-size:.65rem;padding:1px 4px;">${state}</span>
               <code style="font-size:0.8em;color:var(--muted);margin-left:8px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escHtml(label)}</code>
+              ${cancelBtn}
             </span>
           </summary>
           <div class="task-log ${prefix}-log"><div style="color:var(--muted);font-style:italic;">Waiting…</div></div>`;
@@ -2923,6 +2955,13 @@
       stateEl.className = `${config.stateClass} badge ${isOk ? 'badge-green' : isRunning ? 'badge-blue' : isFailed ? 'badge-red' : 'badge-orange'}`;
       stateEl.textContent = state;
 
+      // Disable cancel button on terminal states
+      const isTerminal = isOk || isFailed;
+      const cancelBtn = entry.querySelector('.task-cancel-btn');
+      if (cancelBtn && isTerminal) {
+        cancelBtn.disabled = true;
+      }
+
       const rc = d.exit_code ?? d.retval ?? '?';
       let logHtml = `<span style="color:var(--muted);font-size:0.9em;">[${ts}] <b>${state}</b> rc:${rc}</span>`;
       if (d.stdout) logHtml += `<pre class="ok">out: ${escHtml(d.stdout).trim()}</pre>`;
@@ -3025,6 +3064,7 @@
               <strong style="margin-right:6px;">🚀 ${jobId.slice(0, 8)}…</strong>
               <span class="psij-job-state badge badge-orange" style="font-size:.65rem;padding:1px 4px;">PENDING</span>
               <code style="font-size:0.8em;color:var(--muted);margin-left:8px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${exec} ${args.join(' ')}</code>
+              <button class="task-cancel-btn" onclick="cancelPsijJob(event, '${edgeName}', '${jobId}')" title="Cancel job">✕</button>
             </span>
           </summary>
           <div class="task-log psij-job-log"><div style="color:var(--muted);font-style:italic;">Waiting…</div></div>`;
@@ -3089,6 +3129,7 @@
                 <strong style="margin-right:6px;">🎼 ${uid.slice(0, 12)}…</strong>
                 <span class="rh-task-state badge badge-orange" style="font-size:.65rem;padding:1px 4px;">PENDING</span>
                 <code style="font-size:0.8em;color:var(--muted);margin-left:8px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${exec} ${args.join(' ')}</code>
+                <button class="task-cancel-btn" onclick="cancelRhapsodyTask(event, '${edgeName}', '${uid}')" title="Cancel task">✕</button>
               </span>
             </summary>
             <div class="task-log rh-task-log"><div style="color:var(--muted);font-style:italic;">Waiting…</div></div>`;
@@ -3102,6 +3143,73 @@
       } catch (e) {
         output.innerHTML += `<span class="err">Submit error: ${e.message}</span>\n`;
         flash('Rhapsody error: ' + e.message, false);
+      }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    //  Cancel handlers for PsiJ and Rhapsody
+    // ─────────────────────────────────────────────────────────────
+    async function cancelPsijJob(event, edgeName, jobId) {
+      event.stopPropagation();  // Don't toggle details
+      const btn = event.target;
+      btn.disabled = true;
+
+      try {
+        const key = `${edgeName}/psij`;
+        const sid = sessions[key];
+        if (!sid) {
+          flash('No active session for PsiJ', false);
+          return;
+        }
+
+        const ns = getNs(edgeName, 'psij');
+        await apiFetch(`${ns}/cancel/${sid}/${jobId}`, { method: 'POST' });
+        flash(`Job ${jobId.slice(0, 8)}… canceled`);
+
+        // Update the state badge
+        const entry = document.getElementById(`psij-job-${jobId}`);
+        if (entry) {
+          const badge = entry.querySelector('.psij-job-state');
+          if (badge) {
+            badge.textContent = 'CANCELED';
+            badge.className = 'psij-job-state badge badge-red';
+          }
+        }
+      } catch (e) {
+        flash('Cancel failed: ' + e.message, false);
+        btn.disabled = false;
+      }
+    }
+
+    async function cancelRhapsodyTask(event, edgeName, uid) {
+      event.stopPropagation();  // Don't toggle details
+      const btn = event.target;
+      btn.disabled = true;
+
+      try {
+        const key = `${edgeName}/rhapsody`;
+        const sid = sessions[key];
+        if (!sid) {
+          flash('No active session for Rhapsody', false);
+          return;
+        }
+
+        const ns = getNs(edgeName, 'rhapsody');
+        await apiFetch(`${ns}/cancel/${sid}/${uid}`, { method: 'POST' });
+        flash(`Task ${uid.slice(0, 12)}… canceled`);
+
+        // Update the state badge
+        const entry = document.getElementById(`rh-task-${edgeName}-${uid}`);
+        if (entry) {
+          const badge = entry.querySelector('.rh-task-state');
+          if (badge) {
+            badge.textContent = 'CANCELED';
+            badge.className = 'rh-task-state badge badge-red';
+          }
+        }
+      } catch (e) {
+        flash('Cancel failed: ' + e.message, false);
+        btn.disabled = false;
       }
     }
 
