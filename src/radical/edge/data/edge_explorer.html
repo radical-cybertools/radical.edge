@@ -2165,9 +2165,10 @@
         const indent = depth * 12;
         let html = `<details id="sidebar-edge-${ename}">
           <summary style="display: list-item; list-style-position: inside; padding: 6px 16px; padding-left: ${16 + indent}px; user-select:none; outline:none; font-weight:bold; cursor:pointer; font-size: 0.85rem; color: var(--accent2); transition: background .15s;" onmouseover="this.style.background='var(--bg3)'" onmouseout="this.style.background='transparent'">
-            <span onclick="showPage('bridge'); event.stopPropagation();" style="display:inline-flex; align-items:center; gap:8px;">
+            <span onclick="showPage('bridge'); event.stopPropagation();" style="display:inline-flex; align-items:center; gap:8px; flex:1;">
               <span class="icon">💻</span> ${ename}
             </span>
+            <button class="task-cancel-btn" onclick="disconnectEdge(event, '${ename}')" title="Disconnect edge">✕</button>
           </summary>
           <ul class="tree" style="margin-top: 2px; padding-left: 8px; border-left: 1px dashed var(--border); margin-left: ${16 + indent}px;">`;
 
@@ -2310,9 +2311,10 @@
         function renderEdge(ename, depth = 0) {
           let ehtml = `<details id="main-edge-${ename}" style="margin-top: 10px;">
             <summary style="display: list-item; list-style-position: inside; padding: 4px; cursor: pointer; user-select: none; outline: none; font-weight: bold; border-radius: 6px; transition: background .2s;" onmouseover="this.style.background='var(--bg3)'" onmouseout="this.style.background='transparent'">
-              <span style="display: inline-flex; align-items: center;">
+              <span style="display: inline-flex; align-items: center; flex: 1;">
                 <span style="font-size: 1.1em; margin-right:8px; margin-left:8px;">💻</span> <strong style="color:var(--accent2); font-size:1.05em;">${ename}</strong>
               </span>
+              <button class="task-cancel-btn" onclick="disconnectEdge(event, '${ename}')" title="Disconnect edge">✕</button>
             </summary>`;
 
           const edata = edges[ename];
@@ -3228,6 +3230,24 @@
         }
       } catch (e) {
         flash('Cancel failed: ' + e.message, false);
+        btn.disabled = false;
+      }
+    }
+
+    async function disconnectEdge(event, edgeName) {
+      event.stopPropagation();
+      const btn = event.target;
+
+      if (!confirm(`Disconnect edge "${edgeName}"?\n\nThis will terminate the edge service.`)) {
+        return;
+      }
+
+      btn.disabled = true;
+      try {
+        await apiFetch(`/edge/disconnect/${encodeURIComponent(edgeName)}`, { method: 'POST' });
+        flash(`Edge "${edgeName}" disconnected`);
+      } catch (e) {
+        flash('Disconnect failed: ' + e.message, false);
         btn.disabled = false;
       }
     }
