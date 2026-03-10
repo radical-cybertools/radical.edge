@@ -2056,14 +2056,28 @@
             window.lastEdges = edges;
             window.lastBridge = (msg.data && msg.data.bridge) || {};
 
+            // Track existing edge IDs and open states before rebuild
+            const existingEdgeIds = new Set();
             const openStates = new Set();
-            document.querySelectorAll('details[open]').forEach(el => {
-              if (el.id) openStates.add(el.id);
+            document.querySelectorAll('details').forEach(el => {
+              if (el.id) {
+                if (el.id.startsWith('sidebar-edge-')) existingEdgeIds.add(el.id);
+                if (el.open) openStates.add(el.id);
+              }
             });
+
             buildSidebar(edges);
             renderHierarchy(edges, window.lastBridge);
+
+            // Restore open states; expand new edges
             document.querySelectorAll('details').forEach(el => {
-              if (el.id && openStates.has(el.id)) el.open = true;
+              if (el.id) {
+                if (el.id.startsWith('sidebar-edge-') && !existingEdgeIds.has(el.id)) {
+                  el.open = true;  // New edge: expand
+                } else if (openStates.has(el.id)) {
+                  el.open = true;  // Restore previously open
+                }
+              }
             });
           }
         } catch (e) { /* ignore parse errors */ }
@@ -2093,10 +2107,14 @@
       buildSidebar(edges);
       renderHierarchy(edges, data.bridge || {});
 
-      // Restore open details
+      // Restore open states, or expand edges on initial load
       document.querySelectorAll('details').forEach(el => {
-        if (el.id && openStates.has(el.id)) {
-          el.open = true;
+        if (el.id) {
+          if (openStates.size === 0 && el.id.startsWith('sidebar-edge-')) {
+            el.open = true;  // Initial load: expand edges
+          } else if (openStates.has(el.id)) {
+            el.open = true;  // Restore previously open
+          }
         }
       });
     }
@@ -2145,7 +2163,7 @@
         const plugins = edata.plugins || {};
         const pluginNames = Object.keys(plugins);
         const indent = depth * 12;
-        let html = `<details id="sidebar-edge-${ename}" open>
+        let html = `<details id="sidebar-edge-${ename}">
           <summary style="display: list-item; list-style-position: inside; padding: 6px 16px; padding-left: ${16 + indent}px; user-select:none; outline:none; font-weight:bold; cursor:pointer; font-size: 0.85rem; color: var(--accent2); transition: background .15s;" onmouseover="this.style.background='var(--bg3)'" onmouseout="this.style.background='transparent'">
             <span onclick="showPage('bridge'); event.stopPropagation();" style="display:inline-flex; align-items:center; gap:8px;">
               <span class="icon">💻</span> ${ename}
