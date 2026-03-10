@@ -8,7 +8,6 @@ import random
 import ssl
 import socket
 import threading
-import uuid
 from importlib.metadata import entry_points
 from typing import Any, Dict, Optional
 
@@ -27,7 +26,6 @@ from radical.edge.models import (
     ResponseMessage, NotificationMessage, RegisterMessage,
     parse_bridge_message
 )
-from radical.edge.exceptions import BridgeConnectionError
 from radical.edge.ui_schema import ui_config_to_dict
 
 log = logging.getLogger("radical.edge")

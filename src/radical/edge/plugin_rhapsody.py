@@ -182,7 +182,7 @@ class RhapsodySession(PluginSession):
         d.pop('future', None)
         if 'exception' in d and d['exception'] is not None:
             d['exception'] = str(d['exception'])
-        
+
         return d
 
     async def get_task(self, uid: str) -> dict:
@@ -421,7 +421,7 @@ class PluginRhapsody(Plugin):
         if hasattr(session, 'initialize'):
             await session.initialize()
         self._sessions[sid] = session
-        log.info(f"[{self.instance_name}] Registered session {sid}")
+        log.info("[%s] Registered session %s", self.instance_name, sid)
         return JSONResponse({"sid": sid})
 
     # -- route handlers -----------------------------------------------------

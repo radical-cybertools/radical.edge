@@ -105,7 +105,7 @@ async def test_queue_info_session_get_info():
         result = await session.get_info()
 
         assert "queues" in result
-        mock_backend.get_info.assert_called_once_with(False)
+        mock_backend.get_info.assert_called_once_with(user=None, force=False)
 
 
 @pytest.mark.asyncio
@@ -122,7 +122,7 @@ async def test_queue_info_session_get_info_force():
 
         result = await session.get_info(force=True)
 
-        mock_backend.get_info.assert_called_once_with(True)
+        mock_backend.get_info.assert_called_once_with(user=None, force=True)
 
 
 @pytest.mark.asyncio
@@ -349,7 +349,7 @@ async def test_plugin_queue_info_get_info(mock_slurm):
     assert isinstance(response, JSONResponse)
     
     # Check backend call
-    mock_backend.get_info.assert_called_with(False)
+    mock_backend.get_info.assert_called_with(user=None, force=False)
 
 
 @pytest.mark.asyncio

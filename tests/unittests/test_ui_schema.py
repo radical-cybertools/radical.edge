@@ -268,7 +268,7 @@ class TestPluginUIConfigs:
         assert ui["title"] == "PsiJ Jobs"
         assert len(ui["forms"]) == 1
         assert ui["forms"][0]["id"] == "submit"
-        assert len(ui["forms"][0]["fields"]) == 7
+        assert len(ui["forms"][0]["fields"]) == 8
         assert ui["notifications"]["topic"] == "job_status"
 
     def test_rhapsody_ui_config(self):

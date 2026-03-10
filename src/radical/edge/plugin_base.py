@@ -9,7 +9,6 @@ from starlette.routing import Route
 from starlette.responses import JSONResponse
 
 from .plugin_session_base import PluginSession
-from .exceptions import SessionNotFoundError, SessionClosedError
 from .ui_schema import UIConfig, ui_config_to_dict
 
 log = logging.getLogger("radical.edge")

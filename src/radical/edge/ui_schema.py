@@ -15,10 +15,6 @@ class UIFieldOption(BaseModel):
     value: str
     label: Optional[str] = None
 
-    def __init__(self, **data):
-        # Allow string shorthand: "local" -> {"value": "local"}
-        super().__init__(**data)
-
 
 class UIField(BaseModel):
     """Form field definition."""
