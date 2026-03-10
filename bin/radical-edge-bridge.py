@@ -426,6 +426,73 @@ async def disconnect_edge(edge_name: str):
     return JSONResponse({"status": "shutdown", "edge": edge_name})
 
 
+# ---------------------------------------------------------------------------
+# Edge Submission (stub - PsiJ remote submission not yet implemented)
+# ---------------------------------------------------------------------------
+
+@app.post("/edge/submit", tags=["Edge Submission"])
+async def submit_edge(request: Request):
+    """
+    Submit a new edge service to a remote resource via PsiJ.
+
+    Expected JSON body:
+    {
+        "name": "edge-name",
+        "resource": "hostname or URL",
+        "executor": "slurm|pbs|lsf|local",
+        "queue": "partition name",
+        "account": "allocation/project",
+        "duration": "seconds",
+        "node_count": 1
+    }
+
+    NOTE: Not yet implemented - PsiJ does not support remote submission.
+    """
+    raise HTTPException(
+        status_code=501,
+        detail="Edge submission not implemented - PsiJ remote submission not yet available"
+    )
+
+
+@app.get("/edge/job/{job_id}", tags=["Edge Submission"])
+async def get_edge_job_status(job_id: str):
+    """
+    Get status of a submitted edge job.
+
+    NOTE: Not yet implemented - PsiJ does not support remote submission.
+    """
+    raise HTTPException(
+        status_code=501,
+        detail="Edge job status not implemented - PsiJ remote submission not yet available"
+    )
+
+
+@app.post("/edge/job/{job_id}/cancel", tags=["Edge Submission"])
+async def cancel_edge_job(job_id: str):
+    """
+    Cancel a submitted edge job.
+
+    NOTE: Not yet implemented - PsiJ does not support remote submission.
+    """
+    raise HTTPException(
+        status_code=501,
+        detail="Edge job cancellation not implemented - PsiJ remote submission not yet available"
+    )
+
+
+@app.get("/edge/jobs", tags=["Edge Submission"])
+async def list_edge_jobs():
+    """
+    List all submitted edge jobs.
+
+    NOTE: Not yet implemented - PsiJ does not support remote submission.
+    """
+    raise HTTPException(
+        status_code=501,
+        detail="Edge job listing not implemented - PsiJ remote submission not yet available"
+    )
+
+
 @app.get("/", tags=["UI"], include_in_schema=False)
 async def root():
     import os

@@ -1129,6 +1129,51 @@
             <p>Not connected. Enter a Bridge URL and click Connect.</p>
           </div>
         </div>
+
+        <!-- Edge Submission Form (remote PsiJ - not yet implemented) -->
+        <div class="card" id="bridgeEdgeSubmit" style="display:none; margin-top:20px;">
+          <div class="card-title">🚀 Submit Remote Edge</div>
+          <p style="color:var(--muted); font-size:0.85rem; margin-bottom:12px;">
+            Submit a new edge service to a remote HPC resource via PsiJ.
+          </p>
+          <div class="grid2">
+            <div>
+              <div class="form-group"><label>Edge Name</label>
+                <input class="bridge-edge-name" type="text" placeholder="my-edge" /></div>
+              <div class="form-group"><label>Resource (hostname)</label>
+                <input class="bridge-resource" type="text" placeholder="login.cluster.edu" /></div>
+              <div class="form-group"><label>Executor</label>
+                <select class="bridge-executor">
+                  <option value="slurm">slurm</option>
+                  <option value="pbs">pbs</option>
+                  <option value="lsf">lsf</option>
+                  <option value="local">local</option>
+                </select>
+              </div>
+            </div>
+            <div>
+              <div class="form-group"><label>Queue / Partition</label>
+                <input class="bridge-queue" type="text" placeholder="debug" /></div>
+              <div class="form-group"><label>Account / Project</label>
+                <input class="bridge-account" type="text" placeholder="optional" /></div>
+              <div class="form-group"><label>Duration (seconds)</label>
+                <input class="bridge-duration" type="text" placeholder="3600" /></div>
+              <div class="form-group"><label>Node Count</label>
+                <input class="bridge-nodes" type="number" value="1" min="1" /></div>
+            </div>
+          </div>
+          <button class="btn btn-success" onclick="submitRemoteEdge()" style="margin-top:12px;">
+            🚀 Submit Edge
+          </button>
+        </div>
+
+        <!-- Submitted Edge Jobs Monitor -->
+        <div class="card" id="bridgeEdgeJobs" style="display:none; margin-top:16px;">
+          <div class="card-title">📊 Submitted Edge Jobs</div>
+          <div class="bridge-jobs-output" style="font-family:'JetBrains Mono',monospace; font-size:0.85rem;">
+            <div style="color:var(--muted); font-style:italic;">No edge jobs submitted yet.</div>
+          </div>
+        </div>
       </div>
 
       <!-- SysInfo page (template, cloned per edge) -->
@@ -1930,6 +1975,10 @@
         document.getElementById('bridgePageTitle').textContent = `Bridge [${hostname}]`;
         document.getElementById('nav-bridge').style.display = '';
 
+        // Show edge submission form and jobs monitor
+        document.getElementById('bridgeEdgeSubmit').style.display = '';
+        document.getElementById('bridgeEdgeJobs').style.display = '';
+
         showPage('bridge');
 
         // Open SSE event stream for push notifications
@@ -2001,6 +2050,8 @@
       document.getElementById('connectBtn').classList.remove('btn-danger');
       document.getElementById('connectBtn').classList.add('btn-primary');
       document.getElementById('nav-bridge').style.display = 'none';
+      document.getElementById('bridgeEdgeSubmit').style.display = 'none';
+      document.getElementById('bridgeEdgeJobs').style.display = 'none';
       document.getElementById('edgeTree').innerHTML = '';
       document.getElementById('bridgeInfoContent').innerHTML = `
         <div class="empty">
@@ -3249,6 +3300,96 @@
       } catch (e) {
         flash('Disconnect failed: ' + e.message, false);
         btn.disabled = false;
+      }
+    }
+
+    // Remote edge submission (stub - not yet implemented on backend)
+    async function submitRemoteEdge() {
+      const card   = document.getElementById('bridgeEdgeSubmit');
+      const name   = card.querySelector('.bridge-edge-name').value.trim();
+      const res    = card.querySelector('.bridge-resource').value.trim();
+      const exec   = card.querySelector('.bridge-executor').value;
+      const queue  = card.querySelector('.bridge-queue').value.trim();
+      const acct   = card.querySelector('.bridge-account').value.trim();
+      const dur    = card.querySelector('.bridge-duration').value.trim() || '3600';
+      const nodes  = card.querySelector('.bridge-nodes').value || '1';
+
+      if (!name) { flash('Edge name is required', false); return; }
+      if (!res)  { flash('Resource hostname is required', false); return; }
+
+      const payload = {
+        edge_name: name,
+        resource:  res,
+        executor:  exec,
+        queue:     queue || null,
+        account:   acct || null,
+        duration:  parseInt(dur, 10),
+        nodes:     parseInt(nodes, 10)
+      };
+
+      try {
+        await apiFetch('/edge/submit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        flash(`Edge "${name}" submitted to ${res}`);
+        refreshEdgeJobs();
+      } catch (e) {
+        // 501 Not Implemented is expected for now
+        if (e.message.includes('501') || e.message.toLowerCase().includes('not implemented')) {
+          flash('Remote edge submission not yet implemented on backend', false);
+        } else {
+          flash('Submit failed: ' + e.message, false);
+        }
+      }
+    }
+
+    // Refresh the list of submitted edge jobs
+    async function refreshEdgeJobs() {
+      const output = document.querySelector('#bridgeEdgeJobs .bridge-jobs-output');
+      try {
+        const data = await apiFetch('/edge/jobs');
+        if (!data || !data.jobs || data.jobs.length === 0) {
+          output.innerHTML = '<div style="color:var(--muted); font-style:italic;">No edge jobs submitted yet.</div>';
+          return;
+        }
+        let html = '<table style="width:100%; border-collapse:collapse;">';
+        html += '<tr style="text-align:left; border-bottom:1px solid var(--border);"><th>Job ID</th><th>Edge</th><th>Resource</th><th>State</th><th></th></tr>';
+        for (const job of data.jobs) {
+          html += `<tr>
+            <td style="padding:4px 8px;">${escHtml(job.job_id)}</td>
+            <td style="padding:4px 8px;">${escHtml(job.edge_name)}</td>
+            <td style="padding:4px 8px;">${escHtml(job.resource)}</td>
+            <td style="padding:4px 8px;">${escHtml(job.state)}</td>
+            <td style="padding:4px 8px;"><button class="btn btn-danger btn-sm" onclick="cancelEdgeJob('${escHtml(job.job_id)}')">[x]</button></td>
+          </tr>`;
+        }
+        html += '</table>';
+        output.innerHTML = html;
+      } catch (e) {
+        // 501 Not Implemented is expected
+        if (e.message.includes('501') || e.message.toLowerCase().includes('not implemented')) {
+          output.innerHTML = '<div style="color:var(--muted); font-style:italic;">Job tracking not yet implemented.</div>';
+        } else {
+          output.innerHTML = `<div style="color:var(--error);">Error: ${escHtml(e.message)}</div>`;
+        }
+      }
+    }
+
+    // Cancel a submitted edge job
+    async function cancelEdgeJob(jobId) {
+      if (!confirm(`Cancel edge job "${jobId}"?`)) return;
+      try {
+        await apiFetch(`/edge/job/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' });
+        flash(`Edge job "${jobId}" cancelled`);
+        refreshEdgeJobs();
+      } catch (e) {
+        if (e.message.includes('501') || e.message.toLowerCase().includes('not implemented')) {
+          flash('Job cancellation not yet implemented', false);
+        } else {
+          flash('Cancel failed: ' + e.message, false);
+        }
       }
     }
 
