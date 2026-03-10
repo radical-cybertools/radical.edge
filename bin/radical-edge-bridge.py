@@ -408,20 +408,23 @@ async def get_edges():
 @app.post("/edge/disconnect/{edge_name}", tags=["Management"])
 async def disconnect_edge(edge_name: str):
     """
-    Disconnect an edge by closing its WebSocket connection.
+    Shutdown an edge by sending a shutdown command and closing the connection.
 
-    This will cause the edge service to terminate if it doesn't reconnect.
+    This will cause the edge service to terminate (not reconnect).
     """
     if edge_name not in edges:
         raise HTTPException(status_code=404, detail=f"Edge '{edge_name}' not connected")
 
     ws = edges[edge_name]
     try:
-        await ws.close(code=1000, reason="Disconnected by user")
+        # Send shutdown command so edge doesn't reconnect
+        shutdown_msg = json.dumps({"type": "shutdown", "reason": "Disconnected by user"})
+        await ws.send(shutdown_msg)
+        await ws.close(code=1000, reason="Shutdown by user")
     except Exception as e:
-        log.warning("[Bridge] Error closing edge %s: %s", edge_name, e)
+        log.warning("[Bridge] Error shutting down edge %s: %s", edge_name, e)
 
-    return JSONResponse({"status": "disconnected", "edge": edge_name})
+    return JSONResponse({"status": "shutdown", "edge": edge_name})
 
 
 @app.get("/", tags=["UI"], include_in_schema=False)

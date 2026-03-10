@@ -22,7 +22,7 @@ import radical.edge.logging_config  # noqa: F401 # pylint: disable=unused-import
 
 from radical.edge.plugin_base import Plugin
 from radical.edge.models import (
-    RequestMessage, PingMessage, ErrorMessage,
+    RequestMessage, PingMessage, ErrorMessage, ShutdownMessage,
     ResponseMessage, NotificationMessage, RegisterMessage,
     parse_bridge_message
 )
@@ -310,6 +310,11 @@ class EdgeService:
                                         async with self._send_lock:
                                             await ws.send('{"type": "pong"}')
                                         continue
+
+                                    if isinstance(msg, ShutdownMessage):
+                                        log.info("[Edge] Shutdown requested: %s", msg.reason)
+                                        self._stop_event.set()
+                                        return
 
                                     if isinstance(msg, RequestMessage):
                                         asyncio.create_task(self._handle_request(msg))

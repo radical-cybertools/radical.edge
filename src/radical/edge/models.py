@@ -71,12 +71,18 @@ class ErrorMessage(BaseModel):
     message: str = Field(..., description="Error description")
 
 
+class ShutdownMessage(BaseModel):
+    """Shutdown command from bridge to edge."""
+    type: Literal["shutdown"] = "shutdown"
+    reason: str = Field("User requested shutdown", description="Shutdown reason")
+
+
 # ---------------------------------------------------------------------------
 # Union types for parsing
 # ---------------------------------------------------------------------------
 
 EdgeToBridgeMessage = Union[RegisterMessage, ResponseMessage, NotificationMessage, PongMessage]
-BridgeToEdgeMessage = Union[RequestMessage, PingMessage, ErrorMessage]
+BridgeToEdgeMessage = Union[RequestMessage, PingMessage, ErrorMessage, ShutdownMessage]
 
 
 def parse_edge_message(data: dict) -> EdgeToBridgeMessage:
@@ -103,5 +109,7 @@ def parse_bridge_message(data: dict) -> BridgeToEdgeMessage:
         return PingMessage(**data)
     elif msg_type == "error":
         return ErrorMessage(**data)
+    elif msg_type == "shutdown":
+        return ShutdownMessage(**data)
     else:
         raise ValueError(f"Unknown bridge message type: {msg_type}")
