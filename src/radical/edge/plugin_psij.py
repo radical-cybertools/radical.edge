@@ -2,6 +2,7 @@
 PSIJ Plugin for Radical Edge.
 '''
 
+import asyncio
 import logging
 import os
 
@@ -23,6 +24,9 @@ log = logging.getLogger("radical.edge")
 # Default poll interval for job status updates (in seconds)
 PSIJ_POLL_INTERVAL = 10.0
 
+# Terminal states that don't need further polling
+TERMINAL_STATES = {'COMPLETED', 'FAILED', 'CANCELED'}
+
 
 class PSIJSession(PluginSession):
     '''
@@ -34,7 +38,9 @@ class PSIJSession(PluginSession):
     def __init__(self, sid: str, **kwargs: Any):
         super().__init__(sid)
         self._jobs: Dict[str, Any] = {}  # local job cache: job_id -> psij.Job
+        self._job_states: Dict[str, str] = {}  # track last known state per job
         self._poll_interval = kwargs.get('poll_interval', self.poll_interval)
+        self._poll_task = None
 
     async def submit_job(self, job_spec_dict: Dict[str, Any], executor_name: str = 'local') -> Dict[str, Any]:
         '''
@@ -137,6 +143,9 @@ class PSIJSession(PluginSession):
 
             job.set_job_status_callback(_on_status)
 
+            # Start background polling for job status updates
+            self._start_polling()
+
             log.info("Submitted job %s to %s", job.id, executor_name)
             return {"job_id": job.id, "native_id": job.native_id}
 
@@ -201,6 +210,89 @@ class PSIJSession(PluginSession):
             log.exception("Job cancellation failed: %s", e)
             raise HTTPException(status_code=500, detail=str(e)) from e
 
+    async def close(self) -> dict:
+        '''
+        Close the session and stop polling.
+        '''
+        if self._poll_task:
+            self._poll_task.cancel()
+            try:
+                await self._poll_task
+            except asyncio.CancelledError:
+                pass
+            self._poll_task = None
+        return await super().close()
+
+    def _start_polling(self):
+        '''
+        Start the background polling task if not already running.
+        '''
+        if self._poll_task is None or self._poll_task.done():
+            self._poll_task = asyncio.create_task(self._poll_jobs())
+
+    async def _poll_jobs(self):
+        '''
+        Background task that polls job status and sends notifications.
+        '''
+        while True:
+            try:
+                await asyncio.sleep(self._poll_interval)
+
+                # Check all non-terminal jobs
+                for job_id, job in list(self._jobs.items()):
+                    try:
+                        status = job.status
+                        state_str = str(status.state)
+                        if state_str.startswith('JobState.'):
+                            state_str = state_str[9:]
+
+                        # Skip if state hasn't changed
+                        last_state = self._job_states.get(job_id)
+                        if state_str == last_state:
+                            continue
+                        self._job_states[job_id] = state_str
+
+                        is_terminal = state_str in TERMINAL_STATES
+
+                        stdout_content = ""
+                        stderr_content = ""
+                        if is_terminal:
+                            try:
+                                sp = getattr(job.spec, 'stdout_path', None)
+                                if sp and os.path.exists(str(sp)):
+                                    with open(str(sp), 'r') as f:
+                                        stdout_content = f.read()
+                            except Exception:
+                                pass
+                            try:
+                                sp = getattr(job.spec, 'stderr_path', None)
+                                if sp and os.path.exists(str(sp)):
+                                    with open(str(sp), 'r') as f:
+                                        stderr_content = f.read()
+                            except Exception:
+                                pass
+
+                        if self._notify:
+                            self._notify("job_status", {
+                                "job_id":    job_id,
+                                "state":     state_str,
+                                "exit_code": status.exit_code if is_terminal else None,
+                                "stdout":    stdout_content,
+                                "stderr":    stderr_content
+                            })
+
+                    except Exception as e:
+                        log.debug("Error polling job %s: %s", job_id, e)
+
+                # Check if all jobs are terminal - if so, stop polling
+                if all(self._job_states.get(jid) in TERMINAL_STATES
+                       for jid in self._jobs):
+                    break
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                log.debug("Polling error: %s", e)
 
 
 class PSIJClient(PluginClient):

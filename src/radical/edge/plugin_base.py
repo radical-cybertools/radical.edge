@@ -81,6 +81,7 @@ class Plugin(object):
         self._sessions: Dict[str, PluginSession] = {}
         self._session_last_access: Dict[str, float] = {}  # Track last access time
         self._id_lock: asyncio.Lock = asyncio.Lock()
+        self._main_loop: Optional[asyncio.AbstractEventLoop] = None
 
         # Built-in session management routes
         self.add_route_post('register_session', self.register_session)
@@ -130,9 +131,9 @@ class Plugin(object):
         def _notify(topic: str, data: dict) -> None:
             """
             Schedule a notification to be sent asynchronously.
-            Works from both sync and async contexts.
+            Works from both sync and async contexts, including other threads.
             """
-            async def _send_with_error_handling():
+            async def _send():
                 try:
                     await plugin.send_notification(topic, data)
                 except Exception as e:
@@ -142,30 +143,18 @@ class Plugin(object):
             try:
                 # Try to get the running loop (works in async context)
                 loop = asyncio.get_running_loop()
-                # Create task with error handling
-                task = loop.create_task(_send_with_error_handling())
-                # Add callback to log any unhandled exceptions
-                task.add_done_callback(
-                    lambda t: log.error("[%s] Notification task failed: %s",
-                                        plugin.instance_name, t.exception())
-                    if t.exception() else None
-                )
+                # Cache the main loop for cross-thread calls
+                if plugin._main_loop is None:
+                    plugin._main_loop = loop
+                loop.create_task(_send())
             except RuntimeError:
-                # No running loop - we're being called from a sync context
-                log.warning("[%s] _notify called outside async context for topic %s",
-                            plugin.instance_name, topic)
-                try:
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        loop.call_soon_threadsafe(
-                            lambda: asyncio.ensure_future(_send_with_error_handling())
-                        )
-                    else:
-                        log.warning("[%s] Event loop not running, notification dropped: %s",
-                                    plugin.instance_name, topic)
-                except Exception as e:
-                    log.warning("[%s] Failed to schedule notification: %s",
-                                plugin.instance_name, e)
+                # No running loop - called from sync context or another thread
+                # Use the cached main event loop
+                if plugin._main_loop is not None:
+                    asyncio.run_coroutine_threadsafe(_send(), plugin._main_loop)
+                else:
+                    log.debug("[%s] No event loop available for notification",
+                              plugin.instance_name)
 
         session._notify = _notify
         return session

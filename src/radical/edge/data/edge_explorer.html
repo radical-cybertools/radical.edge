@@ -2847,8 +2847,8 @@
     async function loadQueueJobs(edgeName, sid, ns, queue, btn) {
       btn.disabled = true; btn.textContent = '…';
       try {
-        // Use user=* to show all jobs in the queue (not just current user)
-        const data = await apiFetch(`${ns}/list_jobs/${sid}/${encodeURIComponent(queue)}?user=*`);
+        // Always fetch fresh job data (bypass cache)
+        const data = await apiFetch(`${ns}/list_jobs/${sid}/${encodeURIComponent(queue)}?force=true`);
         const jobs = data.jobs || data || [];
         currentJobsData = jobs;
 
@@ -2858,7 +2858,7 @@
         title.textContent = `📄 Jobs in ${queue}`;
 
         if (!jobs.length) {
-          body.innerHTML = `<p style="color:var(--muted)">No jobs found in <strong>${queue}</strong>.</p>`;
+          body.innerHTML = `<p style="color:var(--muted)">No jobs in <strong>${queue}</strong>.</p>`;
           showJobsOverlay();
           return;
         }

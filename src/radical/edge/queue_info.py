@@ -146,18 +146,14 @@ class QueueInfo(ABC):
 
         Args:
             queue (str): Partition name to list jobs for.
-            user (str): User to filter jobs for. When None (default),
-                defaults to the current user. Pass user='*' to return all
-                jobs (admin view).
+            user (str): User to filter jobs for. When None or '*' (default),
+                shows all jobs. Pass a username to filter to that user.
             force (bool): Bypass cache if True.
 
         Returns:
             dict: {"jobs": [<job_dict>, ...]}
         """
-        if user is None:
-            import getpass
-            user = getpass.getuser()
-        elif user == '*':
+        if user == '*':
             user = None
 
         key = f'jobs:{queue}:{user}'
