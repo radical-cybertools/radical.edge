@@ -418,9 +418,8 @@ async def disconnect_edge(edge_name: str):
     ws = edges[edge_name]
     try:
         # Send shutdown command so edge doesn't reconnect
-        shutdown_msg = json.dumps({"type": "shutdown", "reason": "Disconnected by user"})
-        await ws.send(shutdown_msg)
-        await ws.close(code=1000, reason="Shutdown by user")
+        await ws.send_text(json.dumps({"type": "shutdown", "reason": "Disconnected by user"}))
+        await ws.close(code=1000)
     except Exception as e:
         log.warning("[Bridge] Error shutting down edge %s: %s", edge_name, e)
 
