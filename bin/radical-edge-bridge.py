@@ -565,6 +565,23 @@ if __name__ == "__main__":
 
     import uvicorn
 
+    # Custom log filter to suppress CancelledError during shutdown
+    class ShutdownFilter(logging.Filter):
+        def filter(self, record):
+            # Suppress CancelledError messages during graceful shutdown
+            msg = str(record.getMessage())
+            if 'CancelledError' in msg:
+                return False
+            # Suppress "Exception in ASGI application" when it's a CancelledError
+            if record.exc_info:
+                exc = record.exc_info[1]
+                if isinstance(exc, asyncio.CancelledError):
+                    return False
+            return True
+
+    # Apply filter to uvicorn error logger
+    logging.getLogger("uvicorn.error").addFilter(ShutdownFilter())
+
     # Uvicorn config
     host = "0.0.0.0"
     port = 8000
