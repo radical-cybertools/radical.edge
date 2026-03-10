@@ -1140,8 +1140,8 @@
             <div>
               <div class="form-group"><label>Edge Name</label>
                 <input class="bridge-edge-name" type="text" placeholder="my-edge" /></div>
-              <div class="form-group"><label>Resource (hostname)</label>
-                <input class="bridge-resource" type="text" placeholder="login.cluster.edu" /></div>
+              <div class="form-group"><label>Resource (SSH target)</label>
+                <input class="bridge-target" type="text" placeholder="user@login.cluster.edu" /></div>
               <div class="form-group"><label>Executor</label>
                 <select class="bridge-executor">
                   <option value="slurm">slurm</option>
@@ -2317,114 +2317,52 @@
 
     function renderHierarchy(edges, bridge) {
       let html = `<div class="card">
-        <div style="font-size: 0.95em; line-height: 1.8;">`;
+        <div class="card-title">Connected Edges</div>`;
 
-      // Bridge level
-      const bridgeUrl = bridge.url || 'Disconnected';
-      html += `<div style="display:flex; align-items:center;">
-          <span style="font-size: 1.1em; margin-right:8px;">🌉</span> <strong style="font-size: 1.1em;">Bridge</strong> 
-          <code style="margin-left:12px; font-size: 0.9em; color:var(--text); background:var(--bg); border:1px solid var(--border); padding:2px 6px; border-radius:4px;">${bridgeUrl}</code>
-        </div>`;
-
-      const edgeNames = Object.keys(edges);
+      const edgeNames = Object.keys(edges).sort();
       if (edgeNames.length === 0) {
-        html += `<div style="margin-top:15px; color:var(--muted); font-style:italic;">🔌 No edges connected to this bridge.</div>`;
+        html += `<div style="color:var(--muted); font-style:italic; padding:12px 0;">
+          No edges connected to this bridge.
+        </div>`;
       } else {
-        // Build children map based on dot-separated names
-        const children = {}; // parentName -> [childNames]
-        const topLevel = [];
+        html += `<table style="width:100%; border-collapse:collapse; font-size:0.9rem;">
+          <thead>
+            <tr style="text-align:left; border-bottom:2px solid var(--border);">
+              <th style="padding:8px 12px;">Edge</th>
+              <th style="padding:8px 12px;">Host</th>
+              <th style="padding:8px 12px;">Plugins</th>
+              <th style="padding:8px 12px; width:40px;"></th>
+            </tr>
+          </thead>
+          <tbody>`;
 
-        // Sort names by length so we process parents before children if possible
-        const sortedNames = edgeNames.sort((a, b) => a.split('.').length - b.split('.').length);
-
-        sortedNames.forEach(ename => {
-          const parts = ename.split('.');
-          if (parts.length > 1) {
-            // Find longest existing prefix
-            let parentFound = false;
-            for (let i = parts.length - 1; i >= 1; i--) {
-              const prefix = parts.slice(0, i).join('.');
-              if (edges[prefix]) {
-                if (!children[prefix]) children[prefix] = [];
-                children[prefix].push(ename);
-                parentFound = true;
-                break;
-              }
-            }
-            if (!parentFound) topLevel.push(ename);
-          } else {
-            topLevel.push(ename);
-          }
-        });
-
-        html += `<div style="margin-left: 12px; border-left: 1px dashed var(--muted); padding-left: 20px; margin-top: 5px;">`;
-
-        function renderEdge(ename, depth = 0) {
-          let ehtml = `<details id="main-edge-${ename}" style="margin-top: 10px;">
-            <summary style="display: list-item; list-style-position: inside; padding: 4px; cursor: pointer; user-select: none; outline: none; font-weight: bold; border-radius: 6px; transition: background .2s;" onmouseover="this.style.background='var(--bg3)'" onmouseout="this.style.background='transparent'">
-              <span style="display: inline-flex; align-items: center; flex: 1;">
-                <span style="font-size: 1.1em; margin-right:8px; margin-left:8px;">💻</span> <strong style="color:var(--accent2); font-size:1.05em;">${ename}</strong>
-              </span>
-              <button class="task-cancel-btn" onclick="disconnectEdge(event, '${ename}')" title="Disconnect edge">✕</button>
-            </summary>`;
-
+        for (const ename of edgeNames) {
           const edata = edges[ename];
           const plugins = Object.keys(edata.plugins || {});
+          // Edge name is typically the hostname; extract base name (before any dot suffix)
+          const hostName = ename.split('.')[0];
+          const pluginList = plugins.length > 0 ? plugins.join(', ') : '<span style="color:var(--muted)">—</span>';
 
-          if (plugins.length > 0 || children[ename]) {
-            ehtml += `<div style="margin-left: 24px; border-left: 1px dashed var(--muted); padding-left: 16px; margin-top: 2px; padding-bottom: 2px;">`;
-
-            // Render plugins
-            for (const pname of plugins) {
-              const pinfo = edata.plugins[pname];
-              const pIcon = pluginIcon(pname, ename);
-              ehtml += `<div style="display:flex; align-items:center; cursor:pointer; padding: 2px 8px; border-radius:4px; transition: background 0.2s; margin-top:2px; margin-left:-8px;" 
-                            onmouseover="this.style.background='var(--bg3)'" 
-                            onmouseout="this.style.background='transparent'"
-                            onclick="showPluginPage('${ename}','${pname}')">
-                <span style="width:140px; font-weight:600; display:flex; align-items:center; gap:8px;">
-                   <span>${pIcon}</span> ${pname}
-                </span>
-                <code style="color:var(--text); background:var(--bg); border:1px solid var(--border); padding:1px 4px; border-radius:4px; font-family:monospace; font-size: 0.8em;">${pinfo.namespace || ''}</code>
-              </div>`;
-
-              // Add tasks
-              const tasks = (taskRegistry[ename] && taskRegistry[ename][pname]) || {};
-              const tids = Object.keys(tasks);
-              if (tids.length > 0) {
-                ehtml += `<div style="margin-left:14px; border-left:1px dashed var(--muted); padding-left:12px; margin-top:1px; margin-bottom:4px;">`;
-                for (const tid of tids) {
-                  const tinfo = tasks[tid];
-                  const badge = taskStateBadge(tinfo.state);
-                  const domId = pname === 'psij' ? `psij-job-${ename}-${tid}` : `rh-task-${ename}-${tid}`;
-                  ehtml += `<div style="font-size:0.8em; padding:1px 0; cursor:pointer; display:flex; align-items:center; gap:6px; opacity:0.85" onclick="showTaskEntry('${ename}','${pname}','${domId}')">
-                    ${badge} <code style="font-size:0.75rem">${tid.slice(0, 8)}…</code> <span style="color:var(--muted); font-size:0.8em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:200px;">${tinfo.label || ''}</span>
-                  </div>`;
-                }
-                ehtml += `</div>`;
-              }
-            }
-
-            // Render children edges
-            if (children[ename]) {
-              for (const cname of children[ename]) {
-                ehtml += renderEdge(cname, depth + 1);
-              }
-            }
-
-            ehtml += `</div>`;
-          }
-          ehtml += `</details>`;
-          return ehtml;
+          html += `<tr style="border-bottom:1px solid var(--border);"
+                       onmouseover="this.style.background='var(--bg3)'"
+                       onmouseout="this.style.background='transparent'">
+            <td style="padding:8px 12px;">
+              <code style="color:var(--accent2); font-weight:600;">${escHtml(ename)}</code>
+            </td>
+            <td style="padding:8px 12px;">
+              <code style="color:var(--text);">${escHtml(hostName)}</code>
+            </td>
+            <td style="padding:8px 12px; color:var(--muted);">${pluginList}</td>
+            <td style="padding:8px 12px;">
+              <button class="task-cancel-btn" onclick="disconnectEdge(event, '${ename}')" title="Disconnect edge">✕</button>
+            </td>
+          </tr>`;
         }
 
-        for (const ename of topLevel) {
-          html += renderEdge(ename);
-        }
-        html += `</div>`;
+        html += `</tbody></table>`;
       }
 
-      html += `</div></div></div>`;
+      html += `</div>`;
       document.getElementById('bridgeInfoContent').innerHTML = html;
     }
 
@@ -3307,19 +3245,19 @@
     async function submitRemoteEdge() {
       const card   = document.getElementById('bridgeEdgeSubmit');
       const name   = card.querySelector('.bridge-edge-name').value.trim();
-      const res    = card.querySelector('.bridge-resource').value.trim();
+      const target = card.querySelector('.bridge-target').value.trim();
       const exec   = card.querySelector('.bridge-executor').value;
       const queue  = card.querySelector('.bridge-queue').value.trim();
       const acct   = card.querySelector('.bridge-account').value.trim();
       const dur    = card.querySelector('.bridge-duration').value.trim() || '3600';
       const nodes  = card.querySelector('.bridge-nodes').value || '1';
 
-      if (!name) { flash('Edge name is required', false); return; }
-      if (!res)  { flash('Resource hostname is required', false); return; }
+      if (!name)   { flash('Edge name is required', false); return; }
+      if (!target) { flash('Resource SSH target is required', false); return; }
 
       const payload = {
         edge_name: name,
-        resource:  res,
+        target:    target,
         executor:  exec,
         queue:     queue || null,
         account:   acct || null,
@@ -3333,7 +3271,7 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
         });
-        flash(`Edge "${name}" submitted to ${res}`);
+        flash(`Edge "${name}" submitted to ${target}`);
         refreshEdgeJobs();
       } catch (e) {
         // 501 Not Implemented is expected for now
