@@ -2314,7 +2314,13 @@
               <button onclick="copyToClipboard('${escHtml(BRIDGE)}')" title="Copy URL" style="background:none; border:none; cursor:pointer; padding:2px; font-size:1rem;">📋</button>
             </div>
           </div>
-          <button class="btn btn-danger btn-sm" onclick="terminateBridge(event)" style="margin-left:16px;">
+          <a href="https://radicaledge.readthedocs.io/en/latest/plugin_api.html" target="_blank" class="btn btn-secondary btn-sm" style="margin-left:16px;">
+            REST API
+          </a>
+          <a href="https://radicaledge.readthedocs.io/en/latest/service_embedding.html" target="_blank" class="btn btn-secondary btn-sm" style="margin-left:8px;">
+            PY API
+          </a>
+          <button class="btn btn-danger btn-sm" onclick="terminateBridge(event)" style="margin-left:8px;">
             Terminate Bridge
           </button>
         </div>
@@ -2358,8 +2364,10 @@
               <code style="color:var(--text);">${escHtml(hostName)}</code>
             </td>
             <td style="padding:8px 12px; color:var(--muted);">${pluginList}</td>
-            <td style="padding:8px 12px; text-align:right;">
-              <button class="btn btn-danger btn-sm" onclick="disconnectEdge(event, '${ename}')">Terminate Edge</button>
+            <td style="padding:8px 12px; text-align:right; white-space:nowrap;">
+              <a href="https://radicaledge.readthedocs.io/en/latest/plugin_api.html" target="_blank" class="btn btn-secondary btn-sm">REST API</a>
+              <a href="https://radicaledge.readthedocs.io/en/latest/service_embedding.html" target="_blank" class="btn btn-secondary btn-sm" style="margin-left:4px;">PY API</a>
+              <button class="btn btn-danger btn-sm" onclick="disconnectEdge(event, '${ename}')" style="margin-left:4px;">Terminate Edge</button>
             </td>
           </tr>`;
         }

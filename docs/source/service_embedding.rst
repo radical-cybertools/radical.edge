@@ -196,7 +196,10 @@ API Endpoints
 -------------
 The plugin exposes the following endpoints under the ``/psij`` namespace (default):
 
-*   **POST /psij/submit?cid=<client_id>**
+*   **POST /psij/{uid}/register_session**
+    Registers a new session and returns a session ID (``sid``).
+
+*   **POST /psij/{uid}/submit/{sid}**
     Submits a job. Requires a JSON body with ``job_spec`` and optional ``executor``.
 
     .. code-block:: json
@@ -206,28 +209,52 @@ The plugin exposes the following endpoints under the ``/psij`` namespace (defaul
                "executable": "/bin/echo",
                "arguments": ["Hello World"],
                "directory": "/tmp",
-               "environment": {"MY_VAR": "value"}
+               "environment": {"MY_VAR": "value"},
+               "attributes": {
+                   "queue_name": "debug",
+                   "account": "my_project",
+                   "duration": "600"
+               }
            },
-           "executor": "local"
+           "executor": "slurm"
        }
 
-*   **GET /psij/status/{job_id}?cid=<client_id>**
+*   **GET /psij/{uid}/status/{sid}/{job_id}**
     Retrieves the status of a specific job.
 
-*   **POST /psij/cancel/{job_id}?cid=<client_id>**
+*   **POST /psij/{uid}/cancel/{sid}/{job_id}**
     Cancels a specific job.
 
-Registering a Client
---------------------
-Before submitting jobs, you must register a client session to get a ``cid`` (Client ID):
+*   **POST /psij/{uid}/unregister_session/{sid}**
+    Unregisters a session and cleans up resources.
+
+Registering a Session
+---------------------
+Before submitting jobs, you must register a session to get a ``sid`` (Session ID):
 
 .. code-block:: python
 
    import requests
 
-   # Register client
-   resp = requests.post("http://localhost:8000/psij/register_client")
-   cid = resp.json()['cid']
+   BRIDGE_URL = "https://localhost:8000"
+   EDGE_NAME = "my-edge"
 
-   # Use cid in subsequent requests
-   requests.post(f"http://localhost:8000/psij/submit?cid={cid}", ...)
+   # Register session
+   resp = requests.post(f"{BRIDGE_URL}/{EDGE_NAME}/psij/register_session")
+   sid = resp.json()['sid']
+
+   # Submit a job
+   job_spec = {
+       "executable": "/bin/sleep",
+       "arguments": ["10"],
+       "attributes": {"queue_name": "debug"}
+   }
+   resp = requests.post(
+       f"{BRIDGE_URL}/{EDGE_NAME}/psij/submit/{sid}",
+       json={"job_spec": job_spec, "executor": "slurm"}
+   )
+   job_id = resp.json()['job_id']
+
+   # Check status
+   resp = requests.get(f"{BRIDGE_URL}/{EDGE_NAME}/psij/status/{sid}/{job_id}")
+   print(resp.json())

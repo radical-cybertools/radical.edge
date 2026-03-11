@@ -129,13 +129,18 @@ INFO:     Uvicorn running on https://0.0.0.0:8000 (Press CTRL+C to quit)
 
 #### 3.1.B. Terminal 2 (edge)
 
-Run the edge service. NOTE: for production runs, it will be running on the 
+Run the edge service. NOTE: for production runs, it will be running on the
 target HPC resource (on the head node and/or from the batch job).
 
 ```shell
 # corresponding virtual environment (e.g., ve_edge) should be active,
 # env variables RADICAL_BRIDGE_CERT, RADICAL_BRIDGE_URL should be set
 radical-edge-service.py
+```
+
+For launching via batch job schedulers, use the wrapper script which sets up the environment:
+```shell
+radical-edge-wrapper.sh --url wss://bridge.example.org:8000 --name my-hpc-edge
 ```
 
 Example output:

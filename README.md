@@ -39,6 +39,14 @@ Start the edge service (ideally on your target HPC node) pointing to the running
 ./bin/radical-edge-service.py --name my-edge --url wss://localhost:8000
 ```
 
+#### Using the Wrapper Script
+For launching edge services via batch job schedulers (e.g., SLURM), use the wrapper script which properly sets up the environment:
+```sh
+./bin/radical-edge-wrapper.sh --url wss://bridge.example.org:8000 --name my-hpc-edge
+```
+
+The wrapper script automatically detects and exports the correct `PYTHONPATH` for the installed modules.
+
 ### 4. Running a Test Client
 ```sh
 ./examples/example_sysinfo.py
@@ -46,9 +54,16 @@ Start the edge service (ideally on your target HPC node) pointing to the running
 
 ## REST API
 
-The Bridge serves as an HTTP proxy:
+The Bridge serves as an HTTP proxy with the following management endpoints:
+
+### Management Endpoints
+- `GET /` - Fetches the interactive Edge Explorer UI.
 - `POST /edge/list` - Returns a JSON structure describing all currently connected Edges and their loaded Plugins namespaces.
-- `GET /` - Fetches the interactive Portal UI (`edge_explorer.html`).
+- `POST /edge/disconnect/{edge_name}` - Disconnect a specific edge service from the bridge.
+- `POST /bridge/terminate` - Terminate the bridge process (edges remain running).
+- `GET /events` - Server-Sent Events (SSE) endpoint for real-time notifications.
+
+### Proxy Routes
 - `/*` - All other routes are parsed by the Bridge to extract the targeted `{edge_name}` and `{namespace}` path. Requests are tunneled via WebSocket directly to that Edge's registered internal FastAPI app.
 
 ## Plugin Structure
@@ -94,12 +109,47 @@ You can query batch scheduling resources programmatically to auto-discover appro
 qi = ec.get_plugin('queue_info')
 info = qi.get_info()           # Returns cluster hardware topologies and queue states
 allocs = qi.list_allocations() # Returns active account allocations for the user
+jobs = qi.list_jobs('debug')   # Returns jobs in the specified queue (filtered to current user by default)
 ```
+
+## Built-in Plugins
+
+### sysinfo
+System information plugin providing hardware and environment details:
+- CPU topology (cores, threads, model)
+- Memory and storage information
+- GPU detection (NVIDIA, AMD, Intel)
+- Shared filesystem detection (Lustre, GPFS, NFS, BeeGFS, DVS, etc.)
+- Network interface information
+- Background prefetch for faster initial queries
+
+### queue_info
+SLURM queue information plugin:
+- Queue/partition details and limits
+- Job listing (filtered by user)
+- Allocation information
+- Background cache prefetch on plugin load
+
+### psij
+PSI/J job submission plugin:
+- Submit jobs via various batch schedulers (SLURM, PBS, LSF, local)
+- Real-time job status notifications via SSE
+- Job cancellation support
+- Custom attributes for scheduler-specific options
+
+### lucid
+RADICAL Pilot integration plugin for task-based workflows.
+
+### rhapsody
+RADICAL Rhapsody integration for workflow composition.
 
 ## Portal Integration
 
-The interactive Portal interface (`examples/edge_explorer.html`) serves as a comprehensive browser client showcasing direct interaction with the Bridge HTTP interface.
+The interactive Edge Explorer interface (`src/radical/edge/data/edge_explorer.html`) provides a comprehensive browser-based client for interacting with the Bridge HTTP interface.
 
-- It serves dynamically via `GET /` on the Bridge.
+- Served dynamically via `GET /` on the Bridge.
 - Discovers the endpoint hierarchy leveraging the `POST /edge/list` API.
-- Implements purely client-side routing to individually interface with the REST bindings of different edge plugins (e.g., querying `queue_info`, or submitting jobs dynamically via `psij` or `rhapsody` plugins), formatting their JSON output dynamically using native web design components.
+- Implements purely client-side routing to interact with REST bindings of different edge plugins (e.g., querying `queue_info`, or submitting jobs dynamically via `psij` or `rhapsody` plugins).
+- Supports real-time updates via Server-Sent Events (SSE) from the `/events` endpoint.
+- Allows launching new edge services on remote resources via SSH and PSI/J job submission.
+- Provides bridge and edge termination controls.

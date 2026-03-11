@@ -69,6 +69,24 @@ PluginSysInfo
    :show-inheritance:
 
 
+PluginPSIJ
+----------
+
+.. automodule:: radical.edge.plugin_psij
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+
+PluginRhapsody
+--------------
+
+.. automodule:: radical.edge.plugin_rhapsody
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+
 Queue Info Backend
 ==================
 
