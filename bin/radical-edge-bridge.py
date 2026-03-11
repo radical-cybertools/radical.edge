@@ -14,7 +14,6 @@ from fastapi import Request, Response, HTTPException
 
 from fastapi.responses       import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles     import StaticFiles
 from starlette.responses     import StreamingResponse
 
 from starlette.websockets    import WebSocketState
@@ -118,9 +117,7 @@ def _find_docs_dir():
 
 _docs_dir = _find_docs_dir()
 if _docs_dir:
-    app.mount("/documentation", StaticFiles(directory=_docs_dir, html=True),
-              name="documentation")
-    print(f"[Bridge] Serving documentation from {_docs_dir}")
+    print(f"[Bridge] Documentation available at /documentation from {_docs_dir}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -598,6 +595,29 @@ async def root():
         })
 
     return Response(content="edge_explorer.html not found", status_code=404)
+
+
+@app.get("/documentation/{doc_path:path}", tags=["Documentation"], include_in_schema=False)
+async def serve_documentation(doc_path: str):
+    """Serve documentation static files."""
+    if not _docs_dir:
+        raise HTTPException(status_code=404, detail="Documentation not available")
+
+    # Sanitize path to prevent directory traversal
+    doc_path = doc_path.lstrip('/')
+    if '..' in doc_path:
+        raise HTTPException(status_code=400, detail="Invalid path")
+
+    file_path = os.path.join(_docs_dir, doc_path)
+
+    # If path is a directory, serve index.html
+    if os.path.isdir(file_path):
+        file_path = os.path.join(file_path, 'index.html')
+
+    if not os.path.exists(file_path) or not os.path.isfile(file_path):
+        raise HTTPException(status_code=404, detail="Documentation file not found")
+
+    return FileResponse(file_path)
 
 
 # all other edge routes are forwarded
