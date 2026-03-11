@@ -8,3 +8,7 @@ uvicorn
 
 psutil
 rich
+
+psij-python
+rhapsody-py
+
