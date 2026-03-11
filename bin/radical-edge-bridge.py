@@ -426,6 +426,33 @@ async def disconnect_edge(edge_name: str):
     return JSONResponse({"status": "shutdown", "edge": edge_name})
 
 
+@app.post("/bridge/terminate", tags=["Management"])
+async def terminate_bridge():
+    """
+    Terminate the bridge process.
+
+    This will shut down the bridge but NOT terminate connected edges.
+    Edges will detect the disconnection and may attempt to reconnect
+    (to this or another bridge).
+    """
+    global shutdown_event
+
+    if shutdown_event is None:
+        raise HTTPException(status_code=503, detail="Bridge not fully initialized")
+
+    # Schedule shutdown after returning response
+    async def delayed_shutdown():
+        await asyncio.sleep(0.5)  # Give time for response to be sent
+        shutdown_event.set()
+
+    asyncio.create_task(delayed_shutdown())
+
+    return JSONResponse({
+        "status": "terminating",
+        "message": "Bridge will terminate shortly. Edges will not be shut down."
+    })
+
+
 # ---------------------------------------------------------------------------
 # Edge Submission (stub - PsiJ remote submission not yet implemented)
 # ---------------------------------------------------------------------------

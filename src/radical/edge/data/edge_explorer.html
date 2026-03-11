@@ -1076,8 +1076,11 @@
     <!-- ── SIDEBAR ──────────────────────────────────────────── -->
     <aside id="sidebar">
       <ul class="tree" id="treeRoot">
-        <li class="tree-item" id="nav-bridge" onclick="showPage('bridge')" style="display:none;">
-          <span class="icon">🌉</span> <span id="bridgeLabel">Bridge</span>
+        <li class="tree-item" id="nav-bridge" style="display:none; display:flex; align-items:center; justify-content:space-between;">
+          <span onclick="showPage('bridge')" style="display:flex; align-items:center; gap:8px; flex:1; cursor:pointer;">
+            <span class="icon">🌉</span> <span id="bridgeLabel">Bridge</span>
+          </span>
+          <button class="task-cancel-btn" onclick="terminateBridge(event)" title="Terminate bridge">✕</button>
         </li>
       </ul>
       <div id="edgeTree"></div>
@@ -1969,11 +1972,10 @@
         document.getElementById('connectBtn').classList.remove('btn-primary');
         document.getElementById('connectBtn').classList.add('btn-danger');
 
-        // Update sidebar bridge label with hostname
-        const hostname = extractHostname(BRIDGE);
-        document.getElementById('bridgeLabel').textContent = `Bridge [${hostname}]`;
-        document.getElementById('bridgePageTitle').textContent = `Bridge [${hostname}]`;
-        document.getElementById('nav-bridge').style.display = '';
+        // Update sidebar and page title
+        document.getElementById('bridgeLabel').textContent = 'Bridge';
+        document.getElementById('bridgePageTitle').textContent = 'Bridge';
+        document.getElementById('nav-bridge').style.display = 'flex';
 
         // Show edge submission form and jobs monitor
         document.getElementById('bridgeEdgeSubmit').style.display = '';
@@ -2316,7 +2318,21 @@
     }
 
     function renderHierarchy(edges, bridge) {
-      let html = `<div class="card">
+      // Bridge info card with URL and terminate button
+      let html = `<div class="card" style="margin-bottom:16px;">
+        <div style="display:flex; align-items:center; justify-content:space-between;">
+          <div>
+            <div class="card-title" style="margin-bottom:4px;">Bridge URL</div>
+            <code style="font-size:0.9rem; color:var(--accent); word-break:break-all;">${escHtml(BRIDGE)}</code>
+          </div>
+          <button class="btn btn-danger btn-sm" onclick="terminateBridge(event)" style="margin-left:16px;">
+            Terminate Bridge
+          </button>
+        </div>
+      </div>`;
+
+      // Connected edges card
+      html += `<div class="card">
         <div class="card-title">Connected Edges</div>`;
 
       const edgeNames = Object.keys(edges).sort();
@@ -3238,6 +3254,23 @@
       } catch (e) {
         flash('Disconnect failed: ' + e.message, false);
         btn.disabled = false;
+      }
+    }
+
+    async function terminateBridge(event) {
+      event.stopPropagation();
+
+      if (!confirm('Terminate the bridge?\n\nConnected edges will NOT be terminated and may reconnect to another bridge.')) {
+        return;
+      }
+
+      try {
+        await apiFetch('/bridge/terminate', { method: 'POST' });
+        flash('Bridge is terminating...');
+        // Disconnect locally since bridge is going away
+        setTimeout(() => doDisconnect(), 1000);
+      } catch (e) {
+        flash('Terminate failed: ' + e.message, false);
       }
     }
 

@@ -393,6 +393,17 @@ class SysInfoProvider:
         }
 
         # --- Disk ---
+        # Shared/network filesystem types common on HPC systems
+        NETWORK_FSTYPES = {
+            # Standard network filesystems
+            "nfs", "nfs4", "cifs", "smb", "smbfs",
+            # Parallel/HPC filesystems
+            "lustre", "gpfs", "beegfs", "pvfs2", "orangefs",
+            "glusterfs", "cephfs", "afs",
+            # Cray-specific
+            "dvs",
+        }
+
         disks = []
         for part in psutil.disk_partitions(all=False):
             # Skip pseudo filesystems if possible (handled by all=False usually)
@@ -406,8 +417,8 @@ class SysInfoProvider:
                 fstype = part.fstype
                 disk_type = "unknown"
 
-                if fstype in ["nfs", "nfs4", "lustre", "cifs", "smb"]:
-                    disk_type = "network"
+                if fstype in NETWORK_FSTYPES:
+                    disk_type = "shared"
                 elif part.device.startswith("/dev/"):
                     sub_type = self._detect_disk_type(part.device)
                     disk_type = f"local {sub_type}"
