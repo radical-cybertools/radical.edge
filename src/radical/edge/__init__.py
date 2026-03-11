@@ -1,9 +1,18 @@
 
-from .plugin_lucid      import PluginLucid  # noqa: F401
 from .plugin_xgfabric   import PluginXGFabric  # noqa: F401
 from .plugin_queue_info import PluginQueueInfo  # noqa: F401
 from .plugin_sysinfo    import PluginSysInfo  # noqa: F401
-from .plugin_psij       import PluginPSIJ  # noqa: F401
+
+# Optional plugins with external dependencies
+try:
+    from .plugin_lucid import PluginLucid  # noqa: F401
+except ImportError:
+    pass
+
+try:
+    from .plugin_psij import PluginPSIJ  # noqa: F401
+except ImportError:
+    pass
 
 try:
     from .plugin_rhapsody import PluginRhapsody  # noqa: F401
