@@ -95,19 +95,27 @@ def _find_docs_dir():
     """Find the documentation directory."""
     import sys
 
+    # Allow override via environment variable
+    env_docs = os.environ.get('RADICAL_EDGE_DOCS')
+    if env_docs and os.path.isdir(env_docs):
+        return os.path.abspath(env_docs)
+
     # Try locations in order of preference
     candidates = []
+    script_dir = os.path.dirname(os.path.abspath(__file__))
 
-    # 1. Check share directory relative to virtualenv
+    # 1. Check relative to this script (development mode) - most likely in dev
+    candidates.append(os.path.join(script_dir, '..', 'share', 'radical.edge', 'docs'))
+
+    # 2. Check docs/build/html relative to script (sphinx build output)
+    candidates.append(os.path.join(script_dir, '..', 'docs', 'build', 'html'))
+
+    # 3. Check share directory relative to virtualenv
     if hasattr(sys, 'prefix'):
         candidates.append(os.path.join(sys.prefix, 'share', 'radical.edge', 'docs'))
 
-    # 2. Check share directory in current working directory
+    # 4. Check share directory in current working directory
     candidates.append(os.path.join(os.getcwd(), 'share', 'radical.edge', 'docs'))
-
-    # 3. Check relative to this script (development mode)
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    candidates.append(os.path.join(script_dir, '..', 'share', 'radical.edge', 'docs'))
 
     for path in candidates:
         if os.path.isdir(path):
