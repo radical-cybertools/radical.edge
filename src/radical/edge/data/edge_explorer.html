@@ -2116,14 +2116,10 @@
             buildSidebar(edges);
             renderHierarchy(edges, window.lastBridge);
 
-            // Restore open states; expand new edges
+            // Restore open states (new edges stay collapsed by default)
             document.querySelectorAll('details').forEach(el => {
-              if (el.id) {
-                if (el.id.startsWith('sidebar-edge-') && !existingEdgeIds.has(el.id)) {
-                  el.open = true;  // New edge: expand
-                } else if (openStates.has(el.id)) {
-                  el.open = true;  // Restore previously open
-                }
+              if (el.id && openStates.has(el.id)) {
+                el.open = true;  // Restore previously open
               }
             });
           }
@@ -2154,14 +2150,10 @@
       buildSidebar(edges);
       renderHierarchy(edges, data.bridge || {});
 
-      // Restore open states, or expand edges on initial load
+      // Restore open states (edges stay collapsed by default)
       document.querySelectorAll('details').forEach(el => {
-        if (el.id) {
-          if (openStates.size === 0 && el.id.startsWith('sidebar-edge-')) {
-            el.open = true;  // Initial load: expand edges
-          } else if (openStates.has(el.id)) {
-            el.open = true;  // Restore previously open
-          }
+        if (el.id && openStates.has(el.id)) {
+          el.open = true;  // Restore previously open
         }
       });
     }
@@ -2219,9 +2211,9 @@
           </summary>
           <ul class="tree" style="margin-top: 2px; padding-left: 8px; border-left: 1px dashed var(--border); margin-left: ${16 + indent}px;">`;
 
-        // Render plugins under a collapsible "plugins" entry (collapsed by default)
+        // Render plugins under a collapsible "plugins" entry (expanded by default)
         if (pluginNames.length > 0) {
-          html += `<li style="list-style:none;"><details id="sidebar-plugins-${ename}">
+          html += `<li style="list-style:none;"><details id="sidebar-plugins-${ename}" open>
             <summary style="display: list-item; list-style-position: inside; cursor:pointer; font-size:0.8rem; color:var(--muted); padding:2px 0;">
               <span style="display:inline-flex; align-items:center; gap:6px;">
                 <span class="icon">🔌</span> plugins (${pluginNames.length})
