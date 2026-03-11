@@ -435,13 +435,15 @@ async def terminate_bridge():
     Edges will detect the disconnection and may attempt to reconnect
     (to this or another bridge).
     """
-    if shutdown_event is None:
-        raise HTTPException(status_code=503, detail="Bridge not fully initialized")
+    import os
+    import signal
 
     # Schedule shutdown after returning response
     async def delayed_shutdown():
         await asyncio.sleep(0.5)  # Give time for response to be sent
-        shutdown_event.set()
+        log.info("[Bridge] Terminating via API request")
+        # Send SIGTERM to self to trigger graceful uvicorn shutdown
+        os.kill(os.getpid(), signal.SIGTERM)
 
     asyncio.create_task(delayed_shutdown())
 
