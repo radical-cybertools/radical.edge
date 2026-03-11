@@ -14,6 +14,7 @@ from fastapi import Request, Response, HTTPException
 
 from fastapi.responses       import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles     import StaticFiles
 from starlette.responses     import StreamingResponse
 
 from starlette.websockets    import WebSocketState
@@ -85,6 +86,41 @@ app.add_middleware(
     allow_methods=["*"],              # or ["GET", "POST", ...]
     allow_headers=["*"],              # or a list of headers
 )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Mount documentation static files (if available)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _find_docs_dir():
+    """Find the documentation directory."""
+    import sys
+
+    # Try locations in order of preference
+    candidates = []
+
+    # 1. Check share directory relative to virtualenv
+    if hasattr(sys, 'prefix'):
+        candidates.append(os.path.join(sys.prefix, 'share', 'radical.edge', 'docs'))
+
+    # 2. Check share directory in current working directory
+    candidates.append(os.path.join(os.getcwd(), 'share', 'radical.edge', 'docs'))
+
+    # 3. Check relative to this script (development mode)
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    candidates.append(os.path.join(script_dir, '..', 'share', 'radical.edge', 'docs'))
+
+    for path in candidates:
+        if os.path.isdir(path):
+            return os.path.abspath(path)
+    return None
+
+
+_docs_dir = _find_docs_dir()
+if _docs_dir:
+    app.mount("/documentation", StaticFiles(directory=_docs_dir, html=True),
+              name="documentation")
+    print(f"[Bridge] Serving documentation from {_docs_dir}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

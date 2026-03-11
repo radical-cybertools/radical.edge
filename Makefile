@@ -98,6 +98,10 @@ docs::  doc
 doc::   install
 	$(PIP) install sphinx
 	sh -c '. $(VE)/bin/activate; make -C docs html'
+	@echo "Copying docs to share/radical.edge/docs/"
+	rm -rf share/radical.edge/docs
+	mkdir -p share/radical.edge/docs
+	cp -r docs/build/html/* share/radical.edge/docs/
 
 
 .PHONY: pylint
