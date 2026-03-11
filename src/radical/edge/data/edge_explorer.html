@@ -1145,14 +1145,8 @@
                 <input class="bridge-edge-name" type="text" placeholder="my-edge" /></div>
               <div class="form-group"><label>Resource (SSH target)</label>
                 <input class="bridge-target" type="text" placeholder="user@login.cluster.edu" /></div>
-              <div class="form-group"><label>Executor</label>
-                <select class="bridge-executor">
-                  <option value="slurm">slurm</option>
-                  <option value="pbs">pbs</option>
-                  <option value="lsf">lsf</option>
-                  <option value="local">local</option>
-                </select>
-              </div>
+              <div class="form-group"><label>IRI Service Endpoint</label>
+                <input class="bridge-executor" type="text" placeholder="ssh://user@host or local://localhost" /></div>
             </div>
             <div>
               <div class="form-group"><label>Queue / Partition</label>
@@ -2323,7 +2317,10 @@
         <div style="display:flex; align-items:center; justify-content:space-between;">
           <div>
             <div class="card-title" style="margin-bottom:4px;">Bridge URL</div>
-            <code style="font-size:0.9rem; color:var(--accent); word-break:break-all;">${escHtml(BRIDGE)}</code>
+            <div style="display:flex; align-items:center; gap:8px;">
+              <code style="font-size:0.9rem; color:var(--accent); word-break:break-all;">${escHtml(BRIDGE)}</code>
+              <button onclick="copyToClipboard('${escHtml(BRIDGE)}')" title="Copy URL" style="background:none; border:none; cursor:pointer; padding:2px; font-size:1rem;">📋</button>
+            </div>
           </div>
           <button class="btn btn-danger btn-sm" onclick="terminateBridge(event)" style="margin-left:16px;">
             Terminate Bridge
@@ -2347,7 +2344,7 @@
               <th style="padding:8px 12px;">Edge</th>
               <th style="padding:8px 12px;">Host</th>
               <th style="padding:8px 12px;">Plugins</th>
-              <th style="padding:8px 12px; width:40px;"></th>
+              <th style="padding:8px 12px;"></th>
             </tr>
           </thead>
           <tbody>`;
@@ -2369,8 +2366,8 @@
               <code style="color:var(--text);">${escHtml(hostName)}</code>
             </td>
             <td style="padding:8px 12px; color:var(--muted);">${pluginList}</td>
-            <td style="padding:8px 12px;">
-              <button class="task-cancel-btn" onclick="disconnectEdge(event, '${ename}')" title="Disconnect edge">✕</button>
+            <td style="padding:8px 12px; text-align:right;">
+              <button class="btn btn-danger btn-sm" onclick="disconnectEdge(event, '${ename}')">Terminate Edge</button>
             </td>
           </tr>`;
         }
@@ -3366,6 +3363,14 @@
 
     function escHtml(s) {
       return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    function copyToClipboard(text) {
+      navigator.clipboard.writeText(text).then(() => {
+        flash('Copied to clipboard');
+      }).catch(() => {
+        flash('Failed to copy', false);
+      });
     }
 
     // ─────────────────────────────────────────────────────────────

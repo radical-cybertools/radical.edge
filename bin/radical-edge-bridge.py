@@ -435,8 +435,6 @@ async def terminate_bridge():
     Edges will detect the disconnection and may attempt to reconnect
     (to this or another bridge).
     """
-    global shutdown_event
-
     if shutdown_event is None:
         raise HTTPException(status_code=503, detail="Bridge not fully initialized")
 
