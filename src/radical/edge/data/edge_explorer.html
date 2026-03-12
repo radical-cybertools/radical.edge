@@ -1513,22 +1513,10 @@
         return page;
       }
 
-      // Map plugin names to their documentation anchors
-      const pluginDocMap = {
-        'sysinfo': 'plugin_api.html#pluginsysinfo',
-        'queue_info': 'plugin_api.html#pluginqueueinfo',
-        'psij': 'plugin_api.html#pluginpsij',
-        'rhapsody': 'plugin_api.html#pluginrhapsody',
-        'lucid': 'plugin_api.html#pluginlucid',
-        'xgfabric': 'plugin_api.html#pluginxgfabric'
-      };
-      const docPath = pluginDocMap[pluginName] || 'plugin_api.html';
-      const docUrl = `https://radicaledge.readthedocs.io/en/latest/${docPath}`;
-
       let html = `<div class="page-header">
         <div class="page-icon">${ui.icon || '🔌'}</div>
         <h2>${escHtml(ui.title)} — <span class="edge-label">${edgeName}</span></h2>
-        <a href="${docUrl}" target="_blank" class="btn btn-secondary btn-sm" style="margin-left:auto">Docs</a>
+        <a href="/docs" target="_blank" class="btn btn-secondary btn-sm" style="margin-left:auto">REST API</a>
         ${ui.refresh_button ? `<button class="btn btn-secondary btn-sm" onclick="refreshDynamicPage(this)">↺ Refresh</button>` : ''}
         <button class="btn btn-danger btn-sm" onclick="disconnectEdge(event, '${edgeName}')">Terminate</button>
       </div>`;
