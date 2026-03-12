@@ -1124,9 +1124,9 @@
         <div class="page-header">
           <div class="page-icon">🌉</div>
           <h2 id="bridgePageTitle">Bridge</h2>
-          <a href="https://radicaledge.readthedocs.io/en/latest/index.html" target="_blank" class="btn btn-secondary btn-sm" style="margin-left:auto">Docs</a>
-          <button class="btn btn-danger btn-sm" onclick="terminateBridge(event)">Terminate</button>
+          <a href="/docs" target="_blank" class="btn btn-secondary btn-sm" style="margin-left:auto">REST API</a>
           <button class="btn btn-secondary btn-sm" onclick="loadHierarchy()">↺ Refresh</button>
+          <button class="btn btn-danger btn-sm" onclick="terminateBridge(event)">Terminate</button>
         </div>
         <div id="bridgeInfoContent">
           <div class="empty">
@@ -1530,6 +1530,7 @@
         <h2>${escHtml(ui.title)} — <span class="edge-label">${edgeName}</span></h2>
         <a href="${docUrl}" target="_blank" class="btn btn-secondary btn-sm" style="margin-left:auto">Docs</a>
         ${ui.refresh_button ? `<button class="btn btn-secondary btn-sm" onclick="refreshDynamicPage(this)">↺ Refresh</button>` : ''}
+        <button class="btn btn-danger btn-sm" onclick="disconnectEdge(event, '${edgeName}')">Terminate</button>
       </div>`;
 
       // Render forms
@@ -2332,7 +2333,7 @@
       html += `<div class="card">
         <div style="display:flex; align-items:center; gap:8px; margin-bottom:12px;">
           <div class="card-title" style="margin-bottom:0;">Connected Edges</div>
-          <a href="https://radicaledge.readthedocs.io/en/latest/service_embedding.html" target="_blank" class="btn btn-secondary btn-sm" style="margin-left:auto">Docs</a>
+          <a href="/docs" target="_blank" class="btn btn-secondary btn-sm" style="margin-left:auto">REST API</a>
         </div>`;
 
       const edgeNames = Object.keys(edges).sort();
