@@ -1516,7 +1516,7 @@
       let html = `<div class="page-header">
         <div class="page-icon">${ui.icon || '🔌'}</div>
         <h2>${escHtml(ui.title)} — <span class="edge-label">${edgeName}</span></h2>
-        <a href="/docs" target="_blank" class="btn btn-secondary btn-sm" style="margin-left:auto">REST API</a>
+        <a href="/${edgeName}/docs" target="_blank" class="btn btn-secondary btn-sm" style="margin-left:auto">REST API</a>
         ${ui.refresh_button ? `<button class="btn btn-secondary btn-sm" onclick="refreshDynamicPage(this)">↺ Refresh</button>` : ''}
         <button class="btn btn-danger btn-sm" onclick="disconnectEdge(event, '${edgeName}')">Terminate</button>
       </div>`;
@@ -2317,11 +2317,10 @@
         </div>
       </div>`;
 
-      // Connected edges card with header buttons
+      // Connected edges card - no global docs button since each edge has its own
       html += `<div class="card">
         <div style="display:flex; align-items:center; gap:8px; margin-bottom:12px;">
           <div class="card-title" style="margin-bottom:0;">Connected Edges</div>
-          <a href="/docs" target="_blank" class="btn btn-secondary btn-sm" style="margin-left:auto">REST API</a>
         </div>`;
 
       const edgeNames = Object.keys(edges).sort();
@@ -2358,7 +2357,8 @@
               <code style="color:var(--text);">${escHtml(hostName)}</code>
             </td>
             <td style="padding:8px 12px; color:var(--muted);">${pluginList}</td>
-            <td style="padding:8px 12px; text-align:right;">
+            <td style="padding:8px 12px; text-align:right; white-space:nowrap;">
+              <a href="/${ename}/docs" target="_blank" class="btn btn-secondary btn-sm">REST API</a>
               <button class="btn btn-danger btn-sm" onclick="disconnectEdge(event, '${ename}')">Terminate</button>
             </td>
           </tr>`;
