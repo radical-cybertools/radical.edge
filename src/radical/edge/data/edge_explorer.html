@@ -1124,7 +1124,9 @@
         <div class="page-header">
           <div class="page-icon">🌉</div>
           <h2 id="bridgePageTitle">Bridge</h2>
-          <button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="loadHierarchy()">↺ Refresh</button>
+          <a href="https://radicaledge.readthedocs.io/en/latest/index.html" target="_blank" class="btn btn-secondary btn-sm" style="margin-left:auto">Docs</a>
+          <button class="btn btn-danger btn-sm" onclick="terminateBridge(event)">Terminate</button>
+          <button class="btn btn-secondary btn-sm" onclick="loadHierarchy()">↺ Refresh</button>
         </div>
         <div id="bridgeInfoContent">
           <div class="empty">
@@ -1511,10 +1513,23 @@
         return page;
       }
 
+      // Map plugin names to their documentation anchors
+      const pluginDocMap = {
+        'sysinfo': 'plugin_api.html#pluginsysinfo',
+        'queue_info': 'plugin_api.html#pluginqueueinfo',
+        'psij': 'plugin_api.html#pluginpsij',
+        'rhapsody': 'plugin_api.html#pluginrhapsody',
+        'lucid': 'plugin_api.html#pluginlucid',
+        'xgfabric': 'plugin_api.html#pluginxgfabric'
+      };
+      const docPath = pluginDocMap[pluginName] || 'plugin_api.html';
+      const docUrl = `https://radicaledge.readthedocs.io/en/latest/${docPath}`;
+
       let html = `<div class="page-header">
         <div class="page-icon">${ui.icon || '🔌'}</div>
         <h2>${escHtml(ui.title)} — <span class="edge-label">${edgeName}</span></h2>
-        ${ui.refresh_button ? `<button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="refreshDynamicPage(this)">↺ Refresh</button>` : ''}
+        <a href="${docUrl}" target="_blank" class="btn btn-secondary btn-sm" style="margin-left:auto">Docs</a>
+        ${ui.refresh_button ? `<button class="btn btn-secondary btn-sm" onclick="refreshDynamicPage(this)">↺ Refresh</button>` : ''}
       </div>`;
 
       // Render forms
@@ -2304,27 +2319,21 @@
     }
 
     function renderHierarchy(edges, bridge) {
-      // Bridge info card with URL and terminate button
+      // Bridge info card with URL
       let html = `<div class="card" style="margin-bottom:16px;">
-        <div style="display:flex; align-items:center; justify-content:space-between;">
-          <div>
-            <div class="card-title" style="margin-bottom:4px;">Bridge URL</div>
-            <div style="display:flex; align-items:center; gap:8px;">
-              <code style="font-size:0.9rem; color:var(--accent); word-break:break-all;">${escHtml(BRIDGE)}</code>
-              <button onclick="copyToClipboard('${escHtml(BRIDGE)}')" title="Copy URL" style="background:none; border:none; cursor:pointer; padding:2px; font-size:1rem;">📋</button>
-            </div>
-          </div>
-          <div style="display:flex; gap:4px; white-space:nowrap;">
-            <a href="https://radicaledge.readthedocs.io/en/latest/plugin_api.html" target="_blank" class="btn btn-secondary btn-sm">REST API</a>
-            <a href="https://radicaledge.readthedocs.io/en/latest/service_embedding.html" target="_blank" class="btn btn-secondary btn-sm">PY API</a>
-            <button class="btn btn-danger btn-sm" onclick="terminateBridge(event)">Terminate Bridge</button>
-          </div>
+        <div class="card-title" style="margin-bottom:4px;">Bridge URL</div>
+        <div style="display:flex; align-items:center; gap:8px;">
+          <code style="font-size:0.9rem; color:var(--accent); word-break:break-all;">${escHtml(BRIDGE)}</code>
+          <button onclick="copyToClipboard('${escHtml(BRIDGE)}')" title="Copy URL" style="background:none; border:none; cursor:pointer; padding:2px; font-size:1rem;">📋</button>
         </div>
       </div>`;
 
-      // Connected edges card
+      // Connected edges card with header buttons
       html += `<div class="card">
-        <div class="card-title">Connected Edges</div>`;
+        <div style="display:flex; align-items:center; gap:8px; margin-bottom:12px;">
+          <div class="card-title" style="margin-bottom:0;">Connected Edges</div>
+          <a href="https://radicaledge.readthedocs.io/en/latest/service_embedding.html" target="_blank" class="btn btn-secondary btn-sm" style="margin-left:auto">Docs</a>
+        </div>`;
 
       const edgeNames = Object.keys(edges).sort();
       if (edgeNames.length === 0) {
@@ -2361,11 +2370,7 @@
             </td>
             <td style="padding:8px 12px; color:var(--muted);">${pluginList}</td>
             <td style="padding:8px 12px; text-align:right;">
-              <div style="display:flex; gap:4px; justify-content:flex-end; white-space:nowrap;">
-                <a href="https://radicaledge.readthedocs.io/en/latest/plugin_api.html" target="_blank" class="btn btn-secondary btn-sm">REST API</a>
-                <a href="https://radicaledge.readthedocs.io/en/latest/service_embedding.html" target="_blank" class="btn btn-secondary btn-sm">PY API</a>
-                <button class="btn btn-danger btn-sm" onclick="disconnectEdge(event, '${ename}')">Terminate Edge</button>
-              </div>
+              <button class="btn btn-danger btn-sm" onclick="disconnectEdge(event, '${ename}')">Terminate</button>
             </td>
           </tr>`;
         }
