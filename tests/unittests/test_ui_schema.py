@@ -292,8 +292,10 @@ class TestPluginUIConfigs:
     def test_xgfabric_ui_config(self):
         from radical.edge.plugin_xgfabric import PluginXGFabric
         ui = PluginXGFabric.ui_config
-        assert ui["icon"] == "🕸️"
-        assert ui["stub_message"] is not None
+        assert ui["icon"] == "🌊"
+        assert ui["title"] == "XGFabric Workflow"
+        assert len(ui["forms"]) > 0
+        assert len(ui["monitors"]) > 0
 
 
 if __name__ == '__main__':

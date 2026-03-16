@@ -1303,6 +1303,53 @@
         </div>
       </div>
 
+      <!-- Staging page -->
+      <div class="page" id="page-staging-template" style="display:none">
+        <div class="page-header">
+          <div class="page-icon">📁</div>
+          <h2>File Staging — <span class="edge-label"></span></h2>
+        </div>
+        <div class="card">
+          <div class="card-title">📂 Remote File Browser</div>
+          <div style="display:flex; gap:8px; margin-bottom:12px; align-items:center;">
+            <label style="margin:0; min-width:fit-content;">Path:</label>
+            <input class="staging-path" type="text" value="/" style="flex:1;" />
+            <button class="btn btn-secondary btn-sm" onclick="stagingNavigate(this)">📂 Browse</button>
+            <button class="btn btn-secondary btn-sm" onclick="stagingGoUp(this)">⬆️ Up</button>
+          </div>
+          <div class="staging-browser" style="border:1px solid var(--border); border-radius:var(--card-r); max-height:400px; overflow-y:auto; background:var(--bg1);">
+            <div class="empty" style="padding:20px;">
+              <div class="empty-icon">📂</div>
+              <p>Enter a path and click Browse to view directory contents</p>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title">📤 Upload File</div>
+          <div class="grid2">
+            <div class="form-group">
+              <label>Local File</label>
+              <input type="file" class="staging-upload-file" />
+            </div>
+            <div class="form-group">
+              <label>Remote Path (absolute)</label>
+              <input class="staging-upload-path" type="text" placeholder="/path/on/edge/filename.txt" />
+            </div>
+          </div>
+          <button class="btn btn-success" onclick="stagingUpload(this)">📤 Upload</button>
+          <div class="staging-upload-status" style="margin-top:8px; font-size:0.85rem;"></div>
+        </div>
+        <div class="card">
+          <div class="card-title">📥 Download File</div>
+          <div class="form-group">
+            <label>Remote Path (absolute)</label>
+            <input class="staging-download-path" type="text" placeholder="/path/on/edge/filename.txt" />
+          </div>
+          <button class="btn btn-primary" onclick="stagingDownload(this)">📥 Download</button>
+          <div class="staging-download-status" style="margin-top:8px; font-size:0.85rem;"></div>
+        </div>
+      </div>
+
     </main>
   </div>
 
@@ -2424,7 +2471,7 @@
       if (navEl) navEl.classList.add('active');
 
       const page = activeDynamicPages[pid];
-      
+
       // Update queue and account dynamically every time PsiJ page is shown
       if (pluginName === 'psij') {
         replaceQueueAccountDropdowns(page, edgeName);
@@ -2463,16 +2510,16 @@
         if (queueInput) {
           const select = document.createElement('select');
           select.className = queueInput.className;
-          
+
           const qList = Object.values(qCache.queues || {});
           const getQName = q => q.name || q.partition || q;
-          
+
           // Priority selection logic: debug > interactive > first available
           const pb = qList.find(q => getQName(q) === 'debug');
           const pi = qList.find(q => getQName(q) === 'interactive');
           const defaultQ = (pb || pi || qList[0]);
           const defaultQName = defaultQ ? getQName(defaultQ) : "";
-          
+
           const currentVal = queueInput.value;
           select.innerHTML = '<option value="">(none)</option>' + qList.map(q => {
             const qn = getQName(q);
@@ -2481,12 +2528,12 @@
           }).join('');
           queueInput.parentNode.replaceChild(select, queueInput);
         }
-        
+
         const accountInput = page.querySelector('.p-account');
         if (accountInput) {
           const select = document.createElement('select');
           select.className = accountInput.className;
-          
+
           // Extract unique accounts
           const accountSet = new Set();
           (qCache.allocations || []).forEach(a => {
@@ -2494,7 +2541,7 @@
           });
           const accounts = Array.from(accountSet);
           const defaultAcc = accounts.length > 0 ? accounts[0] : "";
-          
+
           const currentVal = accountInput.value;
           select.innerHTML = '<option value="">(none)</option>' + accounts.map(a => {
             const isSelected = (currentVal && currentVal === a) || (!currentVal && a === defaultAcc);
@@ -2535,12 +2582,12 @@
           try {
             allocs = await apiFetch(`${ns}/list_allocations/${sid}`);
           } catch (e) { console.warn("Could not fetch allocations:", e); }
-          
+
           const queuesObj = data.partitions || data.queues || data || {};
           const queues = Array.isArray(queuesObj) ? queuesObj : Object.values(queuesObj);
           const allocations = allocs.allocations || [];
           queueDataCache[edgeName] = { queues, allocations };
-          
+
           content.innerHTML = renderQueueInfo(queues, allocations, edgeName, sid, ns);
         } else {
           content.innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
@@ -2689,12 +2736,12 @@
           apiFetch(`${ns}/get_info/${sid}`),
           apiFetch(`${ns}/list_allocations/${sid}`)
         ]);
-        
+
         const queuesObj = info.partitions || info.queues || info || {};
         const queues = Array.isArray(queuesObj) ? queuesObj : Object.values(queuesObj);
         const allocations = allocs.allocations || [];
         queueDataCache[edgeName] = { queues, allocations };
-        
+
         content.innerHTML = renderQueueInfo(queues, allocations, edgeName, sid, ns);
       } catch (e) {
         content.innerHTML = `<div class="card"><p style="color:var(--danger)">Error: ${e.message}</p></div>`;
@@ -2709,7 +2756,7 @@
 
     function renderQueueInfo(partitions, allocations, edgeName, sid, ns) {
       let html = "";
-      
+
       if (!Array.isArray(partitions) || !partitions.length) {
         html += `<div class="card"><p style="color:var(--muted)">No partition data returned.</p></div>`;
       } else {
@@ -2733,7 +2780,7 @@
         }
         html += '</tbody></table></div>';
       }
-      
+
       if (Array.isArray(allocations) && allocations.length > 0) {
         html += `<div class="card"><div class="card-title">💼 Allocations / Projects</div>
       <table><thead><tr><th>Account</th><th>User</th><th>Fairshare</th><th>QoS</th><th>Max Jobs</th></tr></thead><tbody>`;
@@ -3226,6 +3273,253 @@
         flash('Cancel failed: ' + e.message, false);
         btn.disabled = false;
       }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    //  Staging - File Browser
+    // ─────────────────────────────────────────────────────────────
+    async function stagingNavigate(btn, targetPath = null) {
+      const page = btn.closest('.page');
+      const edgeName = page.dataset.edgeName;
+      const pathInput = page.querySelector('.staging-path');
+      const browser = page.querySelector('.staging-browser');
+
+      const path = targetPath || pathInput.value.trim() || '/';
+      pathInput.value = path;
+
+      browser.innerHTML = '<div class="empty" style="padding:20px;"><div class="spinner"></div><p>Loading…</p></div>';
+
+      try {
+        const sid = await registerSession(edgeName, 'staging');
+        const ns = getNs(edgeName, 'staging');
+        const data = await apiFetch(`${ns}/list/${sid}`, {
+          method: 'POST',
+          body: JSON.stringify({ path })
+        });
+
+        renderStagingBrowser(page, edgeName, data);
+      } catch (e) {
+        browser.innerHTML = `<div class="empty" style="padding:20px;"><p style="color:var(--danger);">Error: ${e.message}</p></div>`;
+        flash('Staging error: ' + e.message, false);
+      }
+    }
+
+    function stagingGoUp(btn) {
+      const page = btn.closest('.page');
+      const pathInput = page.querySelector('.staging-path');
+      const currentPath = pathInput.value.trim() || '/';
+
+      // Get parent directory
+      let parent = currentPath.replace(/\/[^/]+\/?$/, '') || '/';
+      if (!parent.startsWith('/')) parent = '/' + parent;
+
+      pathInput.value = parent;
+      stagingNavigate(btn, parent);
+    }
+
+    function renderStagingBrowser(page, edgeName, data) {
+      const browser = page.querySelector('.staging-browser');
+      const entries = data.entries || [];
+
+      if (entries.length === 0) {
+        browser.innerHTML = '<div class="empty" style="padding:20px;"><p style="color:var(--muted);">Empty directory</p></div>';
+        return;
+      }
+
+      // Sort: directories first, then files, alphabetically
+      const sorted = [...entries].sort((a, b) => {
+        if (a.type === 'dir' && b.type !== 'dir') return -1;
+        if (a.type !== 'dir' && b.type === 'dir') return 1;
+        return a.name.localeCompare(b.name);
+      });
+
+      let html = '<ul class="tree" style="margin:0; padding:8px 0;">';
+
+      for (const entry of sorted) {
+        const fullPath = data.path.replace(/\/$/, '') + '/' + entry.name;
+        const escapedPath = escHtml(fullPath).replace(/'/g, "\\'");
+
+        if (entry.type === 'dir') {
+          html += `
+            <li class="tree-item" style="padding:6px 12px;"
+                onclick="stagingClickDir(this, '${escapedPath}')"
+                ondblclick="stagingEnterDir(this, '${escapedPath}')">
+              <span class="icon">📁</span>
+              <span style="flex:1;">${escHtml(entry.name)}</span>
+              <span style="color:var(--muted); font-size:0.8rem;">directory</span>
+            </li>`;
+        } else {
+          const sizeStr = entry.size !== null ? formatBytes(entry.size) : '';
+          html += `
+            <li class="tree-item" style="padding:6px 12px;"
+                onclick="stagingClickFile(this, '${escapedPath}')">
+              <span class="icon">📄</span>
+              <span style="flex:1;">${escHtml(entry.name)}</span>
+              <span style="color:var(--muted); font-size:0.8rem;">${sizeStr}</span>
+              <button class="btn btn-secondary btn-sm" style="margin-left:8px; padding:2px 8px; font-size:0.75rem;"
+                      onclick="event.stopPropagation(); stagingDownloadFile(this, '${escapedPath}')">📥</button>
+            </li>`;
+        }
+      }
+
+      html += '</ul>';
+      browser.innerHTML = html;
+    }
+
+    function stagingClickDir(li, path) {
+      // Just highlight the directory
+      const browser = li.closest('.staging-browser');
+      browser.querySelectorAll('.tree-item').forEach(el => el.style.background = '');
+      li.style.background = 'var(--bg3)';
+
+      // Update upload path suggestion
+      const page = li.closest('.page');
+      const uploadPath = page.querySelector('.staging-upload-path');
+      if (uploadPath && !uploadPath.value) {
+        uploadPath.placeholder = path + '/filename.txt';
+      }
+    }
+
+    function stagingEnterDir(li, path) {
+      const page = li.closest('.page');
+      const pathInput = page.querySelector('.staging-path');
+      pathInput.value = path;
+      const btn = page.querySelector('.staging-browser').previousElementSibling.querySelector('[onclick*="stagingNavigate"]');
+      stagingNavigate(btn, path);
+    }
+
+    function stagingClickFile(li, path) {
+      // Highlight the file
+      const browser = li.closest('.staging-browser');
+      browser.querySelectorAll('.tree-item').forEach(el => el.style.background = '');
+      li.style.background = 'var(--bg3)';
+
+      // Update download path
+      const page = li.closest('.page');
+      const downloadPath = page.querySelector('.staging-download-path');
+      if (downloadPath) {
+        downloadPath.value = path;
+      }
+    }
+
+    async function stagingDownloadFile(btn, path) {
+      const page = btn.closest('.page');
+      const edgeName = page.dataset.edgeName;
+      const status = page.querySelector('.staging-download-status');
+
+      status.innerHTML = '<span style="color:var(--accent);">Downloading…</span>';
+
+      try {
+        const sid = await registerSession(edgeName, 'staging');
+        const ns = getNs(edgeName, 'staging');
+        const data = await apiFetch(`${ns}/get/${sid}`, {
+          method: 'POST',
+          body: JSON.stringify({ filename: path })
+        });
+
+        // Decode base64 and trigger download
+        const content = atob(data.content);
+        const bytes = new Uint8Array(content.length);
+        for (let i = 0; i < content.length; i++) {
+          bytes[i] = content.charCodeAt(i);
+        }
+        const blob = new Blob([bytes]);
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = path.split('/').pop();
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+
+        status.innerHTML = `<span style="color:var(--success);">Downloaded: ${escHtml(path)} (${formatBytes(data.size)})</span>`;
+        flash(`Downloaded: ${path.split('/').pop()}`);
+      } catch (e) {
+        status.innerHTML = `<span style="color:var(--danger);">Error: ${e.message}</span>`;
+        flash('Download failed: ' + e.message, false);
+      }
+    }
+
+    async function stagingDownload(btn) {
+      const page = btn.closest('.page');
+      const path = page.querySelector('.staging-download-path').value.trim();
+
+      if (!path) {
+        flash('Please enter a remote file path', false);
+        return;
+      }
+
+      await stagingDownloadFile(btn, path);
+    }
+
+    async function stagingUpload(btn) {
+      const page = btn.closest('.page');
+      const edgeName = page.dataset.edgeName;
+      const fileInput = page.querySelector('.staging-upload-file');
+      const pathInput = page.querySelector('.staging-upload-path');
+      const status = page.querySelector('.staging-upload-status');
+
+      const file = fileInput.files[0];
+      const remotePath = pathInput.value.trim();
+
+      if (!file) {
+        flash('Please select a file to upload', false);
+        return;
+      }
+      if (!remotePath) {
+        flash('Please enter a remote path', false);
+        return;
+      }
+      if (!remotePath.startsWith('/')) {
+        flash('Remote path must be absolute (start with /)', false);
+        return;
+      }
+
+      status.innerHTML = '<span style="color:var(--accent);">Uploading…</span>';
+
+      try {
+        // Read file as base64
+        const content = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            const base64 = reader.result.split(',')[1];
+            resolve(base64);
+          };
+          reader.onerror = reject;
+          reader.readAsDataURL(file);
+        });
+
+        const sid = await registerSession(edgeName, 'staging');
+        const ns = getNs(edgeName, 'staging');
+        const data = await apiFetch(`${ns}/put/${sid}`, {
+          method: 'POST',
+          body: JSON.stringify({ filename: remotePath, content })
+        });
+
+        status.innerHTML = `<span style="color:var(--success);">Uploaded: ${escHtml(data.path)} (${formatBytes(data.size)})</span>`;
+        flash(`Uploaded: ${remotePath.split('/').pop()}`);
+
+        // Refresh browser if we're viewing the parent directory
+        const currentPath = page.querySelector('.staging-path').value.trim();
+        const parentOfUpload = remotePath.replace(/\/[^/]+$/, '') || '/';
+        if (currentPath === parentOfUpload) {
+          const browseBtn = page.querySelector('[onclick*="stagingNavigate"]');
+          stagingNavigate(browseBtn);
+        }
+      } catch (e) {
+        status.innerHTML = `<span style="color:var(--danger);">Error: ${e.message}</span>`;
+        flash('Upload failed: ' + e.message, false);
+      }
+    }
+
+    function formatBytes(bytes) {
+      if (bytes === 0) return '0 B';
+      if (bytes === null || bytes === undefined) return '';
+      const k = 1024;
+      const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+      const i = Math.floor(Math.log(bytes) / Math.log(k));
+      return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
     }
 
     async function disconnectEdge(event, edgeName) {
