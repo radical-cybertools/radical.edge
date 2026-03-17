@@ -294,8 +294,7 @@ class TestPluginUIConfigs:
         ui = PluginXGFabric.ui_config
         assert ui["icon"] == "🌊"
         assert ui["title"] == "XGFabric Workflow"
-        assert len(ui["forms"]) > 0
-        assert len(ui["monitors"]) > 0
+        assert ui["custom_template"] is True
 
 
 if __name__ == '__main__':

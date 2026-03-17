@@ -85,13 +85,39 @@ def config_to_dict(cfg: WorkflowConfig) -> Dict:
 
 
 def dict_to_config(d: Dict) -> WorkflowConfig:
-    """Convert dict to WorkflowConfig."""
-    return WorkflowConfig(**d)
+    """Convert dict to WorkflowConfig, filtering unknown fields."""
+    import dataclasses
+
+    # Get valid field names from the dataclass
+    valid_fields = {f.name for f in dataclasses.fields(WorkflowConfig)}
+
+    # Filter to only valid fields
+    filtered = {k: v for k, v in d.items() if k in valid_fields}
+
+    # Convert string numbers to int where needed
+    for int_field in ('cspot_limit', 'num_simulations', 'batch_size'):
+        if int_field in filtered and isinstance(filtered[int_field], str):
+            filtered[int_field] = int(filtered[int_field])
+
+    return WorkflowConfig(**filtered)
 
 
 # -----------------------------------------------------------------------------
 # Workflow State
 # -----------------------------------------------------------------------------
+
+@dataclass
+class ClusterStatus:
+    """Status of a single cluster."""
+    name: str
+    edge_name: str
+    cluster_type: str  # 'immediate' or 'allocate'
+    has_gpu: bool = False
+    online: bool = False
+    tasks_running: int = 0
+    pilot_job_id: Optional[str] = None
+    pilot_status: Optional[str] = None  # 'pending', 'running', 'completed', 'failed'
+
 
 @dataclass
 class WorkflowState:
@@ -103,10 +129,21 @@ class WorkflowState:
     start_time: Optional[str] = None
     end_time: Optional[str] = None
     error: Optional[str] = None
-    pilot_jobs: Dict[str, str] = field(default_factory=dict)
     active_cluster: Optional[str] = None
     completed_simulations: int = 0
     total_simulations: int = 0
+    current_batch: int = 0
+    total_batches: int = 0
+    # Pilot job tracking
+    pilot_jobs: Dict[str, str] = field(default_factory=dict)
+    # Cluster status
+    immediate_clusters: List[Dict] = field(default_factory=list)
+    allocate_clusters: List[Dict] = field(default_factory=list)
+    # Execution log (most recent first)
+    log: List[Dict] = field(default_factory=list)
+    # Config info
+    config_name: Optional[str] = None
+    config_dir: Optional[str] = None
 
 
 # -----------------------------------------------------------------------------
@@ -118,13 +155,15 @@ class XGFabricSession(PluginSession):
     XGFabric session - manages workflow configuration and execution.
     """
 
-    def __init__(self, sid: str, workdir: str = None):
+    def __init__(self, sid: str, workdir: str = None, edge_name: str = None):
         super().__init__(sid)
-        self._workdir = Path(workdir or '/tmp/xgfabric')
+        default_workdir = os.environ.get('XGFABRIC_WORKDIR') or os.getcwd()
+        self._workdir = Path(workdir or default_workdir)
         self._workdir.mkdir(parents=True, exist_ok=True)
         self._config_dir = self._workdir / 'configs'
         self._config_dir.mkdir(exist_ok=True)
 
+        self._edge_name = edge_name or 'local'
         self._current_config: Optional[WorkflowConfig] = None
         self._state = WorkflowState()
         self._workflow_task: Optional[asyncio.Task] = None
@@ -132,6 +171,24 @@ class XGFabricSession(PluginSession):
 
         # Bridge client for communicating with other edges
         self._bc = None
+
+    # -------------------------------------------------------------------------
+    # Config Directory Management
+    # -------------------------------------------------------------------------
+
+    async def get_config_dir(self) -> Dict:
+        """Get current config directory."""
+        return {'path': str(self._config_dir.parent)}
+
+    async def set_config_dir(self, path: str) -> Dict:
+        """Set config directory."""
+        new_dir = Path(path)
+        if not new_dir.exists():
+            raise HTTPException(status_code=400, detail=f"Directory not found: {path}")
+        self._workdir = new_dir
+        self._config_dir = new_dir / 'configs'
+        self._config_dir.mkdir(exist_ok=True)
+        return {'path': str(self._workdir), 'status': 'ok'}
 
     # -------------------------------------------------------------------------
     # Config Management
@@ -170,11 +227,14 @@ class XGFabricSession(PluginSession):
         if not name:
             raise HTTPException(status_code=400, detail="Config name is required")
 
+        # Convert to WorkflowConfig (filters out UI-only fields) and back to dict
+        self._current_config = dict_to_config(data)
+        clean_data = config_to_dict(self._current_config)
+
         config_file = self._config_dir / f'{name}.json'
         with open(config_file, 'w') as f:
-            json.dump(data, f, indent=2)
+            json.dump(clean_data, f, indent=2)
 
-        self._current_config = dict_to_config(data)
         return {'status': 'saved', 'name': name}
 
     async def delete_config(self, name: str) -> Dict:
@@ -194,15 +254,15 @@ class XGFabricSession(PluginSession):
                 name='debug',
                 description='Local debug configuration',
                 immediate_clusters=[{
-                    'name': 'local',
-                    'edge_name': 'local',
+                    'name': self._edge_name,
+                    'edge_name': self._edge_name,
                     'cluster_type': 'immediate',
                     'has_gpu': False,
                     'workflow_path': debug_workflow,
                 }],
                 allocate_clusters=[{
-                    'name': 'local_gpu',
-                    'edge_name': 'local',
+                    'name': f'{self._edge_name}_gpu',
+                    'edge_name': self._edge_name,
                     'cluster_type': 'allocate',
                     'has_gpu': True,
                     'queue': 'debug',
@@ -210,34 +270,23 @@ class XGFabricSession(PluginSession):
                     'duration': 600,
                     'nodes': 1,
                     'executor': 'local',
-                    'child_edge_name': 'local.1',
+                    'child_edge_name': f'{self._edge_name}.1',
                     'workflow_path': debug_workflow,
                 }],
             )
         else:
+            # Use local edge as the default immediate cluster
             config = WorkflowConfig(
-                name='production',
-                description='UCSB + Perlmutter configuration',
+                name='default',
+                description='Default configuration using local edge',
                 immediate_clusters=[{
-                    'name': 'ucsb',
-                    'edge_name': 'ucsb',
+                    'name': self._edge_name,
+                    'edge_name': self._edge_name,
                     'cluster_type': 'immediate',
                     'has_gpu': False,
                     'workflow_path': '~/xgfabric/intheloop',
                 }],
-                allocate_clusters=[{
-                    'name': 'perlmutter',
-                    'edge_name': 'perlmutter',
-                    'cluster_type': 'allocate',
-                    'has_gpu': True,
-                    'queue': 'regular',
-                    'account': 'm5290',
-                    'duration': 3600,
-                    'nodes': 1,
-                    'executor': 'slurm',
-                    'child_edge_name': 'perlmutter.1',
-                    'workflow_path': '~/xgfabric/intheloop',
-                }],
+                allocate_clusters=[],
             )
         return config_to_dict(config)
 
@@ -246,7 +295,12 @@ class XGFabricSession(PluginSession):
     # -------------------------------------------------------------------------
 
     async def get_status(self) -> Dict:
-        """Get current workflow status."""
+        """Get current workflow status including cluster info."""
+        # Always update config_dir
+        self._state.config_dir = str(self._workdir)
+        # Update config name if loaded
+        if self._current_config:
+            self._state.config_name = self._current_config.name
         return asdict(self._state)
 
     async def start_workflow(self, config_name: Optional[str] = None) -> Dict:
@@ -255,15 +309,27 @@ class XGFabricSession(PluginSession):
             raise HTTPException(status_code=409, detail="Workflow already running")
 
         # Load config if name provided
-        if config_name:
+        if config_name == '__default__':
+            # Use built-in default config
+            default_dict = await self.get_default_config()
+            self._current_config = dict_to_config(default_dict)
+        elif config_name:
             await self.load_config(config_name)
         elif not self._current_config:
             raise HTTPException(status_code=400,
                                 detail="No config loaded. Load or save a config first.")
 
-        # Reset state
-        self._state = WorkflowState(status='running', phase='initializing',
-                                    start_time=datetime.now(timezone.utc).isoformat())
+        # Reset state with config info
+        self._state = WorkflowState(
+            status='running',
+            phase='initializing',
+            start_time=datetime.now(timezone.utc).isoformat(),
+            config_name=self._current_config.name,
+            config_dir=str(self._workdir),
+            total_simulations=self._current_config.num_simulations,
+            total_batches=(self._current_config.num_simulations +
+                           self._current_config.batch_size - 1) // self._current_config.batch_size,
+        )
         self._cancel_requested = False
 
         # Start workflow in background
@@ -383,12 +449,58 @@ class XGFabricSession(PluginSession):
         self._state.progress = 100
 
     def _update_state(self, phase: str, message: str, progress: int = None):
-        """Update workflow state and send notification."""
+        """Update workflow state, add log entry, and send notification."""
         self._state.phase = phase
         self._state.message = message
         if progress is not None:
             self._state.progress = progress
+        self._add_log(message)
         self._notify_state()
+
+    def _add_log(self, message: str):
+        """Add entry to execution log (most recent first, max 50 entries)."""
+        entry = {
+            'time': datetime.now(timezone.utc).strftime('%H:%M:%S'),
+            'message': message
+        }
+        self._state.log.insert(0, entry)
+        if len(self._state.log) > 50:
+            self._state.log = self._state.log[:50]
+
+    def _update_cluster_status(self):
+        """Update cluster status from current config and bridge."""
+        if not self._current_config:
+            return
+
+        cfg = self._current_config
+        online_edges = self._bc.list_edges() if self._bc else []
+
+        # Update immediate clusters
+        self._state.immediate_clusters = []
+        for c in cfg.immediate_clusters:
+            edge_name = c.get('child_edge_name') or c['edge_name']
+            self._state.immediate_clusters.append({
+                'name': c['name'],
+                'edge_name': c['edge_name'],
+                'has_gpu': c.get('has_gpu', False),
+                'online': edge_name in online_edges,
+                'tasks_running': 0,
+            })
+
+        # Update allocate clusters
+        self._state.allocate_clusters = []
+        for c in cfg.allocate_clusters:
+            child_edge = c.get('child_edge_name')
+            pilot_id = self._state.pilot_jobs.get(c['name']) if hasattr(self._state, 'pilot_jobs') else None
+            self._state.allocate_clusters.append({
+                'name': c['name'],
+                'edge_name': c['edge_name'],
+                'child_edge_name': child_edge,
+                'has_gpu': c.get('has_gpu', False),
+                'online': child_edge in online_edges if child_edge else False,
+                'pilot_job_id': pilot_id,
+                'pilot_status': 'pending' if pilot_id else None,
+            })
 
     def _notify_state(self):
         """Send state notification via SSE."""
@@ -788,6 +900,18 @@ with open(output_dir / 'sensor_metrics.json', 'w') as f:
 class XGFabricClient(PluginClient):
     """Client-side interface for the XGFabric plugin."""
 
+    def get_workdir(self) -> Dict:
+        """Get current working directory."""
+        resp = self._http.get(self._url(f"workdir/{self.sid}"))
+        resp.raise_for_status()
+        return resp.json()
+
+    def set_workdir(self, path: str) -> Dict:
+        """Set working directory."""
+        resp = self._http.post(self._url(f"workdir/{self.sid}"), json={'path': path})
+        resp.raise_for_status()
+        return resp.json()
+
     def list_configs(self) -> List[Dict]:
         """List all saved configurations."""
         resp = self._http.get(self._url(f"configs/{self.sid}"))
@@ -855,73 +979,22 @@ class PluginXGFabric(Plugin):
     client_class = XGFabricClient
     version = '0.1.0'
 
+    # Use custom template in edge_explorer.html (hardcoded like sysinfo, psij, etc.)
     ui_config = {
         "icon": "🌊",
         "title": "XGFabric Workflow",
         "description": "CFDaAI workflow orchestrator for HPC clusters.",
-        "refresh_button": True,
-        "auto_load": "status/{sid}",
-        "forms": [
-            {
-                "id": "config",
-                "title": "📋 Configuration",
-                "layout": "grid2",
-                "fields": [
-                    {"name": "config_select", "type": "select", "label": "Load Config",
-                     "options": [], "css_class": "xgf-config-select", "column": 0},
-                    {"name": "name", "type": "text", "label": "Config Name",
-                     "default": "default", "css_class": "xgf-name", "column": 0},
-                    {"name": "description", "type": "text", "label": "Description",
-                     "default": "", "css_class": "xgf-description", "column": 0},
-                    {"name": "bridge_url", "type": "text", "label": "Bridge URL",
-                     "default": "https://localhost:8000", "css_class": "xgf-bridge-url",
-                     "column": 0},
-                    {"name": "cspot_woof_url", "type": "text", "label": "CSPOT URL",
-                     "default": "woof://128.111.45.61/davisstations/daviscupsout",
-                     "css_class": "xgf-cspot-url", "column": 1},
-                    {"name": "cspot_limit", "type": "number", "label": "CSPOT Records",
-                     "default": "72", "css_class": "xgf-cspot-limit", "column": 1},
-                    {"name": "num_simulations", "type": "number", "label": "Simulations",
-                     "default": "16", "css_class": "xgf-num-sims", "column": 1},
-                    {"name": "batch_size", "type": "number", "label": "Batch Size",
-                     "default": "4", "css_class": "xgf-batch-size", "column": 1},
-                ],
-                "submit": {"label": "💾 Save Config", "style": "primary",
-                           "endpoint": "config/{sid}"}
-            },
-            {
-                "id": "workflow",
-                "title": "🚀 Workflow Control",
-                "layout": "single",
-                "fields": [
-                    {"name": "config_name", "type": "hidden", "label": "",
-                     "css_class": "xgf-start-config"},
-                ],
-                "submit": {"label": "▶ Start Workflow", "style": "success",
-                           "endpoint": "start/{sid}"}
-            }
-        ],
-        "monitors": [
-            {
-                "id": "status",
-                "title": "📊 Workflow Status",
-                "type": "raw",
-                "css_class": "xgf-status",
-                "auto_load": "status/{sid}",
-                "empty_text": "No workflow running."
-            }
-        ],
-        "notifications": {
-            "topic": "workflow_status",
-            "id_field": "phase",
-            "state_field": "status"
-        }
+        "custom_template": True,  # Signal to use hardcoded template
     }
 
     def __init__(self, app: FastAPI, workdir: str = None):
         super().__init__(app, 'xgfabric')
 
-        self._workdir = workdir or os.environ.get('XGFABRIC_WORKDIR', '/tmp/xgfabric')
+        self._workdir = workdir or os.environ.get('XGFABRIC_WORKDIR') or os.getcwd()
+
+        # Config directory endpoints
+        self.add_route_get('workdir/{sid}', self.get_workdir)
+        self.add_route_post('workdir/{sid}', self.set_workdir)
 
         # Config endpoints
         self.add_route_get('configs/{sid}', self.list_configs)
@@ -938,10 +1011,21 @@ class PluginXGFabric(Plugin):
         self._log_routes()
 
     def _create_session(self, sid: str, **kwargs) -> XGFabricSession:
-        """Create session with workdir."""
-        return XGFabricSession(sid, workdir=self._workdir)
+        """Create session with workdir and edge name."""
+        edge_name = getattr(self._app.state, 'edge_name', 'local')
+        return XGFabricSession(sid, workdir=self._workdir, edge_name=edge_name)
 
     # -- Route handlers -------------------------------------------------------
+
+    async def get_workdir(self, request: Request) -> JSONResponse:
+        sid = request.path_params['sid']
+        return await self._forward(sid, XGFabricSession.get_config_dir)
+
+    async def set_workdir(self, request: Request) -> JSONResponse:
+        sid = request.path_params['sid']
+        data = await request.json()
+        path = data.get('path', '')
+        return await self._forward(sid, XGFabricSession.set_config_dir, path=path)
 
     async def list_configs(self, request: Request) -> JSONResponse:
         sid = request.path_params['sid']

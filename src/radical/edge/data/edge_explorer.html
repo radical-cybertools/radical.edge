@@ -392,6 +392,21 @@
       font-weight: 700;
     }
 
+    .task-cancel-btn {
+      background: transparent;
+      border: none;
+      color: var(--muted);
+      cursor: pointer;
+      padding: 0 4px;
+      font-size: 12px;
+      opacity: 0.5;
+      transition: opacity 0.15s, color 0.15s;
+    }
+    .task-cancel-btn:hover {
+      opacity: 1;
+      color: var(--danger);
+    }
+
     .icon {
       font-size: 14px;
     }
@@ -601,129 +616,6 @@
     .badge-orange {
       background: rgba(255, 179, 71, .12);
       color: var(--warn);
-    }
-
-    /* monitor boxes for psij/rh */
-    .monitor-area {
-      background: var(--bg);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 4px 8px;
-      /* Tight padding */
-      font-family: 'JetBrains Mono', monospace;
-      font-size: .8rem;
-      max-height: 400px;
-      overflow-y: auto;
-      color: var(--text-dim);
-      min-height: 24px;
-      /* Minimal height */
-    }
-
-    .monitor-area .ok {
-      color: var(--accent2);
-    }
-
-    .monitor-area .err {
-      color: var(--danger);
-    }
-
-    .monitor-area .info {
-      color: var(--accent);
-    }
-
-    /* Sysinfo needs more space - no max-height */
-    .monitor-area.sysinfo-content {
-      max-height: none;
-    }
-
-    /* QueueInfo expands fully - scrolling happens on main pane */
-    .queueinfo-content,
-    .monitor-area.queueinfo-content {
-      max-height: none !important;
-      overflow-y: visible !important;
-      overflow-x: auto;
-      background: transparent;
-      border: none;
-      padding: 0;
-    }
-    /* Remove card wrapper styling for queue_info monitor */
-    .partitions-card {
-      background: transparent;
-      border: none;
-      padding: 0;
-    }
-
-    /* task entries in job monitor */
-    .task-entry {
-      margin: 0;
-      padding: 0;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.03);
-    }
-
-    .task-entry:last-child {
-      border-bottom: none;
-    }
-
-    .task-entry>summary {
-      display: list-item;
-      /* Standard for summary to show triangle */
-      list-style-position: outside;
-      margin-left: 18px;
-      /* Leave room for triangle */
-      cursor: pointer;
-      padding: 4px 0;
-      user-select: none;
-      font-size: 0.85em;
-      outline: none;
-    }
-
-    .task-entry>summary>.task-summary-content {
-      display: inline-flex;
-      align-items: center;
-      vertical-align: top;
-      width: 100%;
-      margin-left: -4px;
-      /* Move content slightly left to align with plugin text */
-    }
-
-    .task-entry>.task-log {
-      margin: 0 0 4px 18px;
-      /* Indent log body */
-      padding: 4px 0 4px 10px;
-      border-left: 2px solid var(--border);
-      font-size: 0.82em;
-      line-height: 1.2;
-    }
-
-    .task-entry>.task-log pre {
-      margin: 0;
-      padding: 0;
-      white-space: pre-wrap;
-      background: transparent;
-      border: none;
-      font-family: 'JetBrains Mono', monospace;
-    }
-
-    /* cancel button in task entries */
-    .task-cancel-btn {
-      background: transparent;
-      border: none;
-      color: var(--muted);
-      cursor: pointer;
-      font-size: 0.9em;
-      padding: 2px 6px;
-      margin-left: auto;
-      border-radius: 4px;
-      transition: color 0.2s, background 0.2s;
-      flex-shrink: 0;
-    }
-    .task-cancel-btn:hover {
-      color: var(--danger);
-      background: rgba(255, 77, 109, 0.15);
-    }
-    .task-cancel-btn:disabled {
-      opacity: 0.3;
-      cursor: not-allowed;
     }
 
     /* spinner */
@@ -1010,46 +902,6 @@
     .overlay-body table {
       width: 100%;
     }
-    .job-row {
-      cursor: pointer;
-      transition: background 0.15s;
-    }
-    .job-row:hover {
-      background: var(--hover-bg);
-    }
-    .job-row.selected {
-      background: rgba(59, 130, 246, 0.15);
-      border-left: 3px solid var(--primary);
-    }
-    .job-detail-panel {
-      background: rgba(30, 35, 50, 0.5);
-      border-radius: 6px;
-      padding: 12px 16px;
-      margin-top: 12px;
-      font-size: 0.85rem;
-      border: 1px solid var(--border);
-    }
-    .job-detail-panel h4 {
-      margin: 0 0 10px 0;
-      font-size: 0.95rem;
-    }
-    .job-detail-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-      gap: 8px 16px;
-    }
-    .job-detail-item {
-      display: flex;
-      flex-direction: column;
-    }
-    .job-detail-item .label {
-      font-size: 0.75rem;
-      color: var(--muted);
-      text-transform: uppercase;
-    }
-    .job-detail-item .value {
-      font-weight: 500;
-    }
   </style>
 </head>
 
@@ -1175,181 +1027,6 @@
         </div>
       </div>
 
-      <!-- SysInfo page (template, cloned per edge) -->
-      <div class="page" id="page-sysinfo-template" style="display:none">
-        <div class="page-header">
-          <div class="page-icon">🖥️</div>
-          <h2>System Info — <span class="edge-label"></span></h2>
-          <button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="loadSysinfo(this)">↺
-            Refresh</button>
-        </div>
-        <div class="sysinfo-content">
-          <div class="empty">
-            <div class="empty-icon">⏳</div>
-            <p>Loading…</p>
-          </div>
-        </div>
-      </div>
-
-      <!-- QueueInfo page -->
-      <div class="page" id="page-queue_info-template" style="display:none">
-        <div class="page-header">
-          <div class="page-icon">📋</div>
-          <h2>Queue Info — <span class="edge-label"></span></h2>
-          <button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="loadQueueInfo(this)">↺
-            Refresh</button>
-        </div>
-        <div class="queueinfo-content">
-          <div class="empty">
-            <div class="empty-icon">⏳</div>
-            <p>Loading…</p>
-          </div>
-        </div>
-      </div>
-
-      <!-- Lucid page -->
-      <div class="page" id="page-lucid-template" style="display:none">
-        <div class="page-header">
-          <div class="page-icon">🧠</div>
-          <h2>Lucid — <span class="edge-label"></span></h2>
-        </div>
-        <div class="card">
-          <p style="color:var(--muted)">Advanced web interface for Lucid is not yet available.</p>
-        </div>
-      </div>
-
-      <!-- XGFabric page -->
-      <div class="page" id="page-xgfabric-template" style="display:none">
-        <div class="page-header">
-          <div class="page-icon">🕸️</div>
-          <h2>XGFabric — <span class="edge-label"></span></h2>
-        </div>
-        <div class="card">
-          <p style="color:var(--muted)">Advanced web interface for XGFabric is not yet available.</p>
-        </div>
-      </div>
-
-      <!-- PsiJ page -->
-      <div class="page" id="page-psij-template" style="display:none">
-        <div class="page-header">
-          <div class="page-icon">🚀</div>
-          <h2>PsiJ Jobs — <span class="edge-label"></span></h2>
-        </div>
-        <div class="card">
-          <div class="card-title">📝 Submit Job</div>
-          <div class="grid2">
-            <div>
-              <div class="form-group"><label>Executable</label><input class="p-exec" type="text"
-                  value="radical-edge-wrapper.sh" />
-              </div>
-              <div class="form-group"><label>Arguments (space-separated)</label><input class="p-args" type="text"
-                  value="" placeholder="auto-filled with --url and --name" /></div>
-              <div class="form-group"><label>Executor</label>
-                <select class="p-executor">
-                  <option value="local">local</option>
-                  <option value="slurm">slurm</option>
-                  <option value="pbs">pbs</option>
-                  <option value="lsf">lsf</option>
-                </select>
-              </div>
-            </div>
-            <div>
-              <div class="form-group"><label>Queue / Partition</label><input class="p-queue" type="text"
-                  placeholder="optional" /></div>
-              <div class="form-group"><label>Account / Project</label><input class="p-account" type="text"
-                  placeholder="optional" /></div>
-              <div class="form-group"><label>Duration (seconds)</label><input class="p-duration" type="text"
-                  placeholder="e.g. 600" /></div>
-              <div class="form-group"><label>Number of Nodes</label><input class="p-node-count" type="number"
-                  placeholder="e.g. 1" /></div>
-              <div class="form-group"><label>🔧 Custom Attributes</label>
-                <div class="psij-attributes-container" style="margin-bottom: 4px;">
-                  <div class="psij-attribute-rows"></div>
-                  <button type="button" class="btn btn-secondary btn-sm" onclick="addPsijAttributeRow(this)" style="margin-top:8px;">➕ Add Attribute</button>
-                </div>
-              </div>
-            </div>
-          </div>
-          <button class="btn btn-success" onclick="submitPsijJob(this)">🚀 Submit Job</button>
-        </div>
-        <div class="card psij-jobs-card">
-          <div class="card-title">📊 Job Monitor</div>
-          <div class="monitor-area psij-output">No jobs submitted yet.</div>
-        </div>
-      </div>
-
-      <!-- Rhapsody page -->
-      <div class="page" id="page-rhapsody-template" style="display:none">
-        <div class="page-header">
-          <div class="page-icon">🎼</div>
-          <h2>Rhapsody Tasks — <span class="edge-label"></span></h2>
-        </div>
-        <div class="card">
-          <div class="card-title">📝 Submit Task</div>
-          <div class="form-group"><label>Executable</label><input class="rh-exec" type="text" value="/bin/echo" /></div>
-          <div class="form-group"><label>Arguments (space-separated)</label><input class="rh-args" type="text"
-              value="hello from rhapsody" /></div>
-          <div class="form-group"><label>Backend</label>
-            <select class="rh-backends">
-              <option value="concurrent">concurrent</option>
-              <option value="dragon_v3">dragon_v3</option>
-            </select>
-          </div>
-          <button class="btn btn-success" onclick="submitRhapsodyTask(this)">▶ Submit Task</button>
-        </div>
-        <div class="card rh-tasks-card">
-          <div class="card-title">📊 Task Monitor</div>
-          <div class="monitor-area rh-output">No tasks submitted yet.</div>
-        </div>
-      </div>
-
-      <!-- Staging page -->
-      <div class="page" id="page-staging-template" style="display:none">
-        <div class="page-header">
-          <div class="page-icon">📁</div>
-          <h2>File Staging — <span class="edge-label"></span></h2>
-        </div>
-        <div class="card">
-          <div class="card-title">📂 Remote File Browser</div>
-          <div style="display:flex; gap:8px; margin-bottom:12px; align-items:center;">
-            <label style="margin:0; min-width:fit-content;">Path:</label>
-            <input class="staging-path" type="text" value="/" style="flex:1;" />
-            <button class="btn btn-secondary btn-sm" onclick="stagingNavigate(this)">📂 Browse</button>
-            <button class="btn btn-secondary btn-sm" onclick="stagingGoUp(this)">⬆️ Up</button>
-          </div>
-          <div class="staging-browser" style="border:1px solid var(--border); border-radius:var(--card-r); max-height:400px; overflow-y:auto; background:var(--bg1);">
-            <div class="empty" style="padding:20px;">
-              <div class="empty-icon">📂</div>
-              <p>Enter a path and click Browse to view directory contents</p>
-            </div>
-          </div>
-        </div>
-        <div class="card">
-          <div class="card-title">📤 Upload File</div>
-          <div class="grid2">
-            <div class="form-group">
-              <label>Local File</label>
-              <input type="file" class="staging-upload-file" />
-            </div>
-            <div class="form-group">
-              <label>Remote Path (absolute)</label>
-              <input class="staging-upload-path" type="text" placeholder="/path/on/edge/filename.txt" />
-            </div>
-          </div>
-          <button class="btn btn-success" onclick="stagingUpload(this)">📤 Upload</button>
-          <div class="staging-upload-status" style="margin-top:8px; font-size:0.85rem;"></div>
-        </div>
-        <div class="card">
-          <div class="card-title">📥 Download File</div>
-          <div class="form-group">
-            <label>Remote Path (absolute)</label>
-            <input class="staging-download-path" type="text" placeholder="/path/on/edge/filename.txt" />
-          </div>
-          <button class="btn btn-primary" onclick="stagingDownload(this)">📥 Download</button>
-          <div class="staging-download-status" style="margin-top:8px; font-size:0.85rem;"></div>
-        </div>
-      </div>
-
     </main>
   </div>
 
@@ -1438,6 +1115,82 @@
     }
 
     // ─────────────────────────────────────────────────────────────
+    //  Plugin Module Loading
+    // ─────────────────────────────────────────────────────────────
+
+    const loadedPlugins = {};  // pluginName -> module
+    const pluginStyles = new Set();  // track loaded plugin CSS
+
+    async function loadPlugin(pluginName) {
+      if (loadedPlugins[pluginName]) {
+        return loadedPlugins[pluginName];
+      }
+
+      try {
+        const module = await import(`/plugins/${pluginName}.js`);
+        loadedPlugins[pluginName] = module;
+
+        // Inject CSS if not already loaded
+        if (module.css && !pluginStyles.has(pluginName)) {
+          const cssText = module.css();
+          if (cssText) {
+            const style = document.createElement('style');
+            style.dataset.plugin = pluginName;
+            style.textContent = cssText;
+            document.head.appendChild(style);
+            pluginStyles.add(pluginName);
+          }
+        }
+
+        return module;
+      } catch (e) {
+        console.log(`Plugin module not found for ${pluginName}, using fallback`);
+        return null;
+      }
+    }
+
+    function createPluginAPI(edgeName, pluginName) {
+      return {
+        edgeName,
+        pluginName,
+        bridgeUrl: BRIDGE,
+
+        // Session management
+        async getSession(plugin = pluginName, regBody = {}) {
+          return await registerSession(edgeName, plugin, regBody);
+        },
+
+        // API calls - ns computed dynamically to ensure edgeData is populated
+        async fetch(endpoint, options = {}) {
+          const ns = getNs(edgeName, pluginName);
+          if (!ns) throw new Error(`Namespace not found for ${pluginName} on ${edgeName}`);
+          return await apiFetch(`${ns}/${endpoint}`, options);
+        },
+        async fetchRaw(path, options = {}) {
+          return await apiFetch(path, options);
+        },
+
+        // UI helpers
+        flash: (msg, ok = true) => flash(msg, ok),
+        escHtml: (s) => escHtml(s),
+        showOverlay: (title, body) => {
+          document.getElementById('jobs-overlay-title').textContent = title;
+          document.getElementById('jobs-overlay-body').innerHTML = body;
+          document.getElementById('jobs-overlay').classList.add('visible');
+        },
+        hideOverlay: () => hideJobsOverlay(),
+
+        // Task management
+        registerTask: (plugin, id, label) => registerTask(edgeName, plugin, id, label),
+        // Plugin modules handle their own notification state via onNotification
+        processPendingNotification: () => {},
+
+        // Edge management
+        disconnectEdge: (event) => disconnectEdge(event, edgeName),
+      };
+    }
+
+    // ─────────────────────────────────────────────────────────────
     //  Dynamic UI Rendering from ui_config
     // ─────────────────────────────────────────────────────────────
 
@@ -1457,7 +1210,10 @@
               ? `<option value="${escHtml(o)}">${escHtml(o)}</option>`
               : `<option value="${escHtml(o.value)}">${escHtml(o.label || o.value)}</option>`
           ).join('');
-          input = `<select class="${cssClass}" ${required ? 'required' : ''}>${opts}</select>`;
+          const dynAttrs = field.options_endpoint
+            ? `data-options-endpoint="${escHtml(field.options_endpoint)}" data-options-value="${escHtml(field.options_value_field || 'name')}" data-options-label="${escHtml(field.options_label_field || 'name')}"`
+            : '';
+          input = `<select class="${cssClass}" ${required ? 'required' : ''} ${dynAttrs}>${opts}</select>`;
           break;
         case 'textarea':
           input = `<textarea class="${cssClass}" placeholder="${escHtml(field.placeholder || '')}" ${required ? 'required' : ''}>${escHtml(field.default || '')}</textarea>`;
@@ -1542,6 +1298,9 @@
     function createDynamicPluginPage(edgeName, pluginName) {
       const ui = getPluginUIConfig(edgeName, pluginName);
       if (!ui || !ui.title) return null;
+
+      // Use hardcoded template if custom_template is set
+      if (ui.custom_template) return null;
 
       // Check for stub plugin
       if (ui.stub_message) {
@@ -1795,6 +1554,9 @@
           }
         }
       }
+
+      // Refresh dynamic select options
+      autoLoadDynamicSelectOptions(page, edgeName, pluginName);
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -2255,10 +2017,12 @@
         const indent = depth * 12;
         let html = `<details id="sidebar-edge-${ename}">
           <summary style="display: list-item; list-style-position: inside; padding: 6px 16px; padding-left: ${16 + indent}px; user-select:none; outline:none; font-weight:bold; cursor:pointer; font-size: 0.85rem; color: var(--accent2); transition: background .15s;" onmouseover="this.style.background='var(--bg3)'" onmouseout="this.style.background='transparent'">
-            <span onclick="showPage('bridge'); event.stopPropagation();" style="display:inline-flex; align-items:center; gap:8px; flex:1;">
-              <span class="icon">💻</span> ${ename}
+            <span style="display:inline-flex; align-items:center; justify-content:space-between; width:calc(100% - 16px);">
+              <span onclick="showPage('bridge'); event.stopPropagation();" style="display:inline-flex; align-items:center; gap:8px;">
+                <span class="icon">💻</span> ${ename}
+              </span>
+              <button class="task-cancel-btn" onclick="disconnectEdge(event, '${ename}')" title="Disconnect edge">✕</button>
             </span>
-            <button class="task-cancel-btn" onclick="disconnectEdge(event, '${ename}')" title="Disconnect edge">✕</button>
           </summary>
           <ul class="tree" style="margin-top: 2px; padding-left: 8px; border-left: 1px dashed var(--border); margin-left: ${16 + indent}px;">`;
 
@@ -2422,1231 +2186,96 @@
     //  Plugin page dispatch
     // ─────────────────────────────────────────────────────────────
     const activeDynamicPages = {};
+    const pluginPageModules = {};  // pid -> module (for notification routing)
 
-    function showPluginPage(edgeName, pluginName) {
+    async function showPluginPage(edgeName, pluginName) {
       const pid = `${edgeName}__${pluginName}`;
 
       // Create page if not exists
       if (!activeDynamicPages[pid]) {
         let page = null;
+        let module = null;
 
-        // Try dynamic rendering from ui_config first
-        const ui = getPluginUIConfig(edgeName, pluginName);
-        if (ui && ui.title) {
-          page = createDynamicPluginPage(edgeName, pluginName);
-          if (page) {
-            page.id = 'page-' + pid;
-            document.querySelector('main').appendChild(page);
+        // Try to load plugin module first
+        module = await loadPlugin(pluginName);
+        if (module && module.template) {
+          // Create page from module template
+          page = document.createElement('div');
+          page.className = 'page';
+          page.id = 'page-' + pid;
+          page.dataset.edgeName = edgeName;
+          page.dataset.pluginName = pluginName;
+          page.innerHTML = module.template();
+
+          // Set edge label
+          const edgeLabel = page.querySelector('.edge-label');
+          if (edgeLabel) edgeLabel.textContent = edgeName;
+
+          document.querySelector('main').appendChild(page);
+
+          // Initialize plugin
+          const api = createPluginAPI(edgeName, pluginName);
+          if (module.init) {
+            module.init(page, api);
+          }
+
+          pluginPageModules[pid] = { module, api };
+        }
+
+        // Fall back to ui_config dynamic rendering
+        if (!page) {
+          const ui = getPluginUIConfig(edgeName, pluginName);
+          if (ui && ui.title) {
+            page = createDynamicPluginPage(edgeName, pluginName);
+            if (page) {
+              page.id = 'page-' + pid;
+              document.querySelector('main').appendChild(page);
+            }
           }
         }
 
-        // Fall back to hardcoded template
+        // No plugin module or ui_config available
         if (!page) {
-          const templateId = `page-${pluginName}-template`;
-          const tmpl = document.getElementById(templateId);
-          if (!tmpl) {
-            flash(`No UI template for plugin: ${pluginName}`, false);
-            return;
-          }
-          page = tmpl.cloneNode(true);
-          page.id = 'page-' + pid;
-          page.style.display = '';
-          page.querySelector('.edge-label').textContent = edgeName;
-          page.dataset.edgeName = edgeName;
-          page.dataset.pluginName = pluginName;
-          document.querySelector('main').appendChild(page);
+          flash(`No UI template for plugin: ${pluginName}`, false);
+          return;
         }
 
         activeDynamicPages[pid] = page;
-
-        // Pre-fill PsiJ defaults on first page creation (only PsiJ launches child edges)
-        if (pluginName === 'psij') {
-          prefillEdgeLaunchArgs(page, edgeName, '.p-args');
-        }
       }
 
       showPage(pid);
       document.querySelectorAll('.tree-item').forEach(n => n.classList.remove('active'));
       const navEl = document.getElementById(`nav-${pid}`);
       if (navEl) navEl.classList.add('active');
-
-      const page = activeDynamicPages[pid];
-
-      // Update queue and account dynamically every time PsiJ page is shown
-      if (pluginName === 'psij') {
-        replaceQueueAccountDropdowns(page, edgeName);
-      }
-
-      // Auto-load data for monitors with auto_load
-      const ui = page.dataset.uiConfig ? JSON.parse(page.dataset.uiConfig) : null;
-      if (ui) {
-        // Dynamic page - auto-load monitors
-        for (const monitor of (ui.monitors || [])) {
-          if (monitor.auto_load) {
-            autoLoadDynamicMonitor(page, edgeName, pluginName, monitor);
-          }
-        }
-      } else {
-        // Legacy hardcoded pages
-        if (pluginName === 'sysinfo') autoLoadSysinfo(page);
-        if (pluginName === 'queue_info') autoLoadQueueInfo(page);
-      }
-    }
-
-    function prefillEdgeLaunchArgs(page, edgeName, selector) {
-      const argsInput = page.querySelector(selector);
-      if (argsInput && !argsInput.value) {
-        const url = BRIDGE.replace(/\/$/, '');
-        const childName = getNextEdgeChildName(edgeName);
-        argsInput.value = `--url ${url} --name ${childName}`;
-      }
-    }
-
-    function replaceQueueAccountDropdowns(page, edgeName) {
-      // Populate Queue/Account selectors from cache if available
-      const qCache = queueDataCache[edgeName];
-      if (qCache) {
-        const queueInput = page.querySelector('.p-queue');
-        if (queueInput) {
-          const select = document.createElement('select');
-          select.className = queueInput.className;
-
-          const qList = Object.values(qCache.queues || {});
-          const getQName = q => q.name || q.partition || q;
-
-          // Priority selection logic: debug > interactive > first available
-          const pb = qList.find(q => getQName(q) === 'debug');
-          const pi = qList.find(q => getQName(q) === 'interactive');
-          const defaultQ = (pb || pi || qList[0]);
-          const defaultQName = defaultQ ? getQName(defaultQ) : "";
-
-          const currentVal = queueInput.value;
-          select.innerHTML = '<option value="">(none)</option>' + qList.map(q => {
-            const qn = getQName(q);
-            const isSelected = (currentVal && currentVal === qn) || (!currentVal && qn === defaultQName);
-            return `<option value="${qn}" ${isSelected ? 'selected' : ''}>${qn}</option>`;
-          }).join('');
-          queueInput.parentNode.replaceChild(select, queueInput);
-        }
-
-        const accountInput = page.querySelector('.p-account');
-        if (accountInput) {
-          const select = document.createElement('select');
-          select.className = accountInput.className;
-
-          // Extract unique accounts
-          const accountSet = new Set();
-          (qCache.allocations || []).forEach(a => {
-            if (a.account) accountSet.add(a.account);
-          });
-          const accounts = Array.from(accountSet);
-          const defaultAcc = accounts.length > 0 ? accounts[0] : "";
-
-          const currentVal = accountInput.value;
-          select.innerHTML = '<option value="">(none)</option>' + accounts.map(a => {
-            const isSelected = (currentVal && currentVal === a) || (!currentVal && a === defaultAcc);
-            return `<option value="${a}" ${isSelected ? 'selected' : ''}>${a}</option>`;
-          }).join('');
-          accountInput.parentNode.replaceChild(select, accountInput);
-        }
-      }
-    }
-
-    function updateEdgeLaunchArgs(page, edgeName, selector) {
-      const argsInput = page.querySelector(selector);
-      if (argsInput) {
-        const url = BRIDGE.replace(/\/$/, '');
-        const childName = getNextEdgeChildName(edgeName);
-        argsInput.value = `--url ${url} --name ${childName}`;
-      }
-    }
-
-    async function autoLoadDynamicMonitor(page, edgeName, pluginName, monitor) {
-      const content = page.querySelector(`.${monitor.css_class}`);
-      if (!content) return;
-
-      content.innerHTML = '<div class="empty"><div class="spinner"></div><p style="margin-top:10px">Loading…</p></div>';
-
-      try {
-        const sid = await registerSession(edgeName, pluginName);
-        const ns = getNs(edgeName, pluginName);
-        const endpoint = monitor.auto_load.replace('{sid}', sid);
-        const data = await apiFetch(`${ns}/${endpoint}`);
-
-        // Use plugin-specific renderer if available
-        if (pluginName === 'sysinfo') {
-          content.innerHTML = renderSysinfo(data);
-        } else if (pluginName === 'queue_info') {
-          // Fetch allocations to go with queue info
-          let allocs = { allocations: [] };
-          try {
-            allocs = await apiFetch(`${ns}/list_allocations/${sid}`);
-          } catch (e) { console.warn("Could not fetch allocations:", e); }
-
-          const queuesObj = data.partitions || data.queues || data || {};
-          const queues = Array.isArray(queuesObj) ? queuesObj : Object.values(queuesObj);
-          const allocations = allocs.allocations || [];
-          queueDataCache[edgeName] = { queues, allocations };
-
-          content.innerHTML = renderQueueInfo(queues, allocations, edgeName, sid, ns);
-        } else {
-          content.innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
-        }
-      } catch (e) {
-        content.innerHTML = `<div class="card"><p style="color:var(--danger)">Error: ${e.message}</p></div>`;
-        flash(`${pluginName} error: ${e.message}`, false);
-      }
-    }
-
-    // ─────────────────────────────────────────────────────────────
-    //  SysInfo
-    // ─────────────────────────────────────────────────────────────
-    async function autoLoadSysinfo(page) {
-      const edgeName = page.dataset.edgeName;
-      const content = page.querySelector('.sysinfo-content');
-      content.innerHTML = '<div class="empty"><div class="spinner"></div><p style="margin-top:10px">Fetching metrics…</p></div>';
-      try {
-        const sid = await registerSession(edgeName, 'sysinfo');
-        const ns = getNs(edgeName, 'sysinfo');
-        const m = await apiFetch(`${ns}/metrics/${sid}`);
-        content.innerHTML = renderSysinfo(m);
-      } catch (e) {
-        content.innerHTML = `<div class="card"><p style="color:var(--danger)">Error: ${e.message}</p></div>`;
-        flash('SysInfo error: ' + e.message, false);
-      }
-    }
-
-    function loadSysinfo(btn) {
-      const page = btn.closest('.page');
-      autoLoadSysinfo(page);
-    }
-
-    function renderSysinfo(m) {
-      const sys = m.system || {};
-      const cpu = m.cpu || {};
-      const mem = m.memory || {};
-      const cpuPct = cpu.percent || 0;
-      const memPct = mem.percent || 0;
-      const cores = cpu.cores_logical || 1;
-      const load = (cpu.load_avg || [0, 0, 0]).map(l => ((l / cores) * 100).toFixed(1));
-
-      let html = `
-  <div class="card">
-    <div class="card-title">🖥️ System</div>
-    <div class="grid4">
-      <div class="metric-box"><label>Hostname</label><div class="val" style="font-size:.85rem">${sys.hostname || '?'}</div></div>
-      <div class="metric-box"><label>Kernel</label><div class="val" style="font-size:.85rem">${sys.kernel || '?'}</div></div>
-      <div class="metric-box"><label>Arch</label><div class="val" style="font-size:.85rem">${sys.arch || '?'}</div></div>
-      <div class="metric-box"><label>Uptime</label><div class="val" style="font-size:.85rem">${formatUptime(sys.uptime)}</div></div>
-    </div>
-  </div>
-
-  <div class="grid2">
-    <div class="card">
-      <div class="card-title">⚙️ CPU</div>
-      <div class="metric-box" style="margin-bottom:12px">
-        <label>Model</label>
-        <div class="val" style="font-size:.78rem;word-break:break-all">${cpu.model || '?'}</div>
-      </div>
-      <div class="grid2" style="margin-bottom:12px">
-        <div class="metric-box"><label>Physical Cores</label><div class="val">${cpu.cores_physical || '?'}</div></div>
-        <div class="metric-box"><label>Logical Cores</label><div class="val">${cpu.cores_logical || '?'}</div></div>
-      </div>
-      <div class="metric-box">
-        <label>Usage ${cpuPct}%</label>
-        <div class="progress-wrap"><div class="progress-bar"><div class="progress-fill ${pct2class(cpuPct)}" style="width:${cpuPct}%"></div></div></div>
-        <div class="sub">Load avg: ${load[0]}% / ${load[1]}% / ${load[2]}%</div>
-      </div>
-    </div>
-    <div class="card">
-      <div class="card-title">🧠 Memory</div>
-      <div class="metric-box" style="margin-bottom:12px">
-        <label>Used ${memPct}%</label>
-        <div class="val">${bytes2human(mem.used)} / ${bytes2human(mem.total)}</div>
-        <div class="progress-wrap"><div class="progress-bar"><div class="progress-fill ${pct2class(memPct)}" style="width:${memPct}%"></div></div></div>
-        <div class="sub">Available: ${bytes2human(mem.available)}</div>
-      </div>
-    </div>
-  </div>`;
-
-      // Disks
-      const disks = m.disks || [];
-      if (disks.length) {
-        html += `<div class="card"><div class="card-title">💾 Disks</div><table>
-      <thead><tr><th>Mount</th><th>Device</th><th>Type</th><th>Total</th><th>Used</th><th>Use%</th></tr></thead><tbody>`;
-        for (const d of disks) {
-          html += `<tr>
-        <td>${d.mount}</td><td>${d.device}</td><td><span class="badge badge-gray">${d.type || d.fstype}</span></td>
-        <td>${bytes2human(d.total)}</td><td>${bytes2human(d.used)}</td>
-        <td><span class="badge ${d.percent > 80 ? 'badge-red' : 'badge-green'}">${d.percent}%</span></td>
-      </tr>`;
-        }
-        html += '</tbody></table></div>';
-      }
-
-      // Network
-      const nets = m.network || [];
-      if (nets.length) {
-        html += `<div class="card"><div class="card-title">🌐 Network</div><table>
-      <thead><tr><th>Interface</th><th>IP</th><th>MAC</th><th>Speed</th><th>RX</th><th>TX</th></tr></thead><tbody>`;
-        for (const n of nets) {
-          html += `<tr>
-        <td>${n.interface}</td><td>${n.ip || '-'}</td><td>${n.mac || '-'}</td>
-        <td>${n.speed_mbps || 0} Mbps</td><td>${bytes2human(n.rx_bytes)}</td><td>${bytes2human(n.tx_bytes)}</td>
-      </tr>`;
-        }
-        html += '</tbody></table></div>';
-      }
-
-      // GPUs
-      const gpus = m.gpus || [];
-      if (gpus.length) {
-        html += `<div class="card"><div class="card-title">🎮 GPUs</div><table>
-      <thead><tr><th>ID</th><th>Name</th><th>Vendor</th><th>GPU%</th><th>Mem%</th><th>Total Mem</th></tr></thead><tbody>`;
-        for (const g of gpus) {
-          const memTotal = g.mem_total ? bytes2human(g.mem_total * 1024 * 1024) : 'N/A';
-          html += `<tr>
-        <td>${g.id}</td><td>${g.name}</td><td>${g.vendor || '-'}</td>
-        <td>${g.util_gpu ?? '-'}%</td><td>${g.util_mem ?? '-'}%</td><td>${memTotal}</td>
-      </tr>`;
-        }
-        html += '</tbody></table></div>';
-      }
-
-      return html;
-    }
-
-    function formatUptime(secs) {
-      if (!secs) return '?';
-      const d = Math.floor(secs / 86400), h = Math.floor((secs % 86400) / 3600), m = Math.floor((secs % 3600) / 60);
-      return `${d}d ${h}h ${m}m`;
-    }
-
-    // ─────────────────────────────────────────────────────────────
-    //  Queue Info
-    // ─────────────────────────────────────────────────────────────
-    async function autoLoadQueueInfo(page) {
-      const edgeName = page.dataset.edgeName;
-      const content = page.querySelector('.queueinfo-content');
-      content.innerHTML = '<div class="empty"><div class="spinner"></div><p style="margin-top:10px">Fetching queue info…</p></div>';
-      try {
-        const sid = await registerSession(edgeName, 'queue_info');
-        const ns = getNs(edgeName, 'queue_info');
-        const [info, allocs] = await Promise.all([
-          apiFetch(`${ns}/get_info/${sid}`),
-          apiFetch(`${ns}/list_allocations/${sid}`)
-        ]);
-
-        const queuesObj = info.partitions || info.queues || info || {};
-        const queues = Array.isArray(queuesObj) ? queuesObj : Object.values(queuesObj);
-        const allocations = allocs.allocations || [];
-        queueDataCache[edgeName] = { queues, allocations };
-
-        content.innerHTML = renderQueueInfo(queues, allocations, edgeName, sid, ns);
-      } catch (e) {
-        content.innerHTML = `<div class="card"><p style="color:var(--danger)">Error: ${e.message}</p></div>`;
-        flash('QueueInfo error: ' + e.message, false);
-      }
-    }
-
-    function loadQueueInfo(btn) {
-      const page = btn.closest('.page');
-      autoLoadQueueInfo(page);
-    }
-
-    function renderQueueInfo(partitions, allocations, edgeName, sid, ns) {
-      let html = "";
-
-      if (!Array.isArray(partitions) || !partitions.length) {
-        html += `<div class="card"><p style="color:var(--muted)">No partition data returned.</p></div>`;
-      } else {
-        html += `<div class="card"><div class="card-title">📋 Partitions / Queues</div>
-      <table><thead><tr><th>Name</th><th>State</th><th>Nodes</th><th>CPUs</th><th>Jobs</th><th>Actions</th></tr></thead><tbody>`;
-
-        for (const p of partitions) {
-          const name = p.name || p.partition || JSON.stringify(p).slice(0, 30);
-          const state = p.state || p.avail || '-';
-          const stateBadge = state.toLowerCase().includes('up') ? 'badge-green' : 'badge-orange';
-          html += `<tr>
-        <td><strong>${name}</strong></td>
-        <td><span class="badge ${stateBadge}">${state}</span></td>
-        <td>${p.nodes || p.total_nodes || '-'}</td>
-        <td>${p.cpus || p.total_cpus || '-'}</td>
-        <td>${p.jobs || '-'}</td>
-        <td><button class="btn btn-secondary btn-sm"
-            onclick="loadQueueJobs('${edgeName}','${sid}','${ns}','${name}',this)">
-            View Jobs</button></td>
-      </tr>`;
-        }
-        html += '</tbody></table></div>';
-      }
-
-      if (Array.isArray(allocations) && allocations.length > 0) {
-        html += `<div class="card"><div class="card-title">💼 Allocations / Projects</div>
-      <table><thead><tr><th>Account</th><th>User</th><th>Fairshare</th><th>QoS</th><th>Max Jobs</th></tr></thead><tbody>`;
-
-        for (const a of allocations) {
-          html += `<tr>
-        <td><strong>${a.account || '-'}</strong></td>
-        <td>${a.user || '-'}</td>
-        <td>${a.fairshare || '-'}</td>
-        <td><span class="badge badge-gray">${a.qos || '-'}</span></td>
-        <td>${a.max_jobs || '-'}</td>
-      </tr>`;
-        }
-        html += '</tbody></table></div>';
-      }
-
-      html += '<div id="qi-jobs-area"></div>';
-      return html;
-    }
-
-    // Store current jobs for detail view
-    let currentJobsData = [];
-
-    function showJobsOverlay() {
-      document.getElementById('jobs-overlay').classList.add('visible');
-    }
-
-    function hideJobsOverlay() {
-      document.getElementById('jobs-overlay').classList.remove('visible');
-    }
-
-    function formatTimestamp(ts) {
-      if (!ts || ts === 0) return '-';
-      // Handle Unix timestamp (seconds)
-      const date = new Date(ts * 1000);
-      if (isNaN(date.getTime())) return '-';
-      return date.toLocaleString();
-    }
-
-    function formatDuration(seconds) {
-      if (!seconds || seconds <= 0) return '-';
-      const h = Math.floor(seconds / 3600);
-      const m = Math.floor((seconds % 3600) / 60);
-      const s = seconds % 60;
-      if (h > 0) return `${h}h ${m}m ${s}s`;
-      if (m > 0) return `${m}m ${s}s`;
-      return `${s}s`;
-    }
-
-    function showJobDetail(jobId) {
-      const job = currentJobsData.find(j => (j.job_id || j.id) === jobId);
-      if (!job) return;
-
-      const detailPanel = document.getElementById('job-detail-panel');
-      if (!detailPanel) return;
-
-      const st = job.state || job.job_state || '-';
-      const badge = { 'RUNNING': 'badge-green', 'PENDING': 'badge-orange', 'COMPLETED': 'badge-blue', 'FAILED': 'badge-red' }[st] || 'badge-gray';
-
-      detailPanel.innerHTML = `
-        <h4>📋 Job Details: ${job.job_id || job.id || '-'}</h4>
-        <div class="job-detail-grid">
-          <div class="job-detail-item">
-            <span class="label">Job Name</span>
-            <span class="value">${job.job_name || job.name || '-'}</span>
-          </div>
-          <div class="job-detail-item">
-            <span class="label">State</span>
-            <span class="value"><span class="badge ${badge}">${st}</span></span>
-          </div>
-          <div class="job-detail-item">
-            <span class="label">User</span>
-            <span class="value">${job.user || job.user_name || '-'}</span>
-          </div>
-          <div class="job-detail-item">
-            <span class="label">Partition</span>
-            <span class="value">${job.partition || '-'}</span>
-          </div>
-          <div class="job-detail-item">
-            <span class="label">Account</span>
-            <span class="value">${job.account || '-'}</span>
-          </div>
-          <div class="job-detail-item">
-            <span class="label">Nodes</span>
-            <span class="value">${job.nodes || job.num_nodes || '-'}</span>
-          </div>
-          <div class="job-detail-item">
-            <span class="label">CPUs</span>
-            <span class="value">${job.cpus || '-'}</span>
-          </div>
-          <div class="job-detail-item">
-            <span class="label">Node List</span>
-            <span class="value">${job.node_list || '-'}</span>
-          </div>
-          <div class="job-detail-item">
-            <span class="label">Submit Time</span>
-            <span class="value">${formatTimestamp(job.submit_time)}</span>
-          </div>
-          <div class="job-detail-item">
-            <span class="label">Start Time</span>
-            <span class="value">${formatTimestamp(job.start_time)}</span>
-          </div>
-          <div class="job-detail-item">
-            <span class="label">Time Limit</span>
-            <span class="value">${job.time_limit ? formatDuration(job.time_limit * 60) : '-'}</span>
-          </div>
-          <div class="job-detail-item">
-            <span class="label">Time Used</span>
-            <span class="value">${formatDuration(job.time_used)}</span>
-          </div>
-          <div class="job-detail-item">
-            <span class="label">Priority</span>
-            <span class="value">${job.priority || '-'}</span>
-          </div>
-        </div>
-      `;
-      detailPanel.style.display = 'block';
-
-      // Highlight selected row
-      document.querySelectorAll('.job-row').forEach(r => r.classList.remove('selected'));
-      const selectedRow = document.querySelector(`.job-row[data-job-id="${jobId}"]`);
-      if (selectedRow) selectedRow.classList.add('selected');
-    }
-
-    async function loadQueueJobs(edgeName, sid, ns, queue, btn) {
-      btn.disabled = true; btn.textContent = '…';
-      try {
-        // Always fetch fresh job data (bypass cache)
-        const data = await apiFetch(`${ns}/list_jobs/${sid}/${encodeURIComponent(queue)}?force=true`);
-        const jobs = data.jobs || data || [];
-        currentJobsData = jobs;
-
-        const title = document.getElementById('jobs-overlay-title');
-        const body = document.getElementById('jobs-overlay-body');
-
-        title.textContent = `📄 Jobs in ${queue}`;
-
-        if (!jobs.length) {
-          body.innerHTML = `<p style="color:var(--muted)">No jobs in <strong>${queue}</strong>.</p>`;
-          showJobsOverlay();
-          return;
-        }
-
-        let html = `<table>
-          <thead><tr>
-            <th>Job ID</th><th>Name</th><th>User</th><th>State</th><th>Nodes</th><th>Time Used</th>
-          </tr></thead><tbody>`;
-
-        for (const j of jobs) {
-          const jobId = j.job_id || j.id || '-';
-          const st = j.state || j.job_state || '-';
-          const badge = { 'RUNNING': 'badge-green', 'PENDING': 'badge-orange', 'COMPLETED': 'badge-blue', 'FAILED': 'badge-red' }[st] || 'badge-gray';
-          html += `<tr class="job-row" data-job-id="${jobId}" onclick="showJobDetail('${jobId}')">
-            <td><strong>${jobId}</strong></td>
-            <td>${j.job_name || j.name || '-'}</td>
-            <td>${j.user || j.user_name || '-'}</td>
-            <td><span class="badge ${badge}">${st}</span></td>
-            <td>${j.nodes || j.num_nodes || '-'}</td>
-            <td>${formatDuration(j.time_used)}</td>
-          </tr>`;
-        }
-        html += '</tbody></table>';
-        html += '<div id="job-detail-panel" class="job-detail-panel" style="display:none;"></div>';
-
-        body.innerHTML = html;
-        showJobsOverlay();
-
-      } catch (e) {
-        flash('Error loading jobs: ' + e.message, false);
-      } finally {
-        btn.disabled = false; btn.textContent = 'View Jobs';
-      }
     }
 
     // ─────────────────────────────────────────────────────────────
     //  SSE Notification handler
     // ─────────────────────────────────────────────────────────────
-
-    // Plugin notification config: maps plugin name to DOM element prefixes and data fields
-    const NOTIFICATION_CONFIG = {
-      psij: {
-        prefix: 'psij-job',
-        stateClass: 'psij-job-state',
-        logClass: 'psij-job-log',
-        topic: 'job_status',
-        idField: 'job_id'
-      },
-      rhapsody: {
-        prefix: 'rh-task',
-        stateClass: 'rh-task-state',
-        logClass: 'rh-task-log',
-        topic: 'task_status',
-        idField: 'uid'
-      }
-    };
-
     function handleNotification(data) {
       const plugin = data.plugin;
-      const topic = data.topic;
       const d = data.data || {};
       const edgeName = data.edge || '';
 
-      const config = NOTIFICATION_CONFIG[plugin];
-      if (!config || config.topic !== topic) return;
-
-      const taskId = d[config.idField] || '';
-      const state = d.state || '?';
-
-      updateTaskState(edgeName, plugin, taskId, state);
-      if (!applyTaskNotification(plugin, edgeName, taskId, state, d)) {
-        const pendingKey = `${config.prefix}-${edgeName}-${taskId}`;
-        pendingNotifications[pendingKey] = { edgeName, data: d, state, timestamp: Date.now() };
-      }
-    }
-
-    function applyTaskNotification(plugin, edgeName, taskId, state, d) {
-      const config = NOTIFICATION_CONFIG[plugin];
-      if (!config) return false;
-
-      const entryId = `${config.prefix}-${edgeName}-${taskId}`;
-      const entry = document.getElementById(entryId);
-      if (!entry) return false;
-
-      const stateEl = entry.querySelector(`.${config.stateClass}`);
-      const logEl = entry.querySelector(`.${config.logClass}`);
-      if (!stateEl || !logEl) return false;
-
-      const ts = new Date().toLocaleTimeString();
-      const stateUpper = (state || '').toUpperCase();
-      const isOk = ['DONE', 'COMPLETED'].some(s => stateUpper.includes(s));
-      const isRunning = stateUpper.includes('RUNNING') || stateUpper.includes('ACTIVE');
-      const isFailed = ['FAILED', 'ERROR', 'CANCELED'].some(s => stateUpper.includes(s));
-
-      stateEl.className = `${config.stateClass} badge ${isOk ? 'badge-green' : isRunning ? 'badge-blue' : isFailed ? 'badge-red' : 'badge-orange'}`;
-      stateEl.textContent = state;
-
-      // Disable cancel button on terminal states
-      const isTerminal = isOk || isFailed;
-      const cancelBtn = entry.querySelector('.task-cancel-btn');
-      if (cancelBtn && isTerminal) {
-        cancelBtn.disabled = true;
-      }
-
-      const rc = d.exit_code ?? d.retval ?? '?';
-      let logHtml = `<span style="color:var(--muted);font-size:0.9em;">[${ts}] <b>${state}</b> rc:${rc}</span>`;
-      if (d.stdout) logHtml += `<pre class="ok">out: ${escHtml(d.stdout).trim()}</pre>`;
-      if (d.stderr) logHtml += `<pre class="err">err: ${escHtml(d.stderr).trim()}</pre>`;
-      if (d.exception) logHtml += `<pre class="err">exc: ${escHtml(d.exception).trim()}</pre>`;
-      logEl.innerHTML = logHtml;
-      return true;
-    }
-
-    function processPendingNotification(edgeName, plugin, taskId) {
-      const config = NOTIFICATION_CONFIG[plugin];
-      if (!config) return;
-
-      const key = `${config.prefix}-${edgeName}-${taskId}`;
-      const pending = pendingNotifications[key];
-      if (pending) {
-        applyTaskNotification(plugin, edgeName, taskId, pending.state, pending.data);
-        delete pendingNotifications[key];
+      // Route to plugin module
+      const pid = `${edgeName}__${plugin}`;
+      const pageModule = pluginPageModules[pid];
+      if (pageModule && pageModule.module.onNotification) {
+        const page = activeDynamicPages[pid];
+        if (page) {
+          pageModule.module.onNotification(data, page, pageModule.api);
+          // Also update task registry for sidebar
+          const idField = pageModule.module.notificationConfig?.idField || 'uid';
+          const taskId = d[idField] || '';
+          const state = d.state || '?';
+          if (taskId) updateTaskState(edgeName, plugin, taskId, state);
+        }
       }
     }
 
     // ─────────────────────────────────────────────────────────────
-    //  PsiJ
+    //  Utility functions
     // ─────────────────────────────────────────────────────────────
-    const psijEdgeCounters = {};  // per-edge child counter
-
-    function getNextEdgeChildName(edgeName) {
-      if (!psijEdgeCounters[edgeName]) psijEdgeCounters[edgeName] = 0;
-      psijEdgeCounters[edgeName]++;
-      return `${edgeName}.${psijEdgeCounters[edgeName]}`;
-    }
-
-    function addPsijAttributeRow(btn) {
-      const container = btn.previousElementSibling;
-      const row = document.createElement('div');
-      row.style.display = 'flex';
-      row.style.gap = '10px';
-      row.style.marginBottom = '8px';
-      row.innerHTML = `
-        <input class="p-attr-key" type="text" placeholder="Key (e.g. slurm.constraint)" style="flex:1;" />
-        <input class="p-attr-val" type="text" placeholder="Value (e.g. cpu_gen_1)" style="flex:2;" />
-        <button class="btn btn-secondary btn-sm" onclick="this.parentElement.remove()" style="padding: 4px 10px;">❌</button>
-      `;
-      container.appendChild(row);
-    }
-
-    async function submitPsijJob(btn) {
-      const page = btn.closest('.page');
-      const edgeName = page.dataset.edgeName;
-      const output = page.querySelector('.psij-output');
-
-      const exec = page.querySelector('.p-exec').value.trim();
-      const args = page.querySelector('.p-args').value.trim().split(/\s+/).filter(Boolean);
-      const executor = page.querySelector('.p-executor').value;
-      const queue = page.querySelector('.p-queue').value.trim();
-      const account = page.querySelector('.p-account').value.trim();
-      const duration = page.querySelector('.p-duration').value.trim();
-      const nodeCountEl = page.querySelector('.p-node-count');
-      const nodeCount = nodeCountEl ? nodeCountEl.value.trim() : '';
-
-      const job_spec = { executable: exec, arguments: args, attributes: {} };
-      if (queue) job_spec.attributes.queue_name = queue;
-      if (account) job_spec.attributes.account = account;
-      if (duration) job_spec.attributes.duration = duration;
-      if (nodeCount) job_spec.attributes.node_count = parseInt(nodeCount, 10);
-
-      const attrRows = page.querySelectorAll('.psij-attribute-rows > div');
-      attrRows.forEach(row => {
-        const key = row.querySelector('.p-attr-key').value.trim();
-        const val = row.querySelector('.p-attr-val').value.trim();
-        if (key && val) {
-          if (!job_spec.custom_attributes) job_spec.custom_attributes = {};
-          job_spec.custom_attributes[key] = val;
-        }
-      });
-
-      // Clear placeholder
-      if (output.textContent === 'No jobs submitted yet.') output.innerHTML = '';
-
-      try {
-        const sid = await registerSession(edgeName, 'psij');
-        const ns = getNs(edgeName, 'psij');
-
-        const res = await apiFetch(`${ns}/submit/${sid}`, {
-          method: 'POST',
-          body: JSON.stringify({ job_spec, executor })
-        });
-
-        const jobId = res.job_id;
-        flash(`Job submitted: ${jobId}`);
-        registerTask(edgeName, 'psij', jobId, `${exec} ${args.join(' ')}`);
-
-        // Create a per-job expandable entry — updates arrive via SSE
-        const jobEntry = document.createElement('details');
-        jobEntry.className = 'task-entry';
-        jobEntry.id = `psij-job-${jobId}`;
-        jobEntry.innerHTML = `
-          <summary>
-            <span class="task-summary-content">
-              <strong style="margin-right:6px;">🚀 ${jobId.slice(0, 8)}…</strong>
-              <span class="psij-job-state badge badge-orange" style="font-size:.65rem;padding:1px 4px;">PENDING</span>
-              <code style="font-size:0.8em;color:var(--muted);margin-left:8px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${exec} ${args.join(' ')}</code>
-              <button class="task-cancel-btn" onclick="cancelPsijJob(event, '${edgeName}', '${jobId}')" title="Cancel job">✕</button>
-            </span>
-          </summary>
-          <div class="task-log psij-job-log"><div style="color:var(--muted);font-style:italic;">Waiting…</div></div>`;
-        output.appendChild(jobEntry);
-        output.scrollTop = output.scrollHeight;
-
-        // Check if notification arrived before element was created (race condition)
-        processPendingNotification(edgeName, 'psij', jobId);
-
-        // Update the args field for the NEXT submission (increment counter)
-        const argsInput = page.querySelector('.p-args');
-        const url = BRIDGE.replace(/\/$/, '');
-        const nextName = getNextEdgeChildName(edgeName);
-        argsInput.value = `--url ${url} --name ${nextName}`;
-
-      } catch (e) {
-        output.innerHTML += `<span class="err">Submit error: ${e.message}</span>\n`;
-        flash('PsiJ error: ' + e.message, false);
-      }
-    }
-
-    // ─────────────────────────────────────────────────────────────
-    //  Rhapsody
-    // ─────────────────────────────────────────────────────────────
-    async function submitRhapsodyTask(btn) {
-      const page = btn.closest('.page');
-      const edgeName = page.dataset.edgeName;
-      const output = page.querySelector('.rh-output');
-
-      const exec = page.querySelector('.rh-exec').value.trim();
-      const args = page.querySelector('.rh-args').value.trim().split(/\s+/).filter(Boolean);
-      const backendsRaw = page.querySelector('.rh-backends').value.trim();
-      const backends = backendsRaw ? backendsRaw.split(',').map(s => s.trim()).filter(Boolean) : null;
-
-      // Clear placeholder
-      if (output.textContent === 'No tasks submitted yet.') output.innerHTML = '';
-
-      try {
-        const regBody = backends ? { backends } : {};
-        const sid = await registerSession(edgeName, 'rhapsody', regBody);
-        const ns = getNs(edgeName, 'rhapsody');
-
-        const tasks = [{ executable: exec, arguments: args }];
-        const submitted = await apiFetch(`${ns}/submit/${sid}`, {
-          method: 'POST', body: JSON.stringify({ tasks })
-        });
-
-        const taskList = (Array.isArray(submitted) ? submitted : submitted.tasks || [submitted]);
-        const uids = taskList.map(t => t.uid).filter(Boolean);
-
-        flash(`Rhapsody task(s) submitted: ${uids.join(', ')}`);
-
-        for (const uid of uids) {
-          registerTask(edgeName, 'rhapsody', uid, `${exec} ${args.join(' ')}`);
-
-          const taskEntry = document.createElement('details');
-          taskEntry.className = 'task-entry';
-          taskEntry.id = `rh-task-${edgeName}-${uid}`;
-          taskEntry.innerHTML = `
-            <summary>
-              <span class="task-summary-content">
-                <strong style="margin-right:6px;">🎼 ${uid.slice(0, 12)}…</strong>
-                <span class="rh-task-state badge badge-orange" style="font-size:.65rem;padding:1px 4px;">PENDING</span>
-                <code style="font-size:0.8em;color:var(--muted);margin-left:8px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${exec} ${args.join(' ')}</code>
-                <button class="task-cancel-btn" onclick="cancelRhapsodyTask(event, '${edgeName}', '${uid}')" title="Cancel task">✕</button>
-              </span>
-            </summary>
-            <div class="task-log rh-task-log"><div style="color:var(--muted);font-style:italic;">Waiting…</div></div>`;
-          output.appendChild(taskEntry);
-          output.scrollTop = output.scrollHeight;
-
-          // Check if notification arrived before element was created (race condition)
-          processPendingNotification(edgeName, 'rhapsody', uid);
-        }
-
-      } catch (e) {
-        output.innerHTML += `<span class="err">Submit error: ${e.message}</span>\n`;
-        flash('Rhapsody error: ' + e.message, false);
-      }
-    }
-
-    // ─────────────────────────────────────────────────────────────
-    //  Cancel handlers for PsiJ and Rhapsody
-    // ─────────────────────────────────────────────────────────────
-    async function cancelPsijJob(event, edgeName, jobId) {
-      event.stopPropagation();  // Don't toggle details
-      const btn = event.target;
-      btn.disabled = true;
-
-      try {
-        const key = `${edgeName}/psij`;
-        const sid = sessions[key];
-        if (!sid) {
-          flash('No active session for PsiJ', false);
-          return;
-        }
-
-        const ns = getNs(edgeName, 'psij');
-        await apiFetch(`${ns}/cancel/${sid}/${jobId}`, { method: 'POST' });
-        flash(`Job ${jobId.slice(0, 8)}… canceled`);
-
-        // Update the state badge
-        const entry = document.getElementById(`psij-job-${jobId}`);
-        if (entry) {
-          const badge = entry.querySelector('.psij-job-state');
-          if (badge) {
-            badge.textContent = 'CANCELED';
-            badge.className = 'psij-job-state badge badge-red';
-          }
-        }
-      } catch (e) {
-        flash('Cancel failed: ' + e.message, false);
-        btn.disabled = false;
-      }
-    }
-
-    async function cancelRhapsodyTask(event, edgeName, uid) {
-      event.stopPropagation();  // Don't toggle details
-      const btn = event.target;
-      btn.disabled = true;
-
-      try {
-        const key = `${edgeName}/rhapsody`;
-        const sid = sessions[key];
-        if (!sid) {
-          flash('No active session for Rhapsody', false);
-          return;
-        }
-
-        const ns = getNs(edgeName, 'rhapsody');
-        await apiFetch(`${ns}/cancel/${sid}/${uid}`, { method: 'POST' });
-        flash(`Task ${uid.slice(0, 12)}… canceled`);
-
-        // Update the state badge
-        const entry = document.getElementById(`rh-task-${edgeName}-${uid}`);
-        if (entry) {
-          const badge = entry.querySelector('.rh-task-state');
-          if (badge) {
-            badge.textContent = 'CANCELED';
-            badge.className = 'rh-task-state badge badge-red';
-          }
-        }
-      } catch (e) {
-        flash('Cancel failed: ' + e.message, false);
-        btn.disabled = false;
-      }
-    }
-
-    // ─────────────────────────────────────────────────────────────
-    //  Staging - File Browser
-    // ─────────────────────────────────────────────────────────────
-    async function stagingNavigate(btn, targetPath = null) {
-      const page = btn.closest('.page');
-      const edgeName = page.dataset.edgeName;
-      const pathInput = page.querySelector('.staging-path');
-      const browser = page.querySelector('.staging-browser');
-
-      const path = targetPath || pathInput.value.trim() || '/';
-      pathInput.value = path;
-
-      browser.innerHTML = '<div class="empty" style="padding:20px;"><div class="spinner"></div><p>Loading…</p></div>';
-
-      try {
-        const sid = await registerSession(edgeName, 'staging');
-        const ns = getNs(edgeName, 'staging');
-        const data = await apiFetch(`${ns}/list/${sid}`, {
-          method: 'POST',
-          body: JSON.stringify({ path })
-        });
-
-        renderStagingBrowser(page, edgeName, data);
-      } catch (e) {
-        browser.innerHTML = `<div class="empty" style="padding:20px;"><p style="color:var(--danger);">Error: ${e.message}</p></div>`;
-        flash('Staging error: ' + e.message, false);
-      }
-    }
-
-    function stagingGoUp(btn) {
-      const page = btn.closest('.page');
-      const pathInput = page.querySelector('.staging-path');
-      const currentPath = pathInput.value.trim() || '/';
-
-      // Get parent directory
-      let parent = currentPath.replace(/\/[^/]+\/?$/, '') || '/';
-      if (!parent.startsWith('/')) parent = '/' + parent;
-
-      pathInput.value = parent;
-      stagingNavigate(btn, parent);
-    }
-
-    function renderStagingBrowser(page, edgeName, data) {
-      const browser = page.querySelector('.staging-browser');
-      const entries = data.entries || [];
-
-      if (entries.length === 0) {
-        browser.innerHTML = '<div class="empty" style="padding:20px;"><p style="color:var(--muted);">Empty directory</p></div>';
-        return;
-      }
-
-      // Sort: directories first, then files, alphabetically
-      const sorted = [...entries].sort((a, b) => {
-        if (a.type === 'dir' && b.type !== 'dir') return -1;
-        if (a.type !== 'dir' && b.type === 'dir') return 1;
-        return a.name.localeCompare(b.name);
-      });
-
-      let html = '<ul class="tree" style="margin:0; padding:8px 0;">';
-
-      for (const entry of sorted) {
-        const fullPath = data.path.replace(/\/$/, '') + '/' + entry.name;
-        const escapedPath = escHtml(fullPath).replace(/'/g, "\\'");
-
-        if (entry.type === 'dir') {
-          html += `
-            <li class="tree-item" style="padding:6px 12px;"
-                onclick="stagingClickDir(this, '${escapedPath}')"
-                ondblclick="stagingEnterDir(this, '${escapedPath}')">
-              <span class="icon">📁</span>
-              <span style="flex:1;">${escHtml(entry.name)}</span>
-              <span style="color:var(--muted); font-size:0.8rem;">directory</span>
-            </li>`;
-        } else {
-          const sizeStr = entry.size !== null ? formatBytes(entry.size) : '';
-          html += `
-            <li class="tree-item" style="padding:6px 12px;"
-                onclick="stagingClickFile(this, '${escapedPath}')">
-              <span class="icon">📄</span>
-              <span style="flex:1;">${escHtml(entry.name)}</span>
-              <span style="color:var(--muted); font-size:0.8rem;">${sizeStr}</span>
-              <button class="btn btn-secondary btn-sm" style="margin-left:8px; padding:2px 8px; font-size:0.75rem;"
-                      onclick="event.stopPropagation(); stagingDownloadFile(this, '${escapedPath}')">📥</button>
-            </li>`;
-        }
-      }
-
-      html += '</ul>';
-      browser.innerHTML = html;
-    }
-
-    function stagingClickDir(li, path) {
-      // Just highlight the directory
-      const browser = li.closest('.staging-browser');
-      browser.querySelectorAll('.tree-item').forEach(el => el.style.background = '');
-      li.style.background = 'var(--bg3)';
-
-      // Update upload path suggestion
-      const page = li.closest('.page');
-      const uploadPath = page.querySelector('.staging-upload-path');
-      if (uploadPath && !uploadPath.value) {
-        uploadPath.placeholder = path + '/filename.txt';
-      }
-    }
-
-    function stagingEnterDir(li, path) {
-      const page = li.closest('.page');
-      const pathInput = page.querySelector('.staging-path');
-      pathInput.value = path;
-      const btn = page.querySelector('.staging-browser').previousElementSibling.querySelector('[onclick*="stagingNavigate"]');
-      stagingNavigate(btn, path);
-    }
-
-    function stagingClickFile(li, path) {
-      // Highlight the file
-      const browser = li.closest('.staging-browser');
-      browser.querySelectorAll('.tree-item').forEach(el => el.style.background = '');
-      li.style.background = 'var(--bg3)';
-
-      // Update download path
-      const page = li.closest('.page');
-      const downloadPath = page.querySelector('.staging-download-path');
-      if (downloadPath) {
-        downloadPath.value = path;
-      }
-    }
-
-    async function stagingDownloadFile(btn, path) {
-      const page = btn.closest('.page');
-      const edgeName = page.dataset.edgeName;
-      const status = page.querySelector('.staging-download-status');
-
-      status.innerHTML = '<span style="color:var(--accent);">Downloading…</span>';
-
-      try {
-        const sid = await registerSession(edgeName, 'staging');
-        const ns = getNs(edgeName, 'staging');
-        const data = await apiFetch(`${ns}/get/${sid}`, {
-          method: 'POST',
-          body: JSON.stringify({ filename: path })
-        });
-
-        // Decode base64 and trigger download
-        const content = atob(data.content);
-        const bytes = new Uint8Array(content.length);
-        for (let i = 0; i < content.length; i++) {
-          bytes[i] = content.charCodeAt(i);
-        }
-        const blob = new Blob([bytes]);
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = path.split('/').pop();
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-
-        status.innerHTML = `<span style="color:var(--success);">Downloaded: ${escHtml(path)} (${formatBytes(data.size)})</span>`;
-        flash(`Downloaded: ${path.split('/').pop()}`);
-      } catch (e) {
-        status.innerHTML = `<span style="color:var(--danger);">Error: ${e.message}</span>`;
-        flash('Download failed: ' + e.message, false);
-      }
-    }
-
-    async function stagingDownload(btn) {
-      const page = btn.closest('.page');
-      const path = page.querySelector('.staging-download-path').value.trim();
-
-      if (!path) {
-        flash('Please enter a remote file path', false);
-        return;
-      }
-
-      await stagingDownloadFile(btn, path);
-    }
-
-    async function stagingUpload(btn) {
-      const page = btn.closest('.page');
-      const edgeName = page.dataset.edgeName;
-      const fileInput = page.querySelector('.staging-upload-file');
-      const pathInput = page.querySelector('.staging-upload-path');
-      const status = page.querySelector('.staging-upload-status');
-
-      const file = fileInput.files[0];
-      const remotePath = pathInput.value.trim();
-
-      if (!file) {
-        flash('Please select a file to upload', false);
-        return;
-      }
-      if (!remotePath) {
-        flash('Please enter a remote path', false);
-        return;
-      }
-      if (!remotePath.startsWith('/')) {
-        flash('Remote path must be absolute (start with /)', false);
-        return;
-      }
-
-      status.innerHTML = '<span style="color:var(--accent);">Uploading…</span>';
-
-      try {
-        // Read file as base64
-        const content = await new Promise((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => {
-            const base64 = reader.result.split(',')[1];
-            resolve(base64);
-          };
-          reader.onerror = reject;
-          reader.readAsDataURL(file);
-        });
-
-        const sid = await registerSession(edgeName, 'staging');
-        const ns = getNs(edgeName, 'staging');
-        const data = await apiFetch(`${ns}/put/${sid}`, {
-          method: 'POST',
-          body: JSON.stringify({ filename: remotePath, content })
-        });
-
-        status.innerHTML = `<span style="color:var(--success);">Uploaded: ${escHtml(data.path)} (${formatBytes(data.size)})</span>`;
-        flash(`Uploaded: ${remotePath.split('/').pop()}`);
-
-        // Refresh browser if we're viewing the parent directory
-        const currentPath = page.querySelector('.staging-path').value.trim();
-        const parentOfUpload = remotePath.replace(/\/[^/]+$/, '') || '/';
-        if (currentPath === parentOfUpload) {
-          const browseBtn = page.querySelector('[onclick*="stagingNavigate"]');
-          stagingNavigate(browseBtn);
-        }
-      } catch (e) {
-        status.innerHTML = `<span style="color:var(--danger);">Error: ${e.message}</span>`;
-        flash('Upload failed: ' + e.message, false);
-      }
-    }
-
-    function formatBytes(bytes) {
-      if (bytes === 0) return '0 B';
-      if (bytes === null || bytes === undefined) return '';
-      const k = 1024;
-      const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-      const i = Math.floor(Math.log(bytes) / Math.log(k));
-      return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
-    }
-
-    async function disconnectEdge(event, edgeName) {
-      event.stopPropagation();
-      const btn = event.target;
-
-      if (!confirm(`Disconnect edge "${edgeName}"?\n\nThis will terminate the edge service.`)) {
-        return;
-      }
-
-      btn.disabled = true;
-      try {
-        await apiFetch(`/edge/disconnect/${encodeURIComponent(edgeName)}`, { method: 'POST' });
-        flash(`Edge "${edgeName}" disconnected`);
-      } catch (e) {
-        flash('Disconnect failed: ' + e.message, false);
-        btn.disabled = false;
-      }
-    }
-
-    async function terminateBridge(event) {
-      event.stopPropagation();
-
-      if (!confirm('Terminate the bridge?\n\nConnected edges will NOT be terminated and may reconnect to another bridge.')) {
-        return;
-      }
-
-      try {
-        await apiFetch('/bridge/terminate', { method: 'POST' });
-        flash('Bridge is terminating...');
-        // Disconnect locally since bridge is going away
-        setTimeout(() => doDisconnect(), 1000);
-      } catch (e) {
-        flash('Terminate failed: ' + e.message, false);
-      }
-    }
-
-    // Remote edge submission (stub - not yet implemented on backend)
-    async function submitRemoteEdge() {
-      const card   = document.getElementById('bridgeEdgeSubmit');
-      const name   = card.querySelector('.bridge-edge-name').value.trim();
-      const target = card.querySelector('.bridge-target').value.trim();
-      const exec   = card.querySelector('.bridge-executor').value;
-      const queue  = card.querySelector('.bridge-queue').value.trim();
-      const acct   = card.querySelector('.bridge-account').value.trim();
-      const dur    = card.querySelector('.bridge-duration').value.trim() || '3600';
-      const nodes  = card.querySelector('.bridge-nodes').value || '1';
-
-      if (!name)   { flash('Edge name is required', false); return; }
-      if (!target) { flash('Resource SSH target is required', false); return; }
-
-      const payload = {
-        edge_name: name,
-        target:    target,
-        executor:  exec,
-        queue:     queue || null,
-        account:   acct || null,
-        duration:  parseInt(dur, 10),
-        nodes:     parseInt(nodes, 10)
-      };
-
-      try {
-        await apiFetch('/edge/submit', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        });
-        flash(`Edge "${name}" submitted to ${target}`);
-        refreshEdgeJobs();
-      } catch (e) {
-        // 501 Not Implemented is expected for now
-        if (e.message.includes('501') || e.message.toLowerCase().includes('not implemented')) {
-          flash('Remote edge submission not yet implemented on backend', false);
-        } else {
-          flash('Submit failed: ' + e.message, false);
-        }
-      }
-    }
-
-    // Refresh the list of submitted edge jobs
-    async function refreshEdgeJobs() {
-      const output = document.querySelector('#bridgeEdgeJobs .bridge-jobs-output');
-      try {
-        const data = await apiFetch('/edge/jobs');
-        if (!data || !data.jobs || data.jobs.length === 0) {
-          output.innerHTML = '<div style="color:var(--muted); font-style:italic;">No edge jobs submitted yet.</div>';
-          return;
-        }
-        let html = '<table style="width:100%; border-collapse:collapse;">';
-        html += '<tr style="text-align:left; border-bottom:1px solid var(--border);"><th>Job ID</th><th>Edge</th><th>Resource</th><th>State</th><th></th></tr>';
-        for (const job of data.jobs) {
-          html += `<tr>
-            <td style="padding:4px 8px;">${escHtml(job.job_id)}</td>
-            <td style="padding:4px 8px;">${escHtml(job.edge_name)}</td>
-            <td style="padding:4px 8px;">${escHtml(job.resource)}</td>
-            <td style="padding:4px 8px;">${escHtml(job.state)}</td>
-            <td style="padding:4px 8px;"><button class="btn btn-danger btn-sm" onclick="cancelEdgeJob('${escHtml(job.job_id)}')">[x]</button></td>
-          </tr>`;
-        }
-        html += '</table>';
-        output.innerHTML = html;
-      } catch (e) {
-        // 501 Not Implemented is expected
-        if (e.message.includes('501') || e.message.toLowerCase().includes('not implemented')) {
-          output.innerHTML = '<div style="color:var(--muted); font-style:italic;">Job tracking not yet implemented.</div>';
-        } else {
-          output.innerHTML = `<div style="color:var(--error);">Error: ${escHtml(e.message)}</div>`;
-        }
-      }
-    }
-
-    // Cancel a submitted edge job
-    async function cancelEdgeJob(jobId) {
-      if (!confirm(`Cancel edge job "${jobId}"?`)) return;
-      try {
-        await apiFetch(`/edge/job/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' });
-        flash(`Edge job "${jobId}" cancelled`);
-        refreshEdgeJobs();
-      } catch (e) {
-        if (e.message.includes('501') || e.message.toLowerCase().includes('not implemented')) {
-          flash('Job cancellation not yet implemented', false);
-        } else {
-          flash('Cancel failed: ' + e.message, false);
-        }
-      }
-    }
-
     function escHtml(s) {
       return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     }
@@ -3700,11 +2329,23 @@
       });
     })();
 
+    // ─────────────────────────────────────────────────────────────
+    //  Overlay functions
+    // ─────────────────────────────────────────────────────────────
+    function hideJobsOverlay() {
+      document.getElementById('jobs-overlay').classList.remove('visible');
+    }
+
+    // Plugin modules handle their own notification state via onNotification
+    function processPendingNotification(edgeName, pluginName, taskId) {
+      // No-op: notification state is now managed by plugin modules
+    }
+
     // Keyboard handler for overlay (Escape to close)
     document.addEventListener('keydown', e => {
       if (e.key === 'Escape') {
-        const overlay = document.getElementById('jobs-overlay');
-        if (overlay && overlay.classList.contains('visible')) {
+        const jobsOverlay = document.getElementById('jobs-overlay');
+        if (jobsOverlay && jobsOverlay.classList.contains('visible')) {
           hideJobsOverlay();
         }
       }

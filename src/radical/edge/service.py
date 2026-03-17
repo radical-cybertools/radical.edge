@@ -215,11 +215,12 @@ class EdgeService:
         Main async entry point.
         Connects to Bridge and starts processing loop.
         """
-        PING_INTERVAL = 20
-        PING_TIMEOUT  = 120
-        MAX_BACKOFF   = 30
-        JITTER_FACTOR = 0.3  # Add up to 30% jitter to prevent thundering herd
-        backoff = 1
+        PING_INTERVAL  = 20
+        PING_TIMEOUT   = 120
+        MAX_BACKOFF    = 30
+        JITTER_FACTOR  = 0.3  # Add up to 30% jitter to prevent thundering herd
+        BACKOFF_FACTOR = 1.2
+        backoff = 0.5
 
         self._stop_event.clear()
         self._running_task = asyncio.current_task()
@@ -264,7 +265,7 @@ class EdgeService:
 
                             self._ws = ws
                             log.info("[Edge] Connected to %s", self._bridge_url)
-                            backoff = 1  # Reset backoff on success
+                            backoff = 0.5  # Reset backoff on success
 
                             # Initial Registration using Pydantic models
                             async with self._send_lock:
@@ -337,7 +338,7 @@ class EdgeService:
                         log.warning("[Edge] Connection lost: %s. Reconnecting in %.1fs...",
                                     e, sleep_time)
                         await asyncio.sleep(sleep_time)
-                        backoff = min(backoff * 2, MAX_BACKOFF)
+                        backoff = min(backoff * BACKOFF_FACTOR, MAX_BACKOFF)
 
             except Exception as e:
                 # Fatal errors set the stop event, so check that first

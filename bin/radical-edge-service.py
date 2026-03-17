@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 import signal
 import sys
 
@@ -11,6 +12,39 @@ import radical.edge.logging_config  # noqa: F401 # pylint: disable=unused-import
 
 
 log = logging.getLogger("radical.edge")
+
+
+def validate_ssl_cert(bridge_url: str) -> None:
+    """Validate SSL certificate for HTTPS bridge connections."""
+    import ssl
+
+    # Check if connecting to HTTPS bridge
+    if not bridge_url or not bridge_url.startswith(('https://', 'wss://')):
+        log.error("Bridge URL must use HTTPS/WSS: %s", bridge_url)
+        sys.exit(1)
+
+    certfile = os.environ.get("RADICAL_BRIDGE_CERT")
+
+    if not certfile:
+        log.error("RADICAL_BRIDGE_CERT required for HTTPS bridge connection")
+        sys.exit(1)
+
+    if not os.path.exists(certfile):
+        log.error("Certificate file not found: %s", certfile)
+        sys.exit(1)
+
+    # Verify certificate is valid
+    try:
+        ctx = ssl.create_default_context()
+        ctx.load_verify_locations(certfile)
+    except ssl.SSLError as e:
+        log.error("Invalid SSL certificate: %s", e)
+        sys.exit(1)
+    except Exception as e:
+        log.error("Cannot load SSL certificate: %s", e)
+        sys.exit(1)
+
+    log.info("SSL certificate validated: %s", certfile)
 
 
 async def main():
@@ -24,7 +58,10 @@ async def main():
     args = parser.parse_args()
 
     edge_name = args.name
-    edge_url = args.url
+    edge_url = args.url or os.environ.get("RADICAL_BRIDGE_URL", "https://localhost:8000")
+
+    # Validate SSL certificate before connecting
+    validate_ssl_cert(edge_url)
 
     service = EdgeService(bridge_url=edge_url, name=edge_name)
     loop = asyncio.get_running_loop()

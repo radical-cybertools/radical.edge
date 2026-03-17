@@ -35,6 +35,18 @@ class UIField(BaseModel):
         default=None,
         description="Options for select fields (strings or {value, label} objects)"
     )
+    options_endpoint: Optional[str] = Field(
+        default=None,
+        description="Endpoint to fetch options dynamically (e.g., 'configs/{sid}')"
+    )
+    options_value_field: Optional[str] = Field(
+        default="name",
+        description="Field in response to use as option value"
+    )
+    options_label_field: Optional[str] = Field(
+        default="name",
+        description="Field in response to use as option label"
+    )
     column: Optional[int] = Field(
         default=None,
         description="Column index for grid layouts (0-based)"

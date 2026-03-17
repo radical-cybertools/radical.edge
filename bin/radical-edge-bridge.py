@@ -564,6 +564,58 @@ async def root():
     return Response(content="edge_explorer.html not found", status_code=404)
 
 
+@app.get("/plugins/{filename}", tags=["UI"], include_in_schema=False)
+async def serve_plugin(filename: str):
+    """Serve plugin UI modules from the plugins directory."""
+    import os
+    import re
+
+    # Validate filename (only allow .js files with safe names)
+    if not re.match(r'^[a-z_]+\.js$', filename):
+        raise HTTPException(status_code=404, detail="Invalid plugin filename")
+
+    plugin_path = None
+
+    # Try importlib.resources first
+    try:
+        from importlib.resources import files
+        data_dir = files('radical.edge').joinpath('data').joinpath('plugins')
+        candidate = data_dir.joinpath(filename)
+        if hasattr(candidate, '__fspath__'):
+            plugin_path = os.fspath(candidate)
+        else:
+            plugin_path = str(candidate)
+        if not os.path.exists(plugin_path):
+            plugin_path = None
+    except Exception:
+        pass
+
+    # Fallback: try pkg_resources
+    if not plugin_path:
+        try:
+            import pkg_resources
+            plugin_path = pkg_resources.resource_filename(
+                'radical.edge', f'data/plugins/{filename}'
+            )
+            if not os.path.exists(plugin_path):
+                plugin_path = None
+        except Exception:
+            pass
+
+    if plugin_path and os.path.exists(plugin_path):
+        return FileResponse(
+            plugin_path,
+            media_type="application/javascript",
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0"
+            }
+        )
+
+    raise HTTPException(status_code=404, detail=f"Plugin '{filename}' not found")
+
+
 # all other edge routes are forwarded
 @app.api_route("/{full_path:path}",
                methods=["GET","POST","PUT","PATCH","DELETE","OPTIONS","HEAD"],
@@ -676,6 +728,42 @@ async def proxy(full_path: str, request: Request):
         return Response(content=content, status_code=status, headers=headers)
 
 
+def validate_ssl_config(certfile: str, keyfile: str) -> None:
+    """Validate SSL certificate and key files. Exit on error."""
+    import ssl
+
+    if not certfile:
+        print("[Bridge] ERROR: SSL certificate required.")
+        print("         Set RADICAL_BRIDGE_CERT environment variable.")
+        exit(1)
+
+    if not keyfile:
+        print("[Bridge] ERROR: SSL key required.")
+        print("         Set RADICAL_BRIDGE_KEY environment variable.")
+        exit(1)
+
+    if not os.path.exists(certfile):
+        print(f"[Bridge] ERROR: Certificate file not found: {certfile}")
+        exit(1)
+
+    if not os.path.exists(keyfile):
+        print(f"[Bridge] ERROR: Key file not found: {keyfile}")
+        exit(1)
+
+    # Verify certificate and key are valid and match
+    try:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(certfile, keyfile)
+    except ssl.SSLError as e:
+        print(f"[Bridge] ERROR: Invalid SSL certificate/key: {e}")
+        exit(1)
+    except Exception as e:
+        print(f"[Bridge] ERROR: Cannot load SSL certificate/key: {e}")
+        exit(1)
+
+    print(f"[Bridge] SSL certificate validated: {certfile}")
+
+
 if __name__ == "__main__":
 
     import uvicorn
@@ -703,10 +791,8 @@ if __name__ == "__main__":
     ssl_certfile = os.environ.get('RADICAL_BRIDGE_CERT')
     ssl_keyfile  = os.environ.get('RADICAL_BRIDGE_KEY')
 
-    # we always need a cert
-    if ssl_certfile and not ssl_keyfile:
-        print("[Bridge] SSL cert provided without key. Exiting.")
-        exit(1)
+    # Validate SSL configuration - always required
+    validate_ssl_config(ssl_certfile, ssl_keyfile)
 
     # Construct bridge URL based on config
     # FIXME: get FQHN for 0.0.0.0
