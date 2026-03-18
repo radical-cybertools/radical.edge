@@ -252,8 +252,12 @@ class PluginQueueInfo(Plugin):
         return self.session_class(sid, backend=self._backend)
 
     def is_enabled(self) -> bool:
-        """Return False if SLURM is not present — prevents loading on non-batch edges."""
-        return shutil.which('sinfo') is not None
+        """Return False if SLURM is not present or doesn't support --json."""
+        if not shutil.which('sinfo'):
+            return False
+        import subprocess
+        result = subprocess.run(['sinfo', '--json'], capture_output=True, timeout=5)
+        return result.returncode == 0
 
     async def is_enabled_endpoint(self, request: Request) -> JSONResponse:
         """Session-less endpoint: returns {"available": bool} for remote callers."""
