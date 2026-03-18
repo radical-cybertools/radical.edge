@@ -105,6 +105,12 @@ class QueueInfoClient(PluginClient):
     Client-side interface for the QueueInfo plugin.
     """
 
+    def is_enabled(self) -> bool:
+        """Return True if a supported batch scheduler (SLURM) is available on this edge."""
+        resp = self._http.get(self._url("is_enabled"))
+        resp.raise_for_status()
+        return resp.json().get('available', False)
+
     def get_info(self, user: str = None, force: bool = False) -> dict:
         """
         Return queue/partition information.
@@ -175,10 +181,12 @@ class PluginQueueInfo(Plugin):
     QueueInfo plugin for Radical Edge.
 
     This plugin exposes batch system queue information, job listings, and
-    allocation data via REST endpoints.
+    allocation data via REST endpoints.  It overrides ``is_enabled()`` to
+    return False on edges where SLURM (sinfo) is not present; the edge service
+    will not load or register it on such edges.
 
     Session-less endpoints (no sid required):
-        GET /queue_info/has_scheduler  – returns {"available": bool} indicating
+        GET /queue_info/is_enabled  – returns {"available": bool} indicating
             whether SLURM (sinfo) is present on this edge.  Used by other plugins
             (e.g. xgfabric) to classify edges as batch-capable without creating a
             full session.
@@ -223,7 +231,7 @@ class PluginQueueInfo(Plugin):
         self._backend.start_prefetch()
 
         # Register QueueInfo-specific routes
-        self.add_route_get('has_scheduler', self.has_scheduler)
+        self.add_route_get('is_enabled', self.is_enabled_endpoint)
         self.add_route_get('get_info/{sid}', self.get_info)
         self.add_route_get('list_jobs/{sid}/{queue}', self.list_jobs)
         self.add_route_get('list_allocations/{sid}', self.list_allocations)
@@ -243,9 +251,13 @@ class PluginQueueInfo(Plugin):
         """
         return self.session_class(sid, backend=self._backend)
 
-    async def has_scheduler(self, request: Request) -> JSONResponse:
-        """Return whether a supported batch scheduler is available on this edge."""
-        return JSONResponse({'available': shutil.which('sinfo') is not None})
+    def is_enabled(self) -> bool:
+        """Return False if SLURM is not present — prevents loading on non-batch edges."""
+        return shutil.which('sinfo') is not None
+
+    async def is_enabled_endpoint(self, request: Request) -> JSONResponse:
+        """Session-less endpoint: returns {"available": bool} for remote callers."""
+        return JSONResponse({'available': self.is_enabled()})
 
     async def get_info(self, request: Request) -> JSONResponse:
         """Return queue/partition information."""

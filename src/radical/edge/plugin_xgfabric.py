@@ -336,22 +336,22 @@ class XGFabricSession(PluginSession):
 
         return asdict(self._state)
 
-    async def _has_scheduler(self, edge_name: str) -> bool:
+    async def _is_enabled(self, edge_name: str) -> bool:
         """Check whether an edge's queue_info plugin reports a working scheduler."""
         if not self._bridge_url:
-            log.info("[XGFabric] _has_scheduler(%s): no bridge_url — returning False", edge_name)
+            log.info("[XGFabric] _is_enabled(%s): no bridge_url — returning False", edge_name)
             return False
-        url = self._bridge_url.rstrip('/') + f'/{edge_name}/queue_info/has_scheduler'
+        url = self._bridge_url.rstrip('/') + f'/{edge_name}/queue_info/is_enabled'
         try:
             import httpx
             verify: Any = self._bridge_cert if self._bridge_cert else False
             resp = await asyncio.to_thread(
                 lambda: httpx.get(url, verify=verify, timeout=5))
             result = resp.json().get('available', False)
-            log.info("[XGFabric] _has_scheduler(%s): available=%s", edge_name, result)
+            log.info("[XGFabric] _is_enabled(%s): available=%s", edge_name, result)
             return result
         except Exception as e:
-            log.info("[XGFabric] _has_scheduler(%s): request failed — %s", edge_name, e)
+            log.info("[XGFabric] _is_enabled(%s): request failed — %s", edge_name, e)
             return False
 
     async def _get_connected_edges(self) -> tuple[List[Dict], List[Dict]]:
@@ -376,7 +376,7 @@ class XGFabricSession(PluginSession):
                 if 'ucsb' in edge_name:
                     log.info("[XGFabric]   -> immediate (ucsb hardcode)")
                     immediate.append(_cluster(edge_name))
-                elif 'queue_info' in plugins and await self._has_scheduler(edge_name):
+                elif 'queue_info' in plugins and await self._is_enabled(edge_name):
                     log.info("[XGFabric]   -> allocate (has scheduler)")
                     allocate.append(_cluster(edge_name))
                 else:

@@ -293,6 +293,17 @@ class Plugin(object):
             "active_sessions": active_sessions
         })
 
+    def is_enabled(self) -> bool:
+        """
+        Return True if this plugin should be loaded and registered on this edge.
+
+        Override in subclasses to gate loading on runtime conditions (e.g.
+        presence of an external binary).  Plugins that return False are never
+        instantiated by the edge service and therefore never appear in the
+        Explorer or in /edge/list responses.
+        """
+        return True
+
     async def send_notification(self, topic: str, data: dict):
         """
         Broadcast a UI event over the bridge SSE channels.

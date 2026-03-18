@@ -83,10 +83,10 @@ Key endpoints:
 **Available plugins:**
 - **sysinfo** (`plugin_sysinfo.py`) – System info (hostname, OS, CPU, memory, disk, network, GPUs). Detects shared filesystems (Lustre, GPFS, NFS, DVS, etc.). Background prefetch on startup.
 - **psij** (`plugin_psij.py`) – HPC job submission via PsiJ (supports local, SLURM, PBS, LSF). Background job state polling. Default executable: `radical-edge-wrapper.sh`.
-- **queue_info** (`plugin_queue_info.py`) – SLURM queue/partition info, job listings, and allocations. Shared backend with caching. Background prefetch on startup. Session-less `GET /queue_info/has_scheduler` returns `{"available": bool}` indicating whether SLURM (`sinfo`) is present on the edge.
+- **queue_info** (`plugin_queue_info.py`) – SLURM queue/partition info, job listings, and allocations. Shared backend with caching. Background prefetch on startup. Session-less `GET /queue_info/is_enabled` returns `{"available": bool}` indicating whether SLURM (`sinfo`) is present on the edge.
 - **rhapsody** (`plugin_rhapsody.py`) – Task execution via Rhapsody backends (local, Dragon, Flux).
 - **lucid** (`plugin_lucid.py`) – RADICAL Pilot integration.
-- **xgfabric** (`plugin_xgfabric.py`) – ExaGraph fabric operations. Classifies connected edges as `immediate_clusters` (direct execution) or `allocate_clusters` (batch submission via SLURM). An edge is classified as `allocate` only if it has the `queue_info` plugin **and** its `has_scheduler` check returns `true`; otherwise it is `immediate`. Cluster lists are updated in real-time when edges connect/disconnect via `on_topology_change`.
+- **xgfabric** (`plugin_xgfabric.py`) – ExaGraph fabric operations. Classifies connected edges as `immediate_clusters` (direct execution) or `allocate_clusters` (batch submission via SLURM). An edge is classified as `allocate` only if it has the `queue_info` plugin **and** its `is_enabled` check returns `true`; otherwise it is `immediate`. Cluster lists are updated in real-time when edges connect/disconnect via `on_topology_change`.
 - **staging** (`plugin_staging.py`) – File transfer between client and edge. Supports `put(src, tgt)` to upload and `get(src, tgt)` to download files. Parent directories are created automatically (with INFO log). Never overwrites existing files.
 
 ### WebSocket protocol
