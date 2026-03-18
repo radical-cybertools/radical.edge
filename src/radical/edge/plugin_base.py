@@ -247,6 +247,18 @@ class Plugin(object):
         else:
             log.warning("[%s] Cannot send notification: edge_service unlinked", self.instance_name)
 
+    async def on_topology_change(self, edges: dict):
+        """
+        Called when the bridge topology changes (edge connect/disconnect).
+
+        Subclasses can override this to react to topology changes.
+        Default implementation does nothing.
+
+        Args:
+            edges: Dict mapping edge names to their plugin info.
+        """
+        pass
+
     async def _forward(self, sid: str, func: Callable, *args: Any, **kwargs: Any) -> JSONResponse:
         """
         Forward a request to the specified session instance.

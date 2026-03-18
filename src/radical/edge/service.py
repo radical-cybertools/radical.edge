@@ -22,7 +22,7 @@ import radical.edge.logging_config  # noqa: F401 # pylint: disable=unused-import
 
 from radical.edge.plugin_base import Plugin
 from radical.edge.models import (
-    RequestMessage, PingMessage, ErrorMessage, ShutdownMessage,
+    RequestMessage, PingMessage, ErrorMessage, ShutdownMessage, TopologyMessage,
     ResponseMessage, NotificationMessage, RegisterMessage,
     parse_bridge_message
 )
@@ -183,6 +183,23 @@ class EdgeService:
                 if self._ws:
                     await self._ws.send(response.model_dump_json())
 
+    async def _handle_topology(self, msg: TopologyMessage) -> None:
+        """
+        Handle topology update from bridge (edge connect/disconnect).
+
+        Args:
+            msg: Validated topology message from bridge.
+        """
+        log.debug("[Edge] Topology update: %d edges", len(msg.edges))
+
+        # Notify all plugins about the topology change
+        for pname, plugin in self._plugins.items():
+            try:
+                if hasattr(plugin, 'on_topology_change'):
+                    await plugin.on_topology_change(msg.edges)
+            except Exception as e:
+                log.warning("[Edge] Plugin %s topology handler failed: %s", pname, e)
+
     async def send_notification(self, plugin_name: str, topic: str, data: Dict[str, Any]) -> None:
         """
         Send an unsolicited notification to the bridge to broadcast to UI clients.
@@ -319,6 +336,9 @@ class EdgeService:
 
                                     if isinstance(msg, RequestMessage):
                                         asyncio.create_task(self._handle_request(msg))
+
+                                    if isinstance(msg, TopologyMessage):
+                                        asyncio.create_task(self._handle_topology(msg))
 
                                 except asyncio.TimeoutError:
                                     continue  # Check stop event

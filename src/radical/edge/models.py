@@ -77,12 +77,18 @@ class ShutdownMessage(BaseModel):
     reason: str = Field("User requested shutdown", description="Shutdown reason")
 
 
+class TopologyMessage(BaseModel):
+    """Topology update from bridge to edge (edge connect/disconnect)."""
+    type: Literal["topology"] = "topology"
+    edges: Dict[str, Any] = Field(default_factory=dict, description="Connected edges and their plugins")
+
+
 # ---------------------------------------------------------------------------
 # Union types for parsing
 # ---------------------------------------------------------------------------
 
 EdgeToBridgeMessage = Union[RegisterMessage, ResponseMessage, NotificationMessage, PongMessage]
-BridgeToEdgeMessage = Union[RequestMessage, PingMessage, ErrorMessage, ShutdownMessage]
+BridgeToEdgeMessage = Union[RequestMessage, PingMessage, ErrorMessage, ShutdownMessage, TopologyMessage]
 
 
 def parse_edge_message(data: dict) -> EdgeToBridgeMessage:
@@ -111,5 +117,7 @@ def parse_bridge_message(data: dict) -> BridgeToEdgeMessage:
         return ErrorMessage(**data)
     elif msg_type == "shutdown":
         return ShutdownMessage(**data)
+    elif msg_type == "topology":
+        return TopologyMessage(**data)
     else:
         raise ValueError(f"Unknown bridge message type: {msg_type}")

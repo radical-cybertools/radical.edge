@@ -157,6 +157,20 @@ async def broadcast_event(topic: str, data: dict):
         await q.put(formatted)
 
 
+async def broadcast_topology_to_edges():
+    """Broadcast current topology to all connected edges via WebSocket."""
+    # Build edge list (just names for simplicity)
+    edge_list = {name: {"plugins": list(info.get("plugins", {}).keys())}
+                 for name, info in endpoints.get("edges", {}).items()}
+    msg = json.dumps({"type": "topology", "edges": edge_list})
+    for edge_name, ws in list(edges.items()):
+        try:
+            if ws.client_state == WebSocketState.CONNECTED:
+                await ws.send_text(msg)
+        except Exception as e:
+            print(f"[Bridge] Failed to send topology to {edge_name}: {e}")
+
+
 async def _send_to_edge(edge_name: str, message: dict):
 
     ws = edges.get(edge_name)
@@ -252,6 +266,7 @@ async def register(ws: WebSocket):
                     endpoints["edges"][edge_name]["endpoint"] = endpoint_data
 
                 await broadcast_event("topology", endpoints)
+                await broadcast_topology_to_edges()
 
             elif data.get("type") == "notification":
                 await broadcast_event("notification", {
@@ -295,6 +310,7 @@ async def register(ws: WebSocket):
                     print(f"[Bridge] Unregistering edge: {edge_name}")
                     del endpoints["edges"][edge_name]
                     await broadcast_event("topology", endpoints)
+                    await broadcast_topology_to_edges()
 
                 if edge_name in edges:
                     del edges[edge_name]

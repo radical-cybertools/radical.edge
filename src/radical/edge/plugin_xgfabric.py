@@ -155,7 +155,8 @@ class XGFabricSession(PluginSession):
     XGFabric session - manages workflow configuration and execution.
     """
 
-    def __init__(self, sid: str, workdir: str = None, edge_name: str = None):
+    def __init__(self, sid: str, workdir: str = None, edge_name: str = None,
+                 bridge_url: str = None, bridge_cert: str = None):
         super().__init__(sid)
         default_workdir = os.environ.get('XGFABRIC_WORKDIR') or os.getcwd()
         self._workdir = Path(workdir or default_workdir)
@@ -164,6 +165,9 @@ class XGFabricSession(PluginSession):
         self._config_dir.mkdir(exist_ok=True)
 
         self._edge_name = edge_name or 'local'
+        self._bridge_url = bridge_url
+        self._bridge_cert = bridge_cert
+        self._connected_edges: Dict[str, Any] = {}  # Cached connected edges
         self._current_config: Optional[WorkflowConfig] = None
         self._state = WorkflowState()
         self._workflow_task: Optional[asyncio.Task] = None
@@ -171,6 +175,10 @@ class XGFabricSession(PluginSession):
 
         # Bridge client for communicating with other edges
         self._bc = None
+
+    def update_connected_edges(self, edges: Dict[str, Any]):
+        """Update the cached list of connected edges."""
+        self._connected_edges = edges
 
     # -------------------------------------------------------------------------
     # Config Directory Management
@@ -301,7 +309,52 @@ class XGFabricSession(PluginSession):
         # Update config name if loaded
         if self._current_config:
             self._state.config_name = self._current_config.name
+
+        # Query connected edges from bridge (if not running a workflow)
+        if self._state.status != 'running':
+            self._state.immediate_clusters = await self._get_connected_edges()
+
         return asdict(self._state)
+
+    async def _get_connected_edges(self) -> List[Dict]:
+        """Return connected edges as cluster list (from cache or bridge query)."""
+        # Use cached edges if available (populated by topology updates)
+        if self._connected_edges:
+            clusters = []
+            for edge_name in self._connected_edges.keys():
+                clusters.append({
+                    'name': edge_name,
+                    'edge_name': edge_name,
+                    'has_gpu': False,
+                    'online': True,
+                    'tasks_running': 0,
+                })
+            return clusters
+
+        # Fallback: query bridge directly (e.g., on first call before topology update)
+        if not self._bridge_url:
+            return []
+
+        try:
+            from .client import BridgeClient
+            bc = BridgeClient(url=self._bridge_url, cert=self._bridge_cert)
+            edges = bc.list_edges()
+            bc.close()
+
+            clusters = []
+            for edge_name in edges:
+                clusters.append({
+                    'name': edge_name,
+                    'edge_name': edge_name,
+                    'has_gpu': False,
+                    'online': True,
+                    'tasks_running': 0,
+                })
+            return clusters
+
+        except Exception as e:
+            log.debug("Failed to query connected edges: %s", e)
+            return []
 
     async def start_workflow(self, config_name: Optional[str] = None) -> Dict:
         """Start workflow execution."""
@@ -991,6 +1044,7 @@ class PluginXGFabric(Plugin):
         super().__init__(app, 'xgfabric')
 
         self._workdir = workdir or os.environ.get('XGFABRIC_WORKDIR') or os.getcwd()
+        self._connected_edges: Dict[str, Any] = {}  # Cache of connected edges
 
         # Config directory endpoints
         self.add_route_get('workdir/{sid}', self.get_workdir)
@@ -1011,9 +1065,26 @@ class PluginXGFabric(Plugin):
         self._log_routes()
 
     def _create_session(self, sid: str, **kwargs) -> XGFabricSession:
-        """Create session with workdir and edge name."""
+        """Create session with workdir, edge name, and bridge connection info."""
         edge_name = getattr(self._app.state, 'edge_name', 'local')
-        return XGFabricSession(sid, workdir=self._workdir, edge_name=edge_name)
+
+        # Get bridge URL from edge service
+        edge_service = getattr(self._app.state, 'edge_service', None)
+        bridge_url = getattr(edge_service, '_bridge_url', None) if edge_service else None
+        bridge_cert = os.environ.get('RADICAL_BRIDGE_CERT')
+
+        return XGFabricSession(sid, workdir=self._workdir, edge_name=edge_name,
+                               bridge_url=bridge_url, bridge_cert=bridge_cert)
+
+    async def on_topology_change(self, edges: dict):
+        """Handle topology updates from the bridge."""
+        self._connected_edges = edges
+        log.info("[XGFabric] Topology update: %d edges connected", len(edges))
+
+        # Update all active sessions with the new edge list
+        for sid, session in self._sessions.items():
+            if hasattr(session, 'update_connected_edges'):
+                session.update_connected_edges(edges)
 
     # -- Route handlers -------------------------------------------------------
 
