@@ -397,7 +397,7 @@ class XGFabricSession(PluginSession):
                                 detail="No config loaded. Load or save a config first.")
 
         assert self._current_config is not None  # guaranteed by checks above
-        # Reset state with config info
+        # Reset state with config info, preserving cluster lists populated by get_status()
         cfg = self._current_config
         self._state = WorkflowState(
             status='running',
@@ -407,6 +407,8 @@ class XGFabricSession(PluginSession):
             config_dir=str(self._workdir),
             total_simulations=cfg.num_simulations,
             total_batches=(cfg.num_simulations + cfg.batch_size - 1) // cfg.batch_size,
+            immediate_clusters=self._state.immediate_clusters,
+            allocate_clusters=self._state.allocate_clusters,
         )
         self._cancel_requested = False
 
