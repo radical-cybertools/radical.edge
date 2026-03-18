@@ -497,17 +497,25 @@ class XGFabricSession(PluginSession):
         assert self._current_config is not None
         cfg = self._current_config
 
-        log.info("[XGFabric] _execute_workflow: starting — bridge_url=%s  cert=%s",
-                 cfg.bridge_url, cfg.bridge_cert)
+        log.info("[XGFabric] _execute_workflow: starting — "
+                 "cfg.bridge_url=%s  session.bridge_url=%s",
+                 cfg.bridge_url, self._bridge_url)
         log.info("[XGFabric] _execute_workflow: cfg.immediate_clusters=%s",
                  cfg.immediate_clusters)
         log.info("[XGFabric] _execute_workflow: cfg.allocate_clusters=%s",
                  cfg.allocate_clusters)
 
         # Initialize bridge client
+        # Always prefer the live bridge URL from the session (i.e. the URL this
+        # edge is actually connected to) over whatever was baked into the config
+        # at save time — the saved URL may be stale (e.g. localhost vs public IP).
+        bridge_url  = self._bridge_url  or cfg.bridge_url
+        bridge_cert = self._bridge_cert or cfg.bridge_cert
+        log.info("[XGFabric] _execute_workflow: effective bridge_url=%s  cert=%s",
+                 bridge_url, bridge_cert)
         self._update_state('connecting', 'Connecting to bridge...')
         from .client import BridgeClient
-        self._bc = BridgeClient(url=cfg.bridge_url, cert=cfg.bridge_cert)
+        self._bc = BridgeClient(url=bridge_url, cert=bridge_cert)
 
         # Verify edges
         self._update_state('verifying', 'Verifying edges...')
