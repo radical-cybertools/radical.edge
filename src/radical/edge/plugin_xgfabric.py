@@ -1235,8 +1235,11 @@ class PluginXGFabric(Plugin):
         log.info("[XGFabric] _create_session: sid=%s  edge=%s  bridge_url=%s  cached_edges=%s",
                  sid, edge_name, bridge_url, list(self._connected_edges.keys()))
 
-        session = XGFabricSession(sid, workdir=self._workdir, edge_name=edge_name,
-                                  bridge_url=bridge_url, bridge_cert=bridge_cert)
+        # Use super() so the base class injects the _notify callback into the session
+        session = super()._create_session(sid,
+                      workdir=self._workdir, edge_name=edge_name,
+                      bridge_url=bridge_url, bridge_cert=bridge_cert)
+        assert isinstance(session, XGFabricSession)
 
         # Seed session with current topology so get_status() classifies edges correctly
         if self._connected_edges:
