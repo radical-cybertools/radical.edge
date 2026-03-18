@@ -191,6 +191,9 @@ export function init(page, api) {
 }
 
 export function onNotification(data, page, api) {
+  console.log('[xgfabric] onNotification:', data.topic,
+              'immediate:', data.data?.immediate_clusters?.map(c=>c.name),
+              'allocate:',  data.data?.allocate_clusters?.map(c=>c.name));
   if (data.topic === 'workflow_status') {
     renderStatus(page, api, data.data);
   }
@@ -244,6 +247,9 @@ async function loadXgfabric(page, api) {
 
     // Load status
     const status = await api.fetch(`status/${sid}`);
+    console.log('[xgfabric] loadXgfabric status:', status.status,
+                'immediate:', status.immediate_clusters?.map(c=>c.name),
+                'allocate:',  status.allocate_clusters?.map(c=>c.name));
     statusCache[api.edgeName] = status;
     page._xgfStatus = status;  // Store on page for reliable access
     renderStatus(page, api, status);
@@ -323,6 +329,7 @@ function renderStatus(page, api, status) {
 }
 
 function renderClusters(page, immediate, allocate) {
+  console.log('[xgfabric] renderClusters: immediate=', immediate, 'allocate=', allocate);
   const immediateContainer = page.querySelector('.xgf-immediate-clusters');
   const allocateContainer = page.querySelector('.xgf-allocate-clusters');
 
