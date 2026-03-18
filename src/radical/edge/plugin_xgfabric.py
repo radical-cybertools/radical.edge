@@ -812,7 +812,7 @@ class XGFabricSession(PluginSession):
         staging = await asyncio.to_thread(self._get_plugin, cluster, 'staging')
         workflow_path = os.path.expanduser(cluster['workflow_path'])
         remote_path = f"{workflow_path}/data/sensor_out.csv"
-        await asyncio.to_thread(staging.put, str(sensor_csv), remote_path)
+        await asyncio.to_thread(staging.put, str(sensor_csv), remote_path, overwrite=True)
 
     async def _migrate_data(self, source: Dict, dest: Dict, sim_results: List[str]):
         """Migrate simulation results between clusters."""

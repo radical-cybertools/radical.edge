@@ -105,12 +105,6 @@ class QueueInfoClient(PluginClient):
     Client-side interface for the QueueInfo plugin.
     """
 
-    def is_enabled(self) -> bool:
-        """Return True if a supported batch scheduler (SLURM) is available on this edge."""
-        resp = self._http.get(self._url("is_enabled"))
-        resp.raise_for_status()
-        return resp.json().get('available', False)
-
     def get_info(self, user: str = None, force: bool = False) -> dict:
         """
         Return queue/partition information.

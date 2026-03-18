@@ -42,19 +42,21 @@ class StagingSession(PluginSession):
         if os.path.exists(path):
             raise FileExistsError(f"Target already exists: {path}")
 
-    async def put_file(self, filename: str, content_b64: str) -> dict:
+    async def put_file(self, filename: str, content_b64: str,
+                       overwrite: bool = False) -> dict:
         """
         Write file content to the remote filesystem.
 
         Args:
             filename: Absolute path on the edge filesystem
             content_b64: File content as base64-encoded string
+            overwrite: If True, replace an existing file silently
 
         Returns:
             {"path": str, "size": int}
 
         Raises:
-            FileExistsError: If target file already exists
+            FileExistsError: If target file already exists and overwrite is False
             PermissionError: If write permission denied
         """
         self._check_active()
@@ -63,8 +65,9 @@ class StagingSession(PluginSession):
         if not os.path.isabs(filename):
             raise ValueError(f"Path must be absolute: {filename}")
 
-        # Check target doesn't exist
-        self._check_target_not_exists(filename)
+        # Check target doesn't exist (unless overwrite requested)
+        if not overwrite:
+            self._check_target_not_exists(filename)
 
         # Create parent directories
         self._ensure_parent_dirs(filename)
@@ -184,20 +187,21 @@ class StagingClient(PluginClient):
     Client-side interface for the Staging plugin.
     """
 
-    def put(self, src: str, tgt: str) -> dict:
+    def put(self, src: str, tgt: str, overwrite: bool = False) -> dict:
         """
         Upload a local file to the remote edge filesystem.
 
         Args:
             src: Absolute path on the local (client) filesystem
             tgt: Absolute path on the remote (edge) filesystem
+            overwrite: If True, replace an existing remote file silently
 
         Returns:
             {"path": str, "size": int}
 
         Raises:
             FileNotFoundError: If local source file does not exist
-            FileExistsError: If remote target file already exists (server-side)
+            FileExistsError: If remote target file already exists and overwrite is False
             RuntimeError: If no active session
         """
         if not self.sid:
@@ -219,8 +223,9 @@ class StagingClient(PluginClient):
         # Send to edge
         url = self._url(f"put/{self.sid}")
         resp = self._http.post(url, json={
-            "filename": tgt,
-            "content" : content_b64
+            "filename" : tgt,
+            "content"  : content_b64,
+            "overwrite": overwrite
         })
 
         if resp.status_code == 409:
@@ -362,6 +367,7 @@ class PluginStaging(Plugin):
 
         filename    = body.get('filename')
         content_b64 = body.get('content')
+        overwrite   = bool(body.get('overwrite', False))
 
         if not filename:
             raise HTTPException(status_code=400, detail="Missing 'filename'")
@@ -373,7 +379,7 @@ class PluginStaging(Plugin):
             raise HTTPException(status_code=404, detail=f"Unknown session: {sid}")
 
         try:
-            result = await session.put_file(filename, content_b64)
+            result = await session.put_file(filename, content_b64, overwrite=overwrite)
             return JSONResponse(result)
         except FileExistsError as e:
             raise HTTPException(status_code=409, detail=str(e)) from e
