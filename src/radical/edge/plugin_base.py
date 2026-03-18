@@ -3,7 +3,7 @@ import asyncio
 import logging
 import time
 
-from typing import Type, Optional, Dict, Callable, Any
+from typing import Type, Optional, Dict, Callable, Any, Union
 from fastapi import FastAPI, HTTPException, Request
 from starlette.routing import Route
 from starlette.responses import JSONResponse
@@ -97,7 +97,7 @@ class Plugin(object):
     client_class: Optional[Type] = None
     version: str = '0.0.1'
     session_ttl: int = 3600  # Default: 1 hour session timeout
-    ui_config: Optional[UIConfig] = None  # UI configuration for portal
+    ui_config: Union[Dict, UIConfig, None] = None  # UI configuration for portal
 
     def __init_subclass__(cls, **kwargs):
         """Auto-register subclasses that define plugin_name."""

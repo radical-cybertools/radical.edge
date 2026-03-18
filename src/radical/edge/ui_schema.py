@@ -144,7 +144,7 @@ class UIConfig(BaseModel):
     )
 
 
-def ui_config_to_dict(config: Optional[UIConfig]) -> Dict[str, Any]:
+def ui_config_to_dict(config: Union[Dict, UIConfig, None]) -> Dict[str, Any]:
     """
     Convert a UIConfig to a JSON-serializable dict.
 

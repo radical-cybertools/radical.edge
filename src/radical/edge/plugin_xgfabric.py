@@ -320,49 +320,47 @@ class XGFabricSession(PluginSession):
 
         # Query connected edges from bridge (if not running a workflow)
         if self._state.status != 'running':
-            self._state.immediate_clusters = await self._get_connected_edges()
+            immediate, allocate = await self._get_connected_edges()
+            self._state.immediate_clusters = immediate
+            self._state.allocate_clusters  = allocate
 
         return asdict(self._state)
 
-    async def _get_connected_edges(self) -> List[Dict]:
-        """Return connected edges as cluster list (from cache or bridge query)."""
+    async def _get_connected_edges(self) -> tuple[List[Dict], List[Dict]]:
+        """Return (immediate, allocate) cluster lists from cache or bridge query.
+
+        Edges with the queue_info plugin (batch systems) go into allocate_clusters;
+        all others go into immediate_clusters.
+        """
+        def _cluster(edge_name: str) -> Dict:
+            return {'name': edge_name, 'edge_name': edge_name,
+                    'has_gpu': False, 'online': True, 'tasks_running': 0}
+
         # Use cached edges if available (populated by topology updates)
         if self._connected_edges:
-            clusters = []
-            for edge_name in self._connected_edges.keys():
-                clusters.append({
-                    'name': edge_name,
-                    'edge_name': edge_name,
-                    'has_gpu': False,
-                    'online': True,
-                    'tasks_running': 0,
-                })
-            return clusters
+            immediate, allocate = [], []
+            for edge_name, edge_info in self._connected_edges.items():
+                plugins = edge_info.get('plugins', [])
+                if 'queue_info' in plugins:
+                    allocate.append(_cluster(edge_name))
+                else:
+                    immediate.append(_cluster(edge_name))
+            return immediate, allocate
 
-        # Fallback: query bridge directly (e.g., on first call before topology update)
+        # Fallback: query bridge directly (no plugin info available)
         if not self._bridge_url:
-            return []
+            return [], []
 
         try:
             from .client import BridgeClient
             bc = BridgeClient(url=self._bridge_url, cert=self._bridge_cert)
             edges = bc.list_edges()
             bc.close()
-
-            clusters = []
-            for edge_name in edges:
-                clusters.append({
-                    'name': edge_name,
-                    'edge_name': edge_name,
-                    'has_gpu': False,
-                    'online': True,
-                    'tasks_running': 0,
-                })
-            return clusters
+            return [_cluster(e) for e in edges], []
 
         except Exception as e:
             log.debug("Failed to query connected edges: %s", e)
-            return []
+            return [], []
 
     async def start_workflow(self, config_name: Optional[str] = None) -> Dict:
         """Start workflow execution."""
@@ -380,23 +378,24 @@ class XGFabricSession(PluginSession):
             raise HTTPException(status_code=400,
                                 detail="No config loaded. Load or save a config first.")
 
+        assert self._current_config is not None  # guaranteed by checks above
         # Reset state with config info
+        cfg = self._current_config
         self._state = WorkflowState(
             status='running',
             phase='initializing',
             start_time=datetime.now(timezone.utc).isoformat(),
-            config_name=self._current_config.name,
+            config_name=cfg.name,
             config_dir=str(self._workdir),
-            total_simulations=self._current_config.num_simulations,
-            total_batches=(self._current_config.num_simulations +
-                           self._current_config.batch_size - 1) // self._current_config.batch_size,
+            total_simulations=cfg.num_simulations,
+            total_batches=(cfg.num_simulations + cfg.batch_size - 1) // cfg.batch_size,
         )
         self._cancel_requested = False
 
         # Start workflow in background
         self._workflow_task = asyncio.create_task(self._run_workflow())
 
-        return {'status': 'started', 'config': self._current_config.name}
+        return {'status': 'started', 'config': cfg.name}
 
     async def stop_workflow(self) -> Dict:
         """Stop running workflow."""
@@ -1050,8 +1049,12 @@ class PluginXGFabric(Plugin):
     client_class = XGFabricClient
     version = '0.1.0'
 
-    # Uses a dedicated JS module (xgfabric.js); no ui_config needed
-    ui_config = None
+    ui_config = {
+        "icon":            "🌊",
+        "title":           "XGFabric Workflow",
+        "description":     "CFDaAI workflow orchestrator for HPC clusters.",
+        "custom_template": True,
+    }
 
     def __init__(self, app: FastAPI, workdir: Optional[str] = None):
         super().__init__(app, 'xgfabric')
