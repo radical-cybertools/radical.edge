@@ -11,11 +11,11 @@ def main():
 
     for eid in eids:
         ec = bc.get_edge_client(eid)
-        qi = ec.get_plugin('queue_info')
-
-        if not qi.is_enabled():
+        plugins = ec.list_plugins()
+        if not plugins.get('queue_info', {}).get('enabled', False):
             print(f"\n[{eid}] No batch scheduler available — skipping")
             continue
+        qi = ec.get_plugin('queue_info')
 
         info   = qi.get_info()
         queues = info.get('queues', {})

@@ -107,11 +107,11 @@ class EdgeService:
             try:
                 pclass = Plugin.get_plugin_class(pname)
                 pinstance = pclass(app=self._app)
-                if not pinstance.is_enabled():
-                    log.info("[Edge] Plugin disabled (is_enabled=False): %s", pname)
-                    continue
                 self._plugins[pname] = pinstance
-                log.info("[Edge] Loaded plugin: %s", pname)
+                if pinstance.is_enabled():
+                    log.info("[Edge] Loaded plugin: %s", pname)
+                else:
+                    log.info("[Edge] Loaded plugin (disabled): %s", pname)
 
             except Exception:
                 log.exception("[Edge] Failed to load plugin: %s", pname)
@@ -303,6 +303,7 @@ class EdgeService:
                                             "type": pname,
                                             "namespace": f"/{self._name}{plugin.namespace}",
                                             "version": getattr(plugin, 'version', '0.0.1'),
+                                            "enabled": plugin.is_enabled(),
                                             "ui_config": ui_config_to_dict(
                                                 getattr(plugin, 'ui_config', None)
                                             )

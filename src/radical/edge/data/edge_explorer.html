@@ -2017,7 +2017,7 @@
       function renderEdgeSidebar(ename, depth = 0) {
         const edata = edges[ename];
         const plugins = edata.plugins || {};
-        const pluginNames = Object.keys(plugins);
+        const pluginNames = Object.keys(plugins).filter(p => plugins[p].enabled !== false);
         const indent = depth * 12;
         let html = `<details id="sidebar-edge-${ename}">
           <summary style="display: list-item; list-style-position: inside; padding: 6px 16px; padding-left: ${16 + indent}px; user-select:none; outline:none; font-weight:bold; cursor:pointer; font-size: 0.85rem; color: var(--accent2); transition: background .15s;" onmouseover="this.style.background='var(--bg3)'" onmouseout="this.style.background='transparent'">
@@ -2157,7 +2157,8 @@
 
         for (const ename of edgeNames) {
           const edata = edges[ename];
-          const plugins = Object.keys(edata.plugins || {});
+          const allPlugins = edata.plugins || {};
+          const plugins = Object.keys(allPlugins).filter(p => allPlugins[p].enabled !== false);
           // Edge name is typically the hostname; extract base name (before any dot suffix)
           const hostName = ename.split('.')[0];
           const pluginList = plugins.length > 0 ? plugins.join(', ') : '<span style="color:var(--muted)">—</span>';

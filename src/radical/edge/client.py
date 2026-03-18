@@ -347,6 +347,22 @@ class EdgeClient:
     def http(self) -> httpx.Client:
         return self._bc._http
 
+    def list_plugins(self) -> dict:
+        """
+        Return all plugins registered on this edge (enabled and disabled).
+
+        Returns a dict mapping plugin name to its endpoint info, e.g.::
+
+            {"sysinfo": {"enabled": True, "namespace": "/edge1/sysinfo", ...},
+             "queue_info": {"enabled": False, ...}}
+        """
+        resp = self._bc._http.post("/edge/list")
+        resp.raise_for_status()
+        data  = resp.json().get('data', {})
+        edges = data.get('edges', {})
+        edge_data = edges.get(self._edge_id, {})
+        return edge_data.get('plugins', {})
+
     def get_plugin(self, plugin_name: str, **session_kwargs) -> "PluginClient":
         """
         Get a client helper for a plugin loaded on the edge.
