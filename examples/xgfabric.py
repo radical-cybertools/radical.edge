@@ -23,7 +23,7 @@ import time
 
 from radical.edge import BridgeClient
 
-logging.basicConfig(level=logging.INFO, format='%(levelname)s %(name)s %(message)s')
+logging.basicConfig(level=logging.DEBUG, format='%(levelname)s %(name)s %(message)s')
 
 
 # ─────────────────────────────────────────────────────────────────────────────

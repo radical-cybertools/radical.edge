@@ -87,12 +87,12 @@ class ColoredFormatter(logging.Formatter):
         return super().format(record)
 
 
-def configure_logging(level: int = logging.INFO, format_string: Optional[str] = None) -> None:
+def configure_logging(level: int = logging.DEBUG, format_string: Optional[str] = None) -> None:
     """
     Configure logging for radical.edge.
 
     Args:
-        level: Logging level (default: logging.INFO)
+        level: Logging level (default: logging.DEBUG)
         format_string: Custom format string (optional)
     """
     if format_string is None:
@@ -114,5 +114,6 @@ def configure_logging(level: int = logging.INFO, format_string: Optional[str] = 
     logger.setLevel(level)
 
 
-# Auto-configure on import with INFO level
+# Auto-configure on import with DEBUG level
 configure_logging()
+

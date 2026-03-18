@@ -684,6 +684,10 @@ class XGFabricSession(PluginSession):
         records = []
         current_seq = latest_seq
         limit = cfg.cspot_limit
+        skipped = 0
+
+        log.info("[XGFabric] _acquire_sensor_data: latest_seq=%d  limit=%d  woof=%s",
+                 latest_seq, limit, cfg.cspot_woof_url)
 
         while len(records) < limit and current_seq >= 0:
             if self._cancel_requested:
@@ -714,7 +718,25 @@ class XGFabricSession(PluginSession):
                             'windavg': wa,
                             'winddir': wd
                         })
+                    else:
+                        skipped += 1
+                        log.info("[XGFabric] seq %d: not enough fields (%d): %s",
+                                 current_seq, len(data), output[:80])
+                else:
+                    skipped += 1
+                    log.info("[XGFabric] seq %d: no 'time:' in output: %s",
+                             current_seq, output[:80])
+            else:
+                skipped += 1
+                log.info("[XGFabric] seq %d: returncode=%d  stderr=%s",
+                         current_seq, result.returncode, result.stderr.strip()[:80])
+
             current_seq -= 1
+
+            # Log progress every 10 iterations
+            if (latest_seq - current_seq) % 10 == 0:
+                log.info("[XGFabric] _acquire_sensor_data: seq=%d  records=%d/%d  skipped=%d",
+                         current_seq, len(records), limit, skipped)
 
             # Update progress
             progress = int(len(records) / limit * 10)  # 0-10% for data acquisition
