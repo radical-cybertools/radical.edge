@@ -6,6 +6,8 @@ __license__   = 'MIT'
 
 
 
+import shutil
+
 from fastapi import FastAPI
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -215,6 +217,7 @@ class PluginQueueInfo(Plugin):
         self._backend.start_prefetch()
 
         # Register QueueInfo-specific routes
+        self.add_route_get('has_scheduler', self.has_scheduler)
         self.add_route_get('get_info/{sid}', self.get_info)
         self.add_route_get('list_jobs/{sid}/{queue}', self.list_jobs)
         self.add_route_get('list_allocations/{sid}', self.list_allocations)
@@ -233,6 +236,10 @@ class PluginQueueInfo(Plugin):
             QueueInfoSession: A new session instance using the shared backend.
         """
         return self.session_class(sid, backend=self._backend)
+
+    async def has_scheduler(self, request: Request) -> JSONResponse:
+        """Return whether a supported batch scheduler is available on this edge."""
+        return JSONResponse({'available': shutil.which('sinfo') is not None})
 
     async def get_info(self, request: Request) -> JSONResponse:
         """Return queue/partition information."""

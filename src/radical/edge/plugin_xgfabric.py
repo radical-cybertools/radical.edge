@@ -326,11 +326,26 @@ class XGFabricSession(PluginSession):
 
         return asdict(self._state)
 
+    async def _has_scheduler(self, edge_name: str) -> bool:
+        """Check whether an edge's queue_info plugin reports a working scheduler."""
+        if not self._bridge_url:
+            return False
+        url = self._bridge_url.rstrip('/') + f'/{edge_name}/queue_info/has_scheduler'
+        try:
+            import httpx
+            verify: Any = self._bridge_cert if self._bridge_cert else False
+            resp = await asyncio.to_thread(
+                lambda: httpx.get(url, verify=verify, timeout=5))
+            return resp.json().get('available', False)
+        except Exception as e:
+            log.debug("[XGFabric] has_scheduler check failed for %s: %s", edge_name, e)
+            return False
+
     async def _get_connected_edges(self) -> tuple[List[Dict], List[Dict]]:
         """Return (immediate, allocate) cluster lists from cache or bridge query.
 
-        Edges with the queue_info plugin (batch systems) go into allocate_clusters;
-        all others go into immediate_clusters.
+        Edges with the queue_info plugin AND a working scheduler go into
+        allocate_clusters; all others go into immediate_clusters.
         """
         def _cluster(edge_name: str) -> Dict:
             return {'name': edge_name, 'edge_name': edge_name,
@@ -341,7 +356,7 @@ class XGFabricSession(PluginSession):
             immediate, allocate = [], []
             for edge_name, edge_info in self._connected_edges.items():
                 plugins = edge_info.get('plugins', [])
-                if 'queue_info' in plugins:
+                if 'queue_info' in plugins and await self._has_scheduler(edge_name):
                     allocate.append(_cluster(edge_name))
                 else:
                     immediate.append(_cluster(edge_name))
