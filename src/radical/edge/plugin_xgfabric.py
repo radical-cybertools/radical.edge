@@ -519,7 +519,7 @@ class XGFabricSession(PluginSession):
 
         # Verify edges
         self._update_state('verifying', 'Verifying edges...')
-        edges = self._bc.list_edges()
+        edges = await asyncio.to_thread(self._bc.list_edges)
         log.info("[XGFabric] _execute_workflow: bridge reports edges=%s", edges)
         all_clusters = cfg.immediate_clusters + cfg.allocate_clusters
         for cluster in all_clusters:
@@ -558,7 +558,7 @@ class XGFabricSession(PluginSession):
         # Phase 4: Migration decision
         self._update_state('migration_check', 'Checking for GPU cluster...')
         active_cluster = immediate
-        if allocate and self._is_edge_online(allocate):
+        if allocate and await self._is_edge_online(allocate):
             self._update_state('migration', f"Migrating to {allocate['name']}...")
             await self._migrate_data(immediate, allocate, sim_results)
             active_cluster = allocate
@@ -639,11 +639,12 @@ class XGFabricSession(PluginSession):
         if self._notify:
             self._notify('workflow_status', asdict(self._state))
 
-    def _is_edge_online(self, cluster: Dict) -> bool:
+    async def _is_edge_online(self, cluster: Dict) -> bool:
         """Check if cluster's child edge is online."""
         assert self._bc is not None
         edge_name = cluster.get('child_edge_name') or cluster['edge_name']
-        return edge_name in self._bc.list_edges()
+        edges = await asyncio.to_thread(self._bc.list_edges)
+        return edge_name in edges
 
     def _get_plugin(self, cluster: Dict, plugin_name: str) -> Any:
         """Get plugin client for a cluster."""
@@ -786,7 +787,7 @@ class XGFabricSession(PluginSession):
         """Submit pilot job to spawn child edge."""
         assert self._bc is not None
         ec = self._bc.get_edge_client(cluster['edge_name'])
-        psij: Any = ec.get_plugin('psij')
+        psij: Any = await asyncio.to_thread(ec.get_plugin, 'psij')
 
         pilot_spec = {
             "executable": "radical-edge-service.py",
@@ -799,7 +800,7 @@ class XGFabricSession(PluginSession):
             }
         }
 
-        result = psij.submit_job(pilot_spec, cluster.get('executor', 'slurm'))
+        result = await asyncio.to_thread(psij.submit_job, pilot_spec, cluster.get('executor', 'slurm'))
         return result['job_id']
 
     # -------------------------------------------------------------------------
@@ -808,10 +809,10 @@ class XGFabricSession(PluginSession):
 
     async def _stage_sensor_data(self, cluster: Dict, sensor_csv: Path):
         """Stage sensor data to cluster."""
-        staging = self._get_plugin(cluster, 'staging')
+        staging = await asyncio.to_thread(self._get_plugin, cluster, 'staging')
         workflow_path = os.path.expanduser(cluster['workflow_path'])
         remote_path = f"{workflow_path}/data/sensor_out.csv"
-        staging.put(str(sensor_csv), remote_path)
+        await asyncio.to_thread(staging.put, str(sensor_csv), remote_path)
 
     async def _migrate_data(self, source: Dict, dest: Dict, sim_results: List[str]):
         """Migrate simulation results between clusters."""
@@ -819,8 +820,8 @@ class XGFabricSession(PluginSession):
             return
 
         assert self._current_config is not None
-        source_staging = self._get_plugin(source, 'staging')
-        dest_staging = self._get_plugin(dest, 'staging')
+        source_staging = await asyncio.to_thread(self._get_plugin, source, 'staging')
+        dest_staging   = await asyncio.to_thread(self._get_plugin, dest,   'staging')
 
         staging_dir = Path(self._current_config.local_workspace) / "staging"
         staging_dir.mkdir(parents=True, exist_ok=True)
@@ -833,8 +834,8 @@ class XGFabricSession(PluginSession):
             filename = Path(remote_path).name
             local_path = staging_dir / filename
 
-            source_staging.get(remote_path, str(local_path))
-            dest_staging.put(str(local_path), f"{dest_workflow}/simulations/{filename}")
+            await asyncio.to_thread(source_staging.get, remote_path, str(local_path))
+            await asyncio.to_thread(dest_staging.put,   str(local_path), f"{dest_workflow}/simulations/{filename}")
 
             progress = 50 + int((i + 1) / len(sim_results) * 10)
             self._update_state('migration',
@@ -854,7 +855,7 @@ class XGFabricSession(PluginSession):
 
         workflow_path = os.path.expanduser(cluster['workflow_path'])
         sim_output_dir = f"{workflow_path}/simulations"
-        rhapsody = self._get_plugin(cluster, 'rhapsody')
+        rhapsody = await asyncio.to_thread(self._get_plugin, cluster, 'rhapsody')
 
         # Build tasks
         tasks = []
@@ -882,9 +883,9 @@ class XGFabricSession(PluginSession):
                                f'Running batch {batch_num+1}/{total_batches}...',
                                15 + int(batch_num / total_batches * 30))
 
-            submitted = rhapsody.submit_tasks(batch)
-            uids = [t['uid'] for t in submitted]
-            results = rhapsody.wait_tasks(uids)
+            submitted = await asyncio.to_thread(rhapsody.submit_tasks, batch)
+            uids     = [t['uid'] for t in submitted]
+            results  = await asyncio.to_thread(rhapsody.wait_tasks, uids)
 
             for r in results:
                 if r.get('state') == 'COMPLETED':
@@ -898,7 +899,7 @@ class XGFabricSession(PluginSession):
                 self._notify_state()
 
             # Check if allocate cluster came online
-            if allocate and self._is_edge_online(allocate):
+            if allocate and await self._is_edge_online(allocate):
                 break
 
         return completed_results
@@ -934,7 +935,7 @@ class XGFabricSession(PluginSession):
         sim_dir = f"{workflow_path}/simulations"
         output_dir = f"{workflow_path}/models"
 
-        rhapsody = self._get_plugin(cluster, 'rhapsody')
+        rhapsody = await asyncio.to_thread(self._get_plugin, cluster, 'rhapsody')
         has_gpu = cluster.get('has_gpu', False)
 
         for i, model in enumerate(cfg.train_models):
@@ -969,8 +970,8 @@ class XGFabricSession(PluginSession):
             else:
                 continue
 
-            submitted = rhapsody.submit_tasks([task])
-            rhapsody.wait_tasks([submitted[0]['uid']])
+            submitted = await asyncio.to_thread(rhapsody.submit_tasks, [task])
+            await asyncio.to_thread(rhapsody.wait_tasks, [submitted[0]['uid']])
 
     # -------------------------------------------------------------------------
     # Evaluation
@@ -981,7 +982,7 @@ class XGFabricSession(PluginSession):
         workflow_path = os.path.expanduser(cluster['workflow_path'])
         sensor_file = f"{workflow_path}/data/sensor_out.csv"
         eval_output = f"{workflow_path}/evaluation"
-        rhapsody = self._get_plugin(cluster, 'rhapsody')
+        rhapsody = await asyncio.to_thread(self._get_plugin, cluster, 'rhapsody')
 
         eval_script = '''
 import sys, json, os
@@ -1018,8 +1019,8 @@ with open(output_dir / 'sensor_metrics.json', 'w') as f:
         task = {"executable": "python3", "arguments": ["-c", eval_script, sensor_file, eval_output]}
         self._update_state('evaluation', 'Computing metrics...', 90)
 
-        submitted = rhapsody.submit_tasks([task])
-        rhapsody.wait_tasks([submitted[0]['uid']])
+        submitted = await asyncio.to_thread(rhapsody.submit_tasks, [task])
+        await asyncio.to_thread(rhapsody.wait_tasks, [submitted[0]['uid']])
 
     # -------------------------------------------------------------------------
     # Cleanup
@@ -1036,9 +1037,9 @@ with open(output_dir / 'sensor_metrics.json', 'w') as f:
                 assert self._bc is not None
                 for c in cfg.immediate_clusters + cfg.allocate_clusters:
                     if c.get('name') == cluster_name:
-                        ec = self._bc.get_edge_client(c['edge_name'])
-                        psij: Any = ec.get_plugin('psij')
-                        psij.cancel_job(pilot_id)
+                        ec   = self._bc.get_edge_client(c['edge_name'])
+                        psij = await asyncio.to_thread(ec.get_plugin, 'psij')
+                        await asyncio.to_thread(psij.cancel_job, pilot_id)
                         log.info(f"Cancelled pilot job {pilot_id}")
                         break
             except Exception as e:
