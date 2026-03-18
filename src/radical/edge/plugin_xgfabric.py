@@ -647,10 +647,11 @@ class XGFabricSession(PluginSession):
                     timestamp = float(match.group(1))
                     dt = datetime.fromtimestamp(timestamp, timezone.utc)
                     parts = output.split()
-                    if len(parts) >= 3:
-                        ws = float(parts[0])
-                        wa = float(parts[1])
-                        wd = float(parts[2])
+                    data  = parts[0].split(':') if parts else []
+                    if len(data) >= 3:
+                        ws = float(data[0])
+                        wa = float(data[1])
+                        wd = float(data[2])
                         if ws > 50:  # mph to m/s
                             ws *= 0.44704
                             wa *= 0.44704
