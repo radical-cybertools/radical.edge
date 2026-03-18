@@ -848,7 +848,12 @@ class XGFabricSession(PluginSession):
 
     async def _run_simulations(self, cluster: Dict, sensor_csv: Path,
                                allocate: Optional[Dict]) -> List[str]:
-        """Run CFD simulations on cluster."""
+        """Run CFD simulations on cluster.
+
+        Uses real-time Rhapsody task_status SSE callbacks so each task completion
+        is handled immediately.  If the allocate cluster comes online mid-batch the
+        current batch is aborted and we return early so the caller can migrate.
+        """
         cfg = self._current_config
         assert cfg is not None
         params = self._generate_sim_params(sensor_csv, cfg.num_simulations)
@@ -870,37 +875,81 @@ class XGFabricSession(PluginSession):
             }
             tasks.append(task)
 
-        # Run in batches
         completed_results = []
         total_batches = (len(tasks) + cfg.batch_size - 1) // cfg.batch_size
+        self._state.total_batches = total_batches
 
-        for batch_num, i in enumerate(range(0, len(tasks), cfg.batch_size)):
-            if self._cancel_requested:
-                raise asyncio.CancelledError()
+        # Feed task terminal-state notifications into an asyncio.Queue so the
+        # async workflow loop can react to each completion without blocking.
+        loop         = asyncio.get_running_loop()
+        task_queue: asyncio.Queue = asyncio.Queue()
 
-            batch = tasks[i:i + cfg.batch_size]
-            self._update_state('simulations',
-                               f'Running batch {batch_num+1}/{total_batches}...',
-                               15 + int(batch_num / total_batches * 30))
+        def on_task_status(edge, plugin, topic, data):
+            if data.get('state') in ('COMPLETED', 'FAILED', 'CANCELED', 'CANCELLED'):
+                loop.call_soon_threadsafe(task_queue.put_nowait, data)
 
-            submitted = await asyncio.to_thread(rhapsody.submit_tasks, batch)
-            uids     = [t['uid'] for t in submitted]
-            results  = await asyncio.to_thread(rhapsody.wait_tasks, uids)
+        rhapsody.register_notification_callback(on_task_status, topic='task_status')
 
-            for r in results:
-                if r.get('state') == 'COMPLETED':
-                    args = r.get('arguments', [])
-                    if len(args) >= 9:
-                        ws, sim_idx, wd = args[2], args[7], args[8]
-                        result_path = f"{sim_output_dir}/sim_{sim_idx}_ws_{ws}_wd_{wd}.csv"
-                        completed_results.append(result_path)
+        try:
+            abort_for_pilot = False
+            for batch_num, i in enumerate(range(0, len(tasks), cfg.batch_size)):
+                if self._cancel_requested:
+                    raise asyncio.CancelledError()
 
-                self._state.completed_simulations += 1
-                self._notify_state()
+                batch = tasks[i:i + cfg.batch_size]
+                self._state.current_batch = batch_num + 1
+                self._update_state('simulations',
+                                   f'Running batch {batch_num+1}/{total_batches}...',
+                                   15 + int(batch_num / total_batches * 30))
 
-            # Check if allocate cluster came online
-            if allocate and await self._is_edge_online(allocate):
-                break
+                submitted = await asyncio.to_thread(rhapsody.submit_tasks, batch)
+                pending   = {t['uid'] for t in submitted}
+
+                # Wait for every task in this batch, one completion at a time.
+                while pending:
+                    if self._cancel_requested:
+                        raise asyncio.CancelledError()
+
+                    # Pilot came online — abort remaining tasks and migrate.
+                    if allocate and await self._is_edge_online(allocate):
+                        log.info("[XGFabric] Pilot online mid-batch (%d pending) "
+                                 "— aborting to migrate", len(pending))
+                        abort_for_pilot = True
+                        break
+
+                    try:
+                        data = await asyncio.wait_for(task_queue.get(), timeout=5.0)
+                    except asyncio.TimeoutError:
+                        continue  # re-check cancel / pilot
+
+                    uid = data.get('uid')
+                    if uid not in pending:
+                        continue  # stale notification from a previous batch
+                    pending.discard(uid)
+
+                    state = data.get('state')
+                    if state == 'COMPLETED':
+                        args = data.get('arguments', [])
+                        if len(args) >= 9:
+                            ws, sim_idx, wd = args[2], args[7], args[8]
+                            result_path = (f"{sim_output_dir}/"
+                                           f"sim_{sim_idx}_ws_{ws}_wd_{wd}.csv")
+                            completed_results.append(result_path)
+                    else:
+                        log.warning("[XGFabric] Task %s ended with state=%s", uid, state)
+
+                    self._state.completed_simulations += 1
+                    self._notify_state()
+
+                if abort_for_pilot:
+                    break
+
+        finally:
+            rhapsody.unregister_notification_callback(on_task_status, topic='task_status')
+
+        if not completed_results:
+            log.warning("[XGFabric] No simulations completed successfully "
+                        "(%d total submitted)", len(tasks))
 
         return completed_results
 
