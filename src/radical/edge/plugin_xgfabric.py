@@ -1089,8 +1089,14 @@ class PluginXGFabric(Plugin):
         bridge_url = getattr(edge_service, '_bridge_url', None) if edge_service else None
         bridge_cert = os.environ.get('RADICAL_BRIDGE_CERT')
 
-        return XGFabricSession(sid, workdir=self._workdir, edge_name=edge_name,
-                               bridge_url=bridge_url, bridge_cert=bridge_cert)
+        session = XGFabricSession(sid, workdir=self._workdir, edge_name=edge_name,
+                                  bridge_url=bridge_url, bridge_cert=bridge_cert)
+
+        # Seed session with current topology so get_status() classifies edges correctly
+        if self._connected_edges:
+            session.update_connected_edges(self._connected_edges)
+
+        return session
 
     async def on_topology_change(self, edges: dict):
         """Handle topology updates from the bridge."""
