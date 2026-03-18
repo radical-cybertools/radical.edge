@@ -356,7 +356,10 @@ class XGFabricSession(PluginSession):
             immediate, allocate = [], []
             for edge_name, edge_info in self._connected_edges.items():
                 plugins = edge_info.get('plugins', [])
-                if 'queue_info' in plugins and await self._has_scheduler(edge_name):
+                # FIXME: hardcoded exception — ucsb edges are always immediate
+                if 'ucsb' in edge_name:
+                    immediate.append(_cluster(edge_name))
+                elif 'queue_info' in plugins and await self._has_scheduler(edge_name):
                     allocate.append(_cluster(edge_name))
                 else:
                     immediate.append(_cluster(edge_name))

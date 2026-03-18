@@ -176,6 +176,12 @@ class PluginQueueInfo(Plugin):
 
     This plugin exposes batch system queue information, job listings, and
     allocation data via REST endpoints.
+
+    Session-less endpoints (no sid required):
+        GET /queue_info/has_scheduler  – returns {"available": bool} indicating
+            whether SLURM (sinfo) is present on this edge.  Used by other plugins
+            (e.g. xgfabric) to classify edges as batch-capable without creating a
+            full session.
     """
 
     plugin_name = "queue_info"
