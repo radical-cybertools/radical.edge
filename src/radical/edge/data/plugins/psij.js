@@ -147,6 +147,16 @@ export function init(page, api) {
   if (submitBtn) {
     submitBtn.addEventListener('click', () => submitJob(page, api));
   }
+
+  // Prefill from cached queue data if already available
+  const qd = api.getQueueData();
+  if (qd) replaceQueueAccountDropdowns(page, qd);
+}
+
+export function onShow(page, api) {
+  // Refresh queue/account dropdowns from latest cache each time the page is shown
+  const qd = api.getQueueData();
+  if (qd) replaceQueueAccountDropdowns(page, qd);
 }
 
 export function onNotification(data, page, api) {
@@ -172,6 +182,48 @@ function getNextEdgeChildName(edgeName) {
   if (!edgeCounters[edgeName]) edgeCounters[edgeName] = 0;
   edgeCounters[edgeName]++;
   return `${edgeName}.${edgeCounters[edgeName]}`;
+}
+
+function replaceQueueAccountDropdowns(page, queueData) {
+  const { queues = [], allocations = [] } = queueData;
+
+  // Replace queue text input with a <select> populated from partitions
+  const queueInput = page.querySelector('.p-queue');
+  if (queueInput && queueInput.tagName === 'INPUT') {
+    const sel = document.createElement('select');
+    sel.className = queueInput.className;
+
+    const getQName = q => q.name || q.partition || String(q);
+    const pb       = queues.find(q => getQName(q) === 'debug');
+    const pi       = queues.find(q => getQName(q) === 'interactive');
+    const defaultQ = pb || pi || queues[0];
+    const defaultQName = defaultQ ? getQName(defaultQ) : '';
+    const currentVal   = queueInput.value;
+
+    sel.innerHTML = '<option value="">(none)</option>' + queues.map(q => {
+      const qn         = getQName(q);
+      const isSelected = (currentVal && currentVal === qn) || (!currentVal && qn === defaultQName);
+      return `<option value="${qn}" ${isSelected ? 'selected' : ''}>${qn}</option>`;
+    }).join('');
+    queueInput.parentNode.replaceChild(sel, queueInput);
+  }
+
+  // Replace account text input with a <select> populated from allocations
+  const accountInput = page.querySelector('.p-account');
+  if (accountInput && accountInput.tagName === 'INPUT') {
+    const sel      = document.createElement('select');
+    sel.className  = accountInput.className;
+
+    const accounts   = [...new Set(allocations.map(a => a.account).filter(Boolean))];
+    const defaultAcc = accounts[0] || '';
+    const currentVal = accountInput.value;
+
+    sel.innerHTML = '<option value="">(none)</option>' + accounts.map(a => {
+      const isSelected = (currentVal && currentVal === a) || (!currentVal && a === defaultAcc);
+      return `<option value="${a}" ${isSelected ? 'selected' : ''}>${a}</option>`;
+    }).join('');
+    accountInput.parentNode.replaceChild(sel, accountInput);
+  }
 }
 
 function addAttributeRow(page) {

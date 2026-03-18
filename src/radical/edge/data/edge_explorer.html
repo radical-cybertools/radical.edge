@@ -1185,6 +1185,10 @@
         // Plugin modules handle their own notification state via onNotification
         processPendingNotification: () => {},
 
+        // Queue data cache (shared across plugins, keyed by edgeName)
+        getQueueData: ()     => queueDataCache[edgeName],
+        setQueueData: (data) => { queueDataCache[edgeName] = data; },
+
         // Edge management
         disconnectEdge: (event) => disconnectEdge(event, edgeName),
       };
@@ -2247,6 +2251,13 @@
       document.querySelectorAll('.tree-item').forEach(n => n.classList.remove('active'));
       const navEl = document.getElementById(`nav-${pid}`);
       if (navEl) navEl.classList.add('active');
+
+      // Notify plugin on every show (e.g. to refresh dropdowns from shared cache)
+      const entry = pluginPageModules[pid];
+      const page  = activeDynamicPages[pid];
+      if (entry && page && entry.module.onShow) {
+        entry.module.onShow(page, entry.api);
+      }
     }
 
     // ─────────────────────────────────────────────────────────────

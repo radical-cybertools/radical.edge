@@ -105,6 +105,7 @@ async function loadQueueInfo(page, api) {
     const queues = Array.isArray(queuesObj) ? queuesObj : Object.values(queuesObj);
     const allocations = allocs.allocations || [];
     queueDataCache[api.edgeName] = { queues, allocations };
+    api.setQueueData({ queues, allocations });
 
     content.innerHTML = renderQueueInfo(queues, allocations, api, sid);
 
