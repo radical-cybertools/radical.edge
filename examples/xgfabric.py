@@ -15,12 +15,15 @@ Examples:
 """
 
 import argparse
+import logging
 import os
 import sys
 import threading
 import time
 
 from radical.edge import BridgeClient
+
+logging.basicConfig(level=logging.INFO, format='%(levelname)s %(name)s %(message)s')
 
 
 # ─────────────────────────────────────────────────────────────────────────────

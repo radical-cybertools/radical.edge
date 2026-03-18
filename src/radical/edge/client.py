@@ -238,34 +238,47 @@ class BridgeClient:
 
     def _dispatch_notification(self, edge: str, plugin: str, topic: str, data: dict) -> None:
         """Dispatch a notification to matching callbacks."""
+        log.info("[client] dispatch: edge=%s  plugin=%s  topic=%s  registered_keys=%s",
+                 edge, plugin, topic, list(self._callbacks.keys()))
+        matched = 0
         # Check all registered callback patterns
         for (e_filter, p_filter, t_filter), callbacks in self._callbacks.items():
             # Match if filter is None (wildcard) or matches exactly
             if (e_filter is None or e_filter == edge) and \
                (p_filter is None or p_filter == plugin) and \
                (t_filter is None or t_filter == topic):
+                matched += len(callbacks)
                 for cb in callbacks:
                     try:
                         cb(edge, plugin, topic, data)
                     except Exception as e:
                         log.error("Notification callback error: %s", e)
+        if not matched:
+            log.info("[client] dispatch: no callbacks matched for edge=%s plugin=%s topic=%s",
+                     edge, plugin, topic)
 
     def _listen_sse(self) -> None:
+        log.info("[client] SSE listener starting: url=%s/events", self._url)
         try:
             with httpx.stream("GET", f"{self._url}/events", verify=self._cert if self._cert else False, timeout=None) as response:
+                log.info("[client] SSE stream connected: status=%s", response.status_code)
                 for line in response.iter_lines():
                     if self._listener_stop.is_set():
+                        log.info("[client] SSE listener stopping (stop flag set)")
                         break
                     if line.startswith("data: "):
                         data_str = line[6:]
                         if not data_str:
                             continue
+                        log.info("[client] SSE raw event: %s", data_str[:200])
                         try:
                             payload = json.loads(data_str)
                             msg_topic = payload.get("topic")
 
                             if msg_topic == "notification":
                                 notif = payload.get("data", {})
+                                log.info("[client] SSE notification: edge=%s  plugin=%s  topic=%s",
+                                         notif.get("edge"), notif.get("plugin"), notif.get("topic"))
                                 self._dispatch_notification(
                                     edge=notif.get("edge"),
                                     plugin=notif.get("plugin"),
@@ -275,17 +288,21 @@ class BridgeClient:
 
                             elif msg_topic == "topology":
                                 edges = payload.get("data", {}).get("edges", {})
+                                log.info("[client] SSE topology: edges=%s", list(edges.keys()))
                                 for cb in self._topology_callbacks:
                                     try:
                                         cb(edges)
                                     except Exception as e:
                                         log.error("Topology callback error: %s", e)
 
+                            else:
+                                log.info("[client] SSE unknown topic: %s", msg_topic)
+
                         except Exception as e:
                             log.error("Error parsing SSE event: %s", e)
         except Exception as e:
             if not self._listener_stop.is_set():
-                log.debug("SSE listener stopped: %s", e)
+                log.info("[client] SSE listener stopped: %s", e)
 
     def close(self) -> None:
         self._listener_stop.set()
