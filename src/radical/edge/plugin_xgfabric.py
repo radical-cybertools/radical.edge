@@ -178,6 +178,8 @@ class XGFabricSession(PluginSession):
 
     def update_connected_edges(self, edges: Dict[str, Any]):
         """Update the cached list of connected edges."""
+        log.info("[XGFabric] Session %s: topology update — %d edges: %s",
+                 self._sid, len(edges), list(edges.keys()))
         self._connected_edges = edges
 
     # -------------------------------------------------------------------------
@@ -321,14 +323,23 @@ class XGFabricSession(PluginSession):
         # Query connected edges from bridge (if not running a workflow)
         if self._state.status != 'running':
             immediate, allocate = await self._get_connected_edges()
+            log.info("[XGFabric] get_status: immediate=%s  allocate=%s",
+                     [c['name'] for c in immediate],
+                     [c['name'] for c in allocate])
             self._state.immediate_clusters = immediate
             self._state.allocate_clusters  = allocate
+        else:
+            log.info("[XGFabric] get_status: workflow running — skipping cluster refresh "
+                     "(immediate=%s  allocate=%s)",
+                     [c['name'] for c in self._state.immediate_clusters],
+                     [c['name'] for c in self._state.allocate_clusters])
 
         return asdict(self._state)
 
     async def _has_scheduler(self, edge_name: str) -> bool:
         """Check whether an edge's queue_info plugin reports a working scheduler."""
         if not self._bridge_url:
+            log.info("[XGFabric] _has_scheduler(%s): no bridge_url — returning False", edge_name)
             return False
         url = self._bridge_url.rstrip('/') + f'/{edge_name}/queue_info/has_scheduler'
         try:
@@ -336,9 +347,11 @@ class XGFabricSession(PluginSession):
             verify: Any = self._bridge_cert if self._bridge_cert else False
             resp = await asyncio.to_thread(
                 lambda: httpx.get(url, verify=verify, timeout=5))
-            return resp.json().get('available', False)
+            result = resp.json().get('available', False)
+            log.info("[XGFabric] _has_scheduler(%s): available=%s", edge_name, result)
+            return result
         except Exception as e:
-            log.debug("[XGFabric] has_scheduler check failed for %s: %s", edge_name, e)
+            log.info("[XGFabric] _has_scheduler(%s): request failed — %s", edge_name, e)
             return False
 
     async def _get_connected_edges(self) -> tuple[List[Dict], List[Dict]]:
@@ -353,19 +366,27 @@ class XGFabricSession(PluginSession):
 
         # Use cached edges if available (populated by topology updates)
         if self._connected_edges:
+            log.info("[XGFabric] _get_connected_edges: using cached topology (%d edges)",
+                     len(self._connected_edges))
             immediate, allocate = [], []
             for edge_name, edge_info in self._connected_edges.items():
                 plugins = edge_info.get('plugins', [])
+                log.info("[XGFabric]   edge=%s  plugins=%s", edge_name, plugins)
                 # FIXME: hardcoded exception — ucsb edges are always immediate
                 if 'ucsb' in edge_name:
+                    log.info("[XGFabric]   -> immediate (ucsb hardcode)")
                     immediate.append(_cluster(edge_name))
                 elif 'queue_info' in plugins and await self._has_scheduler(edge_name):
+                    log.info("[XGFabric]   -> allocate (has scheduler)")
                     allocate.append(_cluster(edge_name))
                 else:
+                    log.info("[XGFabric]   -> immediate")
                     immediate.append(_cluster(edge_name))
             return immediate, allocate
 
         # Fallback: query bridge directly (no plugin info available)
+        log.info("[XGFabric] _get_connected_edges: no cached topology — falling back to bridge query "
+                 "(bridge_url=%s)", self._bridge_url)
         if not self._bridge_url:
             return [], []
 
@@ -374,14 +395,16 @@ class XGFabricSession(PluginSession):
             bc = BridgeClient(url=self._bridge_url, cert=self._bridge_cert)
             edges = bc.list_edges()
             bc.close()
+            log.info("[XGFabric] _get_connected_edges: bridge returned %d edges: %s", len(edges), edges)
             return [_cluster(e) for e in edges], []
 
         except Exception as e:
-            log.debug("Failed to query connected edges: %s", e)
+            log.info("[XGFabric] _get_connected_edges: bridge query failed — %s", e)
             return [], []
 
     async def start_workflow(self, config_name: Optional[str] = None) -> Dict:
         """Start workflow execution."""
+        log.info("[XGFabric] start_workflow: config_name=%s  status=%s", config_name, self._state.status)
         if self._state.status == 'running':
             raise HTTPException(status_code=409, detail="Workflow already running")
 
@@ -399,6 +422,12 @@ class XGFabricSession(PluginSession):
         assert self._current_config is not None  # guaranteed by checks above
         # Reset state with config info, preserving cluster lists populated by get_status()
         cfg = self._current_config
+        log.info("[XGFabric] start_workflow: preserving immediate=%s  allocate=%s",
+                 [c['name'] for c in self._state.immediate_clusters],
+                 [c['name'] for c in self._state.allocate_clusters])
+        log.info("[XGFabric] start_workflow: cfg.immediate=%s  cfg.allocate=%s",
+                 [c['name'] for c in cfg.immediate_clusters],
+                 [c['name'] for c in cfg.allocate_clusters])
         self._state = WorkflowState(
             status='running',
             phase='initializing',
@@ -468,6 +497,13 @@ class XGFabricSession(PluginSession):
         assert self._current_config is not None
         cfg = self._current_config
 
+        log.info("[XGFabric] _execute_workflow: starting — bridge_url=%s  cert=%s",
+                 cfg.bridge_url, cfg.bridge_cert)
+        log.info("[XGFabric] _execute_workflow: cfg.immediate_clusters=%s",
+                 cfg.immediate_clusters)
+        log.info("[XGFabric] _execute_workflow: cfg.allocate_clusters=%s",
+                 cfg.allocate_clusters)
+
         # Initialize bridge client
         self._update_state('connecting', 'Connecting to bridge...')
         from .client import BridgeClient
@@ -476,6 +512,7 @@ class XGFabricSession(PluginSession):
         # Verify edges
         self._update_state('verifying', 'Verifying edges...')
         edges = self._bc.list_edges()
+        log.info("[XGFabric] _execute_workflow: bridge reports edges=%s", edges)
         all_clusters = cfg.immediate_clusters + cfg.allocate_clusters
         for cluster in all_clusters:
             if cluster['edge_name'] not in edges:
@@ -484,6 +521,8 @@ class XGFabricSession(PluginSession):
         # Get cluster references
         immediate = cfg.immediate_clusters[0] if cfg.immediate_clusters else None
         allocate = cfg.allocate_clusters[0] if cfg.allocate_clusters else None
+
+        log.info("[XGFabric] _execute_workflow: immediate=%s  allocate=%s", immediate, allocate)
 
         if not immediate:
             raise RuntimeError("No immediate clusters configured")
@@ -585,6 +624,10 @@ class XGFabricSession(PluginSession):
 
     def _notify_state(self):
         """Send state notification via SSE."""
+        log.info("[XGFabric] _notify_state: phase=%s  status=%s  immediate=%s  allocate=%s",
+                 self._state.phase, self._state.status,
+                 [c['name'] for c in self._state.immediate_clusters],
+                 [c['name'] for c in self._state.allocate_clusters])
         if self._notify:
             self._notify('workflow_status', asdict(self._state))
 
@@ -1110,6 +1153,9 @@ class PluginXGFabric(Plugin):
         bridge_url = getattr(edge_service, '_bridge_url', None) if edge_service else None
         bridge_cert = os.environ.get('RADICAL_BRIDGE_CERT')
 
+        log.info("[XGFabric] _create_session: sid=%s  edge=%s  bridge_url=%s  cached_edges=%s",
+                 sid, edge_name, bridge_url, list(self._connected_edges.keys()))
+
         session = XGFabricSession(sid, workdir=self._workdir, edge_name=edge_name,
                                   bridge_url=bridge_url, bridge_cert=bridge_cert)
 
@@ -1122,7 +1168,8 @@ class PluginXGFabric(Plugin):
     async def on_topology_change(self, edges: dict):
         """Handle topology updates from the bridge."""
         self._connected_edges = edges
-        log.info("[XGFabric] Topology update: %d edges connected", len(edges))
+        log.info("[XGFabric] on_topology_change: %d edges: %s",
+                 len(edges), {k: v.get('plugins') for k, v in edges.items()})
 
         # Update all active sessions and push updated cluster list to clients
         for session in self._sessions.values():
