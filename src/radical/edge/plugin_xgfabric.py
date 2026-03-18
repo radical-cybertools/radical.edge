@@ -155,8 +155,8 @@ class XGFabricSession(PluginSession):
     XGFabric session - manages workflow configuration and execution.
     """
 
-    def __init__(self, sid: str, workdir: str = None, edge_name: str = None,
-                 bridge_url: str = None, bridge_cert: str = None):
+    def __init__(self, sid: str, workdir: Optional[str] = None, edge_name: Optional[str] = None,
+                 bridge_url: Optional[str] = None, bridge_cert: Optional[str] = None):
         super().__init__(sid)
         default_workdir = os.environ.get('XGFABRIC_WORKDIR') or os.getcwd()
         self._workdir = Path(workdir or default_workdir)
@@ -446,6 +446,7 @@ class XGFabricSession(PluginSession):
 
     async def _execute_workflow(self):
         """Main workflow execution logic."""
+        assert self._current_config is not None
         cfg = self._current_config
 
         # Initialize bridge client
@@ -509,7 +510,7 @@ class XGFabricSession(PluginSession):
         # Done
         self._state.progress = 100
 
-    def _update_state(self, phase: str, message: str, progress: int = None):
+    def _update_state(self, phase: str, message: str, progress: Optional[int] = None):
         """Update workflow state, add log entry, and send notification."""
         self._state.phase = phase
         self._state.message = message
@@ -570,11 +571,13 @@ class XGFabricSession(PluginSession):
 
     def _is_edge_online(self, cluster: Dict) -> bool:
         """Check if cluster's child edge is online."""
+        assert self._bc is not None
         edge_name = cluster.get('child_edge_name') or cluster['edge_name']
         return edge_name in self._bc.list_edges()
 
-    def _get_plugin(self, cluster: Dict, plugin_name: str):
+    def _get_plugin(self, cluster: Dict, plugin_name: str) -> Any:
         """Get plugin client for a cluster."""
+        assert self._bc is not None
         edge_name = cluster.get('child_edge_name') or cluster['edge_name']
         ec = self._bc.get_edge_client(edge_name)
         return ec.get_plugin(plugin_name)
@@ -585,6 +588,7 @@ class XGFabricSession(PluginSession):
 
     async def _acquire_sensor_data(self, workspace: Path) -> Path:
         """Fetch sensor data from CSPOT."""
+        assert self._current_config is not None
         cfg = self._current_config
         output_dir = workspace / "data"
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -687,8 +691,9 @@ class XGFabricSession(PluginSession):
 
     async def _submit_pilot(self, cluster: Dict, bridge_url: str) -> str:
         """Submit pilot job to spawn child edge."""
+        assert self._bc is not None
         ec = self._bc.get_edge_client(cluster['edge_name'])
-        psij = ec.get_plugin('psij')
+        psij: Any = ec.get_plugin('psij')
 
         pilot_spec = {
             "executable": "radical-edge-service.py",
@@ -720,6 +725,7 @@ class XGFabricSession(PluginSession):
         if not sim_results:
             return
 
+        assert self._current_config is not None
         source_staging = self._get_plugin(source, 'staging')
         dest_staging = self._get_plugin(dest, 'staging')
 
@@ -750,6 +756,7 @@ class XGFabricSession(PluginSession):
                                allocate: Optional[Dict]) -> List[str]:
         """Run CFD simulations on cluster."""
         cfg = self._current_config
+        assert cfg is not None
         params = self._generate_sim_params(sensor_csv, cfg.num_simulations)
 
         workflow_path = os.path.expanduser(cluster['workflow_path'])
@@ -828,6 +835,7 @@ class XGFabricSession(PluginSession):
     async def _run_training(self, cluster: Dict, sim_results: List[str]):
         """Run ML training on cluster."""
         cfg = self._current_config
+        assert cfg is not None
         workflow_path = os.path.expanduser(cluster['workflow_path'])
         sensor_dir = f"{workflow_path}/data"
         sim_dir = f"{workflow_path}/simulations"
@@ -931,10 +939,12 @@ with open(output_dir / 'sensor_metrics.json', 'w') as f:
             try:
                 # Find the cluster config
                 cfg = self._current_config
+                assert cfg is not None
+                assert self._bc is not None
                 for c in cfg.immediate_clusters + cfg.allocate_clusters:
                     if c.get('name') == cluster_name:
                         ec = self._bc.get_edge_client(c['edge_name'])
-                        psij = ec.get_plugin('psij')
+                        psij: Any = ec.get_plugin('psij')
                         psij.cancel_job(pilot_id)
                         log.info(f"Cancelled pilot job {pilot_id}")
                         break
@@ -1040,15 +1050,10 @@ class PluginXGFabric(Plugin):
     client_class = XGFabricClient
     version = '0.1.0'
 
-    # Use custom template in edge_explorer.html (hardcoded like sysinfo, psij, etc.)
-    ui_config = {
-        "icon": "🌊",
-        "title": "XGFabric Workflow",
-        "description": "CFDaAI workflow orchestrator for HPC clusters.",
-        "custom_template": True,  # Signal to use hardcoded template
-    }
+    # Uses a dedicated JS module (xgfabric.js); no ui_config needed
+    ui_config = None
 
-    def __init__(self, app: FastAPI, workdir: str = None):
+    def __init__(self, app: FastAPI, workdir: Optional[str] = None):
         super().__init__(app, 'xgfabric')
 
         self._workdir = workdir or os.environ.get('XGFABRIC_WORKDIR') or os.getcwd()
@@ -1072,7 +1077,7 @@ class PluginXGFabric(Plugin):
 
         self._log_routes()
 
-    def _create_session(self, sid: str, **kwargs) -> XGFabricSession:
+    def _create_session(self, sid: str, **_) -> XGFabricSession:
         """Create session with workdir, edge name, and bridge connection info."""
         edge_name = getattr(self._app.state, 'edge_name', 'local')
 
@@ -1089,10 +1094,12 @@ class PluginXGFabric(Plugin):
         self._connected_edges = edges
         log.info("[XGFabric] Topology update: %d edges connected", len(edges))
 
-        # Update all active sessions with the new edge list
-        for sid, session in self._sessions.items():
-            if hasattr(session, 'update_connected_edges'):
+        # Update all active sessions and push updated cluster list to clients
+        for session in self._sessions.values():
+            if isinstance(session, XGFabricSession):
                 session.update_connected_edges(edges)
+                if session._notify:
+                    session._notify_state()
 
     # -- Route handlers -------------------------------------------------------
 

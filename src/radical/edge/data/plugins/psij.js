@@ -148,6 +148,13 @@ export function init(page, api) {
     submitBtn.addEventListener('click', () => submitJob(page, api));
   }
 
+  // Pre-fill --url / --name args for first submission
+  const argsInput = page.querySelector('.p-args');
+  if (argsInput && !argsInput.value) {
+    const nextName = getNextEdgeChildName(api.edgeName);
+    argsInput.value = `--url ${api.bridgeUrl} --name ${nextName}`;
+  }
+
   // Prefill from cached queue data if already available
   const qd = api.getQueueData();
   if (qd) replaceQueueAccountDropdowns(page, qd);

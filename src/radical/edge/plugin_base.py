@@ -3,7 +3,7 @@ import asyncio
 import logging
 import time
 
-from typing import Type, Optional, Dict, Callable, Any, Union
+from typing import Type, Optional, Dict, Callable, Any
 from fastapi import FastAPI, HTTPException, Request
 from starlette.routing import Route
 from starlette.responses import JSONResponse
@@ -97,13 +97,13 @@ class Plugin(object):
     client_class: Optional[Type] = None
     version: str = '0.0.1'
     session_ttl: int = 3600  # Default: 1 hour session timeout
-    ui_config: Union[Dict, UIConfig, None] = None  # UI configuration for portal
+    ui_config: Optional[UIConfig] = None  # UI configuration for portal
 
     def __init_subclass__(cls, **kwargs):
         """Auto-register subclasses that define plugin_name."""
         super().__init_subclass__(**kwargs)
         if hasattr(cls, 'plugin_name'):
-            name = cls.plugin_name
+            name = getattr(cls, 'plugin_name')
             if name in Plugin._registry:
                 log.warning("[Plugin] Duplicate plugin_name '%s' - overwriting", name)
             Plugin._registry[name] = cls
@@ -163,13 +163,13 @@ class Plugin(object):
         """Get the unique ID of the plugin instance."""
         return self._uid
 
-    def add_route_post(self, path: str, method: callable):
+    def add_route_post(self, path: str, method: Callable):
         """Add a POST route to the plugin's namespace."""
         full_path = self._namespace + '/' + path
         full_path = full_path.replace('//', '/')
         self._app.add_route(full_path, method, methods=["POST"])
 
-    def add_route_get(self, path: str, method: callable):
+    def add_route_get(self, path: str, method: Callable):
         """Add a GET route to the plugin's namespace."""
         full_path = self._namespace + '/' + path
         full_path = full_path.replace('//', '/')
@@ -299,7 +299,7 @@ class Plugin(object):
         Depends on `app.state.edge_service` having been injected by EdgeService.
         """
         edge_svc = getattr(self._app.state, "edge_service", None)
-        if hasattr(edge_svc, "send_notification"):
+        if edge_svc is not None and hasattr(edge_svc, "send_notification"):
             await edge_svc.send_notification(self.instance_name, topic, data)
         else:
             log.warning("[%s] Cannot send notification: edge_service unlinked", self.instance_name)
