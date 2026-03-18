@@ -33,6 +33,63 @@ class Plugin(object):
         version: The version string for the plugin.
         session_ttl: Session timeout in seconds (default: 3600 = 1 hour, 0 = no timeout)
         ui_config: UI configuration dict for portal rendering (see ui_schema.py)
+
+    Notifications
+    -------------
+    Plugins can send real-time notifications to clients via Server-Sent Events (SSE).
+    The notification flow is: Session -> Plugin -> EdgeService -> Bridge -> SSE clients.
+
+    **Sending notifications from a session:**
+
+        # In your PluginSession subclass method:
+        if self._notify:
+            self._notify("my_topic", {"key": "value", "status": "running"})
+
+    The `_notify` callback is automatically injected into sessions by the plugin.
+    It works from both sync and async contexts, including background threads.
+
+    **Sending notifications from a plugin:**
+
+        # In your Plugin subclass method:
+        await self.send_notification("my_topic", {"key": "value"})
+
+    **Subscribing to notifications (browser/JavaScript):**
+
+        const eventSource = new EventSource('/events');
+        eventSource.onmessage = (event) => {
+            const msg = JSON.parse(event.data);
+            if (msg.topic === 'notification') {
+                const {edge, plugin, topic, data} = msg.data;
+                console.log(`${edge}/${plugin}: ${topic}`, data);
+            }
+        };
+
+    **Subscribing to notifications (Python client):**
+
+        import sseclient
+        import requests
+
+        response = requests.get('http://bridge:8000/events', stream=True)
+        client = sseclient.SSEClient(response)
+        for event in client.events():
+            msg = json.loads(event.data)
+            if msg['topic'] == 'notification':
+                print(msg['data'])
+
+    Topology Updates
+    ----------------
+    Plugins can receive notifications when edges connect or disconnect by
+    overriding the `on_topology_change` method:
+
+        async def on_topology_change(self, edges: dict):
+            '''Called when edges connect/disconnect.
+
+            Args:
+                edges: Dict mapping edge names to their plugin info.
+                       Example: {"edge1": {"plugins": ["sysinfo", "psij"]}}
+            '''
+            for edge_name, info in edges.items():
+                print(f"Edge {edge_name} has plugins: {info.get('plugins', [])}")
     """
 
     _registry: Dict[str, Type["Plugin"]] = {}

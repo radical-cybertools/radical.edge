@@ -255,12 +255,18 @@ class XGFabricSession(PluginSession):
 
     async def get_default_config(self) -> Dict:
         """Get a default configuration template."""
+        # Use the session's bridge URL (the one this edge is connected to)
+        bridge_url = self._bridge_url or "https://localhost:8000"
+        bridge_cert = self._bridge_cert
+
         # Check for debug mode
         if os.environ.get('XGFABRIC_DEBUG'):
             debug_workflow = os.path.join(os.getcwd(), 'xgfabric', 'intheloop')
             config = WorkflowConfig(
                 name='debug',
                 description='Local debug configuration',
+                bridge_url=bridge_url,
+                bridge_cert=bridge_cert,
                 immediate_clusters=[{
                     'name': self._edge_name,
                     'edge_name': self._edge_name,
@@ -287,6 +293,8 @@ class XGFabricSession(PluginSession):
             config = WorkflowConfig(
                 name='default',
                 description='Default configuration using local edge',
+                bridge_url=bridge_url,
+                bridge_cert=bridge_cert,
                 immediate_clusters=[{
                     'name': self._edge_name,
                     'edge_name': self._edge_name,

@@ -23,6 +23,46 @@ class PluginSession:
     - Echo service for testing
     - Session validation
     - Notification callbacks
+
+    Sending Notifications
+    ---------------------
+    Sessions can send real-time notifications to connected clients via
+    the `_notify` callback. This callback is automatically injected by
+    the parent Plugin when the session is created.
+
+    Example usage in a session method::
+
+        def start_task(self, task_id: str):
+            # ... start the task ...
+
+            # Send notification to clients
+            if self._notify:
+                self._notify("task_status", {
+                    "task_id": task_id,
+                    "status": "running",
+                    "progress": 0
+                })
+
+        def on_task_complete(self, task_id: str, result: dict):
+            if self._notify:
+                self._notify("task_status", {
+                    "task_id": task_id,
+                    "status": "completed",
+                    "result": result
+                })
+
+    The `_notify` callback:
+    - Takes two arguments: topic (str) and data (dict)
+    - Works from both sync and async contexts
+    - Works from background threads (uses thread-safe scheduling)
+    - Is None if the session was not created by a Plugin (e.g., in tests)
+
+    Notifications are delivered to clients via SSE at the bridge's
+    `/events` endpoint. The notification payload includes:
+    - edge: Name of the edge that sent the notification
+    - plugin: Name of the plugin that sent the notification
+    - topic: The topic string passed to _notify
+    - data: The data dict passed to _notify
     """
 
     def __init__(self, sid: str):
@@ -34,6 +74,8 @@ class PluginSession:
         """
         self._sid: str = sid
         self._active: bool = True
+        # Notification callback, injected by Plugin._create_session().
+        # Call as: self._notify(topic: str, data: dict)
         self._notify: Optional[Callable[[str, Dict[str, Any]], None]] = None
 
     @property

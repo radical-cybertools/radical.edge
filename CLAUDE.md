@@ -78,6 +78,7 @@ Key endpoints:
 
 - **Base class**: `src/radical/edge/plugin_base.py` – provides namespace isolation, session management, route-registration helpers, and notification support.
 - **Session base**: `src/radical/edge/plugin_session_base.py` – per-client session state management.
+- **Client API**: `src/radical/edge/client.py` – Python client for bridge/edge interaction with notification callback support.
 
 **Available plugins:**
 - **sysinfo** (`plugin_sysinfo.py`) – System info (hostname, OS, CPU, memory, disk, network, GPUs). Detects shared filesystems (Lustre, GPFS, NFS, DVS, etc.). Background prefetch on startup.
@@ -92,9 +93,135 @@ Key endpoints:
 
 Bridge ↔ Edge messages are JSON with `type` field (defined in `models.py`):
 - **Edge → Bridge**: `register`, `response`, `notification`, `pong`
-- **Bridge → Edge**: `request`, `ping`, `error`, `shutdown`
+- **Bridge → Edge**: `request`, `ping`, `error`, `shutdown`, `topology`
 
 Binary payloads use base64 encoding (`is_binary` flag). Heartbeat via WebSocket ping/pong.
+
+### Notifications
+
+Plugins can send real-time notifications to clients via Server-Sent Events (SSE).
+The notification flow is: **Session → Plugin → EdgeService → Bridge → SSE clients**.
+
+#### Sending notifications from a plugin session
+
+```python
+# In your PluginSession subclass:
+class MySession(PluginSession):
+    def do_work(self):
+        # ... do some work ...
+
+        # Send notification (works from sync/async contexts and threads)
+        if self._notify:
+            self._notify("work_status", {
+                "status": "completed",
+                "result": {"key": "value"}
+            })
+```
+
+#### Sending notifications from a plugin
+
+```python
+# In your Plugin subclass (async context):
+await self.send_notification("my_topic", {"key": "value"})
+```
+
+#### Subscribing to notifications (JavaScript/Browser)
+
+```javascript
+const eventSource = new EventSource('http://bridge:8000/events');
+eventSource.onmessage = (event) => {
+    const msg = JSON.parse(event.data);
+    if (msg.topic === 'notification') {
+        const {edge, plugin, topic, data} = msg.data;
+        console.log(`${edge}/${plugin}: ${topic}`, data);
+    } else if (msg.topic === 'topology') {
+        // Edge connect/disconnect event
+        console.log('Topology changed:', msg.data.edges);
+    }
+};
+```
+
+#### Subscribing to notifications (Python client API)
+
+The `BridgeClient` and `PluginClient` classes provide callback-based notification support:
+
+```python
+from radical.edge.client import BridgeClient
+
+# Connect to bridge
+client = BridgeClient(url="http://localhost:8000")
+
+# Option 1: Global callback (all notifications)
+def on_any_notification(edge, plugin, topic, data):
+    print(f"{edge}/{plugin}: {topic} -> {data}")
+
+client.register_callback(callback=on_any_notification)
+
+# Option 2: Plugin-specific callback
+def on_psij_notification(edge, plugin, topic, data):
+    print(f"PsiJ: {topic} -> {data}")
+
+client.register_callback(edge_id="hpc1", plugin_name="psij", callback=on_psij_notification)
+
+# Option 3: Topic-specific callback
+def on_job_status(edge, plugin, topic, data):
+    print(f"Job {data['job_id']}: {data['status']}")
+
+client.register_callback(edge_id="hpc1", plugin_name="psij",
+                         topic="job_status", callback=on_job_status)
+
+# Option 4: Via PluginClient (most common)
+edge = client.get_edge_client("hpc1")
+psij = edge.get_plugin("psij")
+psij.register_notification_callback(on_job_status, topic="job_status")
+
+# Topology changes (edge connect/disconnect)
+def on_topology(edges):
+    print(f"Connected edges: {list(edges.keys())}")
+
+client.register_topology_callback(on_topology)
+
+# Cleanup
+client.close()
+```
+
+#### Subscribing to notifications (raw SSE)
+
+For non-Python clients or custom implementations:
+
+```python
+import json
+import sseclient
+import requests
+
+response = requests.get('http://bridge:8000/events', stream=True)
+client = sseclient.SSEClient(response)
+for event in client.events():
+    msg = json.loads(event.data)
+    if msg['topic'] == 'notification':
+        edge = msg['data']['edge']
+        plugin = msg['data']['plugin']
+        topic = msg['data']['topic']
+        data = msg['data']['data']
+        print(f"{edge}/{plugin}: {topic} -> {data}")
+```
+
+#### Topology updates (edge connect/disconnect)
+
+Plugins can react to edge connect/disconnect events by overriding `on_topology_change`:
+
+```python
+class MyPlugin(Plugin):
+    async def on_topology_change(self, edges: dict):
+        """Called when edges connect or disconnect.
+
+        Args:
+            edges: Dict mapping edge names to plugin info.
+                   Example: {"edge1": {"plugins": ["sysinfo", "psij"]}}
+        """
+        for edge_name, info in edges.items():
+            print(f"Edge {edge_name} has plugins: {info.get('plugins', [])}")
+```
 
 ### Explorer UI
 
