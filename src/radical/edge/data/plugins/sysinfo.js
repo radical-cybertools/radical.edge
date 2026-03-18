@@ -130,6 +130,21 @@ function renderSysinfo(m) {
       </div>
     </div>`;
 
+  // GPUs
+  const gpus = m.gpus || [];
+  if (gpus.length) {
+    html += `<div class="card"><div class="card-title">🎮 GPUs</div><table>
+      <thead><tr><th>ID</th><th>Name</th><th>Vendor</th><th>GPU%</th><th>Mem%</th><th>Total Mem</th></tr></thead><tbody>`;
+    for (const g of gpus) {
+      const memTotal = g.mem_total ? bytes2human(g.mem_total * 1024 * 1024) : 'N/A';
+      html += `<tr>
+        <td>${g.id}</td><td>${g.name}</td><td>${g.vendor || '-'}</td>
+        <td>${g.util_gpu ?? '-'}%</td><td>${g.util_mem ?? '-'}%</td><td>${memTotal}</td>
+      </tr>`;
+    }
+    html += '</tbody></table></div>';
+  }
+
   // Disks
   const disks = m.disks || [];
   if (disks.length) {
@@ -154,21 +169,6 @@ function renderSysinfo(m) {
       html += `<tr>
         <td>${n.interface}</td><td>${n.ip || '-'}</td><td>${n.mac || '-'}</td>
         <td>${n.speed_mbps || 0} Mbps</td><td>${bytes2human(n.rx_bytes)}</td><td>${bytes2human(n.tx_bytes)}</td>
-      </tr>`;
-    }
-    html += '</tbody></table></div>';
-  }
-
-  // GPUs
-  const gpus = m.gpus || [];
-  if (gpus.length) {
-    html += `<div class="card"><div class="card-title">🎮 GPUs</div><table>
-      <thead><tr><th>ID</th><th>Name</th><th>Vendor</th><th>GPU%</th><th>Mem%</th><th>Total Mem</th></tr></thead><tbody>`;
-    for (const g of gpus) {
-      const memTotal = g.mem_total ? bytes2human(g.mem_total * 1024 * 1024) : 'N/A';
-      html += `<tr>
-        <td>${g.id}</td><td>${g.name}</td><td>${g.vendor || '-'}</td>
-        <td>${g.util_gpu ?? '-'}%</td><td>${g.util_mem ?? '-'}%</td><td>${memTotal}</td>
       </tr>`;
     }
     html += '</tbody></table></div>';

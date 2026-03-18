@@ -36,8 +36,11 @@ def main():
 def _fmt_time(minutes):
     if minutes is None:
         return 'unlimited'
-    h, m = divmod(int(minutes), 60)
-    return f"{h}:{m:02d}"
+    try:
+        h, m = divmod(int(minutes), 60)
+        return f"{h}:{m:02d}"
+    except (ValueError, TypeError):
+        return str(minutes).lower()
 
 
 def _fmt_elapsed(seconds):
