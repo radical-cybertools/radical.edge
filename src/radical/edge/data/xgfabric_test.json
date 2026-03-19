@@ -20,5 +20,21 @@
   "evaluation_task"   : {
     "executable" : "bash",
     "arguments"  : ["-c", "sleep 1 && echo 'evaluation done' && false"]
+  },
+  "cluster_configs"   : {
+    "anvil"    : {
+      "queue"   : "wholenode",
+      "account" : "myproject",
+      "duration": 3600,
+      "nodes"   : 1,
+      "executor": "slurm"
+    },
+    "frontier" : {
+      "queue"   : "batch",
+      "account" : "myproject",
+      "duration": 3600,
+      "nodes"   : 1,
+      "executor": "slurm"
+    }
   }
 }

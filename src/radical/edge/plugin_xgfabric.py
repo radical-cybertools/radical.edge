@@ -90,6 +90,11 @@ class WorkflowConfig:
     # Test/debug: skip CSPOT and generate synthetic sensor data
     mock_sensor_data: bool = False
 
+    # Per-edge resource overrides used when submitting pilots via psij.
+    # Keys are edge names; values are dicts with any of:
+    #   queue, account, duration, nodes, executor, custom_attributes
+    cluster_configs: Dict[str, Dict] = field(default_factory=dict)
+
 
 def config_to_dict(cfg: WorkflowConfig) -> Dict:
     """Convert config to JSON-serializable dict."""
@@ -392,9 +397,13 @@ class XGFabricSession(PluginSession):
         Edges with the queue_info plugin AND a working scheduler go into
         allocate_clusters; all others go into immediate_clusters.
         """
+        cfg = self._current_config
         def _cluster(edge_name: str) -> Dict:
-            return {'name': edge_name, 'edge_name': edge_name,
+            base = {'name': edge_name, 'edge_name': edge_name,
                     'has_gpu': False, 'online': True, 'tasks_running': 0}
+            if cfg:
+                base.update(cfg.cluster_configs.get(edge_name, {}))
+            return base
 
         async def _classify(edges_info: Dict) -> tuple[List[Dict], List[Dict]]:
             """Classify edges_info dict into (immediate, allocate)."""
