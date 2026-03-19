@@ -9,6 +9,7 @@ from radical.edge.plugin_base import Plugin
 @patch('httpx.Client.get')
 def test_bridge_client(mock_get, mock_post):
     # Setup mock responses
+    mock_post.return_value.is_error = False
     mock_post.return_value.json.return_value = {
         'data': {
             'edges': {
@@ -39,7 +40,7 @@ def test_edge_client_get_plugin(mock_post):
     
     mock_post.side_effect = [
         # First post is to edge/list
-        MagicMock(json=lambda: {
+        MagicMock(is_error=False, json=lambda: {
             'data': {
                 'edges': {
                     'edge1': {
@@ -51,7 +52,7 @@ def test_edge_client_get_plugin(mock_post):
             }
         }),
         # Second post is to register_session
-        MagicMock(json=lambda: {'sid': 'test_sid'})
+        MagicMock(is_error=False, json=lambda: {'sid': 'test_sid'})
     ]
 
     bc = BridgeClient(url="http://test")
@@ -62,7 +63,7 @@ def test_edge_client_get_plugin(mock_post):
     assert plugin_client.sid == "test_sid"
     
     # Test unregister behavior
-    mock_post_unregister = MagicMock()
+    mock_post_unregister = MagicMock(is_error=False)
     mock_post.side_effect = [mock_post_unregister]
     plugin_client.unregister_session()
     assert plugin_client.sid is None

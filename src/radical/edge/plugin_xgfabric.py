@@ -233,8 +233,12 @@ class XGFabricSession(PluginSession):
         return sorted(configs, key=lambda x: x['name'])
 
     async def load_config(self, name: str) -> Dict:
-        """Load a configuration by name."""
-        config_file = self._config_dir / f'{name}.json'
+        """Load a configuration by name or absolute/relative path."""
+        p = Path(name)
+        if p.is_absolute() or p.exists():
+            config_file = p if p.suffix else p.with_suffix('.json')
+        else:
+            config_file = self._config_dir / (name if name.endswith('.json') else f'{name}.json')
         if not config_file.exists():
             raise HTTPException(status_code=404, detail=f"Config '{name}' not found")
 
