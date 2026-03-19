@@ -78,6 +78,18 @@ class WorkflowConfig:
     batch_size: int = 4
     train_models: List[str] = field(default_factory=lambda: ["pcr", "pinn", "fno"])
 
+    # Task templates (optional — defaults to hardcoded behaviour if absent)
+    # Simulation task: {workflow_path}, {sim_output_dir}, {wind_speed}, {sim_id}, {wind_dir}
+    simulation_task: Optional[Dict] = None
+    # Training tasks: model-name → task spec; placeholders: {workflow_path},
+    #   {sensor_dir}, {sim_dir}, {output_dir}, {model}
+    training_tasks: Dict[str, Dict] = field(default_factory=dict)
+    # Evaluation task: {workflow_path}, {sensor_file}, {eval_output}
+    evaluation_task: Optional[Dict] = None
+
+    # Test/debug: skip CSPOT and generate synthetic sensor data
+    mock_sensor_data: bool = False
+
 
 def config_to_dict(cfg: WorkflowConfig) -> Dict:
     """Convert config to JSON-serializable dict."""
@@ -255,58 +267,74 @@ class XGFabricSession(PluginSession):
         config_file.unlink()
         return {'status': 'deleted', 'name': name}
 
-    async def get_default_config(self) -> Dict:
-        """Get a default configuration template."""
-        # Use the session's bridge URL (the one this edge is connected to)
-        bridge_url = self._bridge_url or "https://localhost:8000"
-        bridge_cert = self._bridge_cert
+    @staticmethod
+    def _load_builtin_config(filename: str) -> Dict:
+        """Load a built-in config JSON from the package data directory."""
+        data_dir = os.path.join(os.path.dirname(__file__), 'data')
+        with open(os.path.join(data_dir, filename)) as f:
+            return json.load(f)
 
-        # Check for debug mode
+    async def get_default_config(self) -> Dict:
+        """Get the default configuration template (loaded from xgfabric_default.json)."""
+        cfg = self._load_builtin_config('xgfabric_default.json')
+
+        # Inject runtime-dynamic values
+        cfg['bridge_url']  = self._bridge_url  or 'https://localhost:8000'
+        cfg['bridge_cert'] = self._bridge_cert
+
         if os.environ.get('XGFABRIC_DEBUG'):
             debug_workflow = os.path.join(os.getcwd(), 'xgfabric', 'intheloop')
-            config = WorkflowConfig(
-                name='debug',
-                description='Local debug configuration',
-                bridge_url=bridge_url,
-                bridge_cert=bridge_cert,
-                immediate_clusters=[{
-                    'name': self._edge_name,
-                    'edge_name': self._edge_name,
-                    'cluster_type': 'immediate',
-                    'has_gpu': False,
-                    'workflow_path': debug_workflow,
-                }],
-                allocate_clusters=[{
-                    'name': f'{self._edge_name}_gpu',
-                    'edge_name': self._edge_name,
-                    'cluster_type': 'allocate',
-                    'has_gpu': True,
-                    'queue': 'debug',
-                    'account': 'test',
-                    'duration': 600,
-                    'nodes': 1,
-                    'executor': 'local',
-                    'child_edge_name': f'{self._edge_name}.1',
-                    'workflow_path': debug_workflow,
-                }],
-            )
+            cfg['name']        = 'debug'
+            cfg['description'] = 'Local debug configuration'
+            cfg['immediate_clusters'] = [{
+                'name':         self._edge_name,
+                'edge_name':    self._edge_name,
+                'cluster_type': 'immediate',
+                'has_gpu':      False,
+                'workflow_path': debug_workflow,
+            }]
+            cfg['allocate_clusters'] = [{
+                'name':             f'{self._edge_name}_gpu',
+                'edge_name':        self._edge_name,
+                'cluster_type':     'allocate',
+                'has_gpu':          True,
+                'queue':            'debug',
+                'account':          'test',
+                'duration':         600,
+                'nodes':            1,
+                'executor':         'local',
+                'child_edge_name':  f'{self._edge_name}.1',
+                'workflow_path':    debug_workflow,
+            }]
         else:
-            # Use local edge as the default immediate cluster
-            config = WorkflowConfig(
-                name='default',
-                description='Default configuration using local edge',
-                bridge_url=bridge_url,
-                bridge_cert=bridge_cert,
-                immediate_clusters=[{
-                    'name': self._edge_name,
-                    'edge_name': self._edge_name,
-                    'cluster_type': 'immediate',
-                    'has_gpu': False,
-                    'workflow_path': '~/xgfabric/intheloop',
-                }],
-                allocate_clusters=[],
-            )
-        return config_to_dict(config)
+            cfg['immediate_clusters'] = [{
+                'name':         self._edge_name,
+                'edge_name':    self._edge_name,
+                'cluster_type': 'immediate',
+                'has_gpu':      False,
+                'workflow_path': '~/xgfabric/intheloop',
+            }]
+            cfg['allocate_clusters'] = []
+
+        return cfg
+
+    async def get_test_config(self) -> Dict:
+        """Get the test configuration template (loaded from xgfabric_test.json)."""
+        cfg = self._load_builtin_config('xgfabric_test.json')
+
+        # Inject runtime-dynamic values
+        cfg['bridge_url']  = self._bridge_url  or 'https://localhost:8000'
+        cfg['bridge_cert'] = self._bridge_cert
+        cfg['immediate_clusters'] = [{
+            'name':         self._edge_name,
+            'edge_name':    self._edge_name,
+            'cluster_type': 'immediate',
+            'has_gpu':      False,
+            'workflow_path': '/tmp/xgfabric_test',
+        }]
+        cfg['allocate_clusters'] = []
+
+        return cfg
 
     # -------------------------------------------------------------------------
     # Workflow Control
@@ -413,6 +441,10 @@ class XGFabricSession(PluginSession):
             # Use built-in default config
             default_dict = await self.get_default_config()
             self._current_config = dict_to_config(default_dict)
+        elif config_name == '__test__':
+            # Use built-in test config (fast stub tasks, no CSPOT)
+            test_dict = await self.get_test_config()
+            self._current_config = dict_to_config(test_dict)
         elif config_name:
             await self.load_config(config_name)
         elif not self._current_config:
@@ -654,16 +686,42 @@ class XGFabricSession(PluginSession):
         return ec.get_plugin(plugin_name)
 
     # -------------------------------------------------------------------------
+    # Task rendering
+    # -------------------------------------------------------------------------
+
+    def _render_task(self, template: Dict, **subs) -> Dict:
+        """Substitute {placeholder} values in a task template dict."""
+        return {
+            "executable": template["executable"].format_map(subs),
+            "arguments":  [str(a).format_map(subs)
+                           for a in template.get("arguments", [])],
+        }
+
+    # -------------------------------------------------------------------------
     # Data Acquisition
     # -------------------------------------------------------------------------
 
     async def _acquire_sensor_data(self, workspace: Path) -> Path:
-        """Fetch sensor data from CSPOT."""
+        """Fetch sensor data from CSPOT (or generate mock data for testing)."""
         assert self._current_config is not None
         cfg = self._current_config
         output_dir = workspace / "data"
         output_dir.mkdir(parents=True, exist_ok=True)
         output_file = output_dir / "sensor_out.csv"
+
+        if cfg.mock_sensor_data:
+            log.info("[XGFabric] _acquire_sensor_data: mock mode — writing synthetic CSV")
+            import csv as _csv
+            with open(output_file, 'w', newline='') as f:
+                writer = _csv.DictWriter(f, fieldnames=['dt', 'windspeed', 'windavg', 'winddir'])
+                writer.writeheader()
+                for i in range(max(cfg.num_simulations, 8)):
+                    writer.writerow({'dt': f'2024-01-01T{i:02d}:00:00+00:00',
+                                     'windspeed': 2.0 + i * 0.5,
+                                     'windavg':   2.0 + i * 0.5,
+                                     'winddir':   90 + i * 5})
+            self._update_state('data_acquisition', 'Mock sensor data ready (test mode)', 10)
+            return output_file
 
         # Find senspot-get
         senspot_path = self._find_senspot_get()
@@ -862,18 +920,20 @@ class XGFabricSession(PluginSession):
         sim_output_dir = f"{workflow_path}/simulations"
         rhapsody       = await asyncio.to_thread(self._get_plugin, cluster, 'rhapsody')
 
+        if not cfg.simulation_task:
+            raise RuntimeError("Config missing 'simulation_task' — cannot run simulations")
+
         # Build tasks, track (ws, sim_id, wd) per index for result-path assembly
         tasks       = []
         task_params = []   # parallel to tasks: (wind_speed_str, sim_id_str, wind_dir_str)
         for wind_speed, wind_dir, sim_id in params:
-            tasks.append({
-                "executable": f"{workflow_path}/simulation/runme.sh",
-                "arguments": [
-                    f"{workflow_path}/simulation/cups_structure.zip",
-                    "32", str(wind_speed), "0.0", "0.0",
-                    sim_output_dir, "1 4 1", str(sim_id), str(wind_dir)
-                ],
-            })
+            task = self._render_task(cfg.simulation_task,
+                                     workflow_path=workflow_path,
+                                     sim_output_dir=sim_output_dir,
+                                     wind_speed=str(wind_speed),
+                                     sim_id=str(sim_id),
+                                     wind_dir=str(wind_dir))
+            tasks.append(task)
             task_params.append((str(wind_speed), str(sim_id), str(wind_dir)))
 
         completed_results = []
@@ -984,40 +1044,22 @@ class XGFabricSession(PluginSession):
         output_dir = f"{workflow_path}/models"
 
         rhapsody = await asyncio.to_thread(self._get_plugin, cluster, 'rhapsody')
-        has_gpu = cluster.get('has_gpu', False)
+
+        subs = dict(workflow_path=workflow_path, sensor_dir=sensor_dir,
+                    sim_dir=sim_dir, output_dir=output_dir)
 
         for i, model in enumerate(cfg.train_models):
             if self._cancel_requested:
                 raise asyncio.CancelledError()
 
+            if model not in cfg.training_tasks:
+                log.warning("[XGFabric] No training_task defined for model '%s' — skipping", model)
+                continue
+
             progress = 60 + int((i + 1) / len(cfg.train_models) * 25)
             self._update_state('training', f'Training {model.upper()} model...', progress)
 
-            if model == "pcr":
-                task = {
-                    "executable": f"{workflow_path}/training/pcr/train_pcr.sh",
-                    "arguments": [sensor_dir, "--simulations-dir", sim_dir,
-                                  "--output-dir", f"{output_dir}/pcr"],
-                }
-            elif model == "pinn":
-                if not has_gpu:
-                    log.warning("PINN training without GPU may be slow")
-                task = {
-                    "executable": "python3",
-                    "arguments": [f"{workflow_path}/training/pinn/train_pinn.py",
-                                  sim_dir, "pinn_model", "--output_dir", f"{output_dir}/pinn"],
-                }
-            elif model == "fno":
-                if not has_gpu:
-                    log.warning("FNO training without GPU may be slow")
-                task = {
-                    "executable": "python3",
-                    "arguments": [f"{workflow_path}/training/fno/train_fno.py",
-                                  "--data-dir", sim_dir, "--output-dir", f"{output_dir}/fno"],
-                }
-            else:
-                continue
-
+            task = self._render_task(cfg.training_tasks[model], model=model, **subs)
             submitted = await asyncio.to_thread(rhapsody.submit_tasks, [task])
             await asyncio.to_thread(rhapsody.wait_tasks, [submitted[0]['uid']])
 
@@ -1027,46 +1069,22 @@ class XGFabricSession(PluginSession):
 
     async def _run_evaluation(self, cluster: Dict):
         """Run evaluation metrics computation."""
+        assert self._current_config is not None
+        cfg = self._current_config
+
         workflow_path = os.path.expanduser(cluster['workflow_path'])
         sensor_file = f"{workflow_path}/data/sensor_out.csv"
         eval_output = f"{workflow_path}/evaluation"
         rhapsody = await asyncio.to_thread(self._get_plugin, cluster, 'rhapsody')
 
-        eval_script = '''
-import sys, json, os
-import pandas as pd
-import numpy as np
-from pathlib import Path
+        if not cfg.evaluation_task:
+            raise RuntimeError("Config missing 'evaluation_task' — cannot run evaluation")
 
-sensor_file = sys.argv[1]
-output_dir = Path(sys.argv[2])
-output_dir.mkdir(parents=True, exist_ok=True)
-
-df = pd.read_csv(sensor_file)
-wind_cols = [c for c in df.columns if 'wind' in c.lower()]
-
-metrics = {
-    'sensor_file': sensor_file,
-    'n_records': len(df),
-    'wind_metrics': {}
-}
-
-for col in wind_cols:
-    if df[col].dtype in [np.float64, np.int64, float, int]:
-        metrics['wind_metrics'][col] = {
-            'mean': float(df[col].mean()),
-            'std': float(df[col].std()),
-            'min': float(df[col].min()),
-            'max': float(df[col].max()),
-        }
-
-with open(output_dir / 'sensor_metrics.json', 'w') as f:
-    json.dump(metrics, f, indent=2)
-'''
-
-        task = {"executable": "python3", "arguments": ["-c", eval_script, sensor_file, eval_output]}
+        task = self._render_task(cfg.evaluation_task,
+                                 workflow_path=workflow_path,
+                                 sensor_file=sensor_file,
+                                 eval_output=eval_output)
         self._update_state('evaluation', 'Computing metrics...', 90)
-
         submitted = await asyncio.to_thread(rhapsody.submit_tasks, [task])
         await asyncio.to_thread(rhapsody.wait_tasks, [submitted[0]['uid']])
 
@@ -1155,6 +1173,12 @@ class XGFabricClient(PluginClient):
         resp.raise_for_status()
         return resp.json()
 
+    def get_test_config(self) -> Dict:
+        """Get test configuration template (stub tasks, no CSPOT required)."""
+        resp = self._http.get(self._url(f"config/{self.sid}/test"))
+        resp.raise_for_status()
+        return resp.json()
+
     def get_status(self) -> Dict:
         """Get current workflow status."""
         resp = self._http.get(self._url(f"status/{self.sid}"))
@@ -1212,6 +1236,7 @@ class PluginXGFabric(Plugin):
         # Config endpoints
         self.add_route_get('configs/{sid}', self.list_configs)
         self.add_route_get('config/{sid}/default', self.get_default_config)
+        self.add_route_get('config/{sid}/test', self.get_test_config)
         self.add_route_get('config/{sid}/{name}', self.load_config)
         self.add_route_post('config/{sid}', self.save_config)
         self.add_route_post('config/{sid}/{name}/delete', self.delete_config)
@@ -1279,6 +1304,10 @@ class PluginXGFabric(Plugin):
     async def get_default_config(self, request: Request) -> JSONResponse:
         sid = request.path_params['sid']
         return await self._forward(sid, XGFabricSession.get_default_config)
+
+    async def get_test_config(self, request: Request) -> JSONResponse:
+        sid = request.path_params['sid']
+        return await self._forward(sid, XGFabricSession.get_test_config)
 
     async def load_config(self, request: Request) -> JSONResponse:
         sid = request.path_params['sid']

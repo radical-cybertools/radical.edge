@@ -1,0 +1,48 @@
+{
+  "name"              : "default",
+  "description"       : "Default XGFabric configuration",
+  "local_workspace"   : "/tmp/xgfabric_workspace",
+  "cspot_woof_url"    : "woof://128.111.45.61/davisstations/daviscupsout",
+  "cspot_limit"       : 72,
+  "num_simulations"   : 16,
+  "batch_size"        : 4,
+  "train_models"      : ["pcr", "pinn", "fno"],
+  "simulation_task"   : {
+    "executable" : "{workflow_path}/simulation/runme.sh",
+    "arguments"  : [
+      "{workflow_path}/simulation/cups_structure.zip",
+      "32", "{wind_speed}", "0.0", "0.0",
+      "{sim_output_dir}", "1 4 1", "{sim_id}", "{wind_dir}"
+    ]
+  },
+  "training_tasks"    : {
+    "pcr" : {
+      "executable" : "{workflow_path}/training/pcr/train_pcr.sh",
+      "arguments"  : [
+        "{sensor_dir}", "--simulations-dir", "{sim_dir}",
+        "--output-dir", "{output_dir}/pcr"
+      ]
+    },
+    "pinn" : {
+      "executable" : "python3",
+      "arguments"  : [
+        "{workflow_path}/training/pinn/train_pinn.py",
+        "{sim_dir}", "pinn_model", "--output_dir", "{output_dir}/pinn"
+      ]
+    },
+    "fno" : {
+      "executable" : "python3",
+      "arguments"  : [
+        "{workflow_path}/training/fno/train_fno.py",
+        "--data-dir", "{sim_dir}", "--output-dir", "{output_dir}/fno"
+      ]
+    }
+  },
+  "evaluation_task"   : {
+    "executable" : "python3",
+    "arguments"  : [
+      "{workflow_path}/evaluation/evaluate.py",
+      "{sensor_file}", "{eval_output}"
+    ]
+  }
+}
