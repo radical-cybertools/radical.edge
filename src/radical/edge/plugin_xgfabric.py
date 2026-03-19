@@ -549,23 +549,25 @@ class XGFabricSession(PluginSession):
         from .client import BridgeClient
         self._bc = BridgeClient(url=bridge_url, cert=bridge_cert)
 
-        # Verify edges
+        # Select clusters from those currently connected — skip any that are offline
         self._update_state('verifying', 'Verifying edges...')
         edges = await asyncio.to_thread(self._bc.list_edges)
         log.info("[XGFabric] _execute_workflow: bridge reports edges=%s", edges)
-        all_clusters = cfg.immediate_clusters + cfg.allocate_clusters
-        for cluster in all_clusters:
-            if cluster['edge_name'] not in edges:
-                raise RuntimeError(f"Edge '{cluster['edge_name']}' not connected")
 
-        # Get cluster references
-        immediate = cfg.immediate_clusters[0] if cfg.immediate_clusters else None
-        allocate = cfg.allocate_clusters[0] if cfg.allocate_clusters else None
+        immediate = next(
+            (c for c in cfg.immediate_clusters if c['edge_name'] in edges), None)
+        allocate = next(
+            (c for c in cfg.allocate_clusters  if c['edge_name'] in edges), None)
 
-        log.info("[XGFabric] _execute_workflow: immediate=%s  allocate=%s", immediate, allocate)
+        log.info("[XGFabric] _execute_workflow: immediate=%s  allocate=%s",
+                 immediate and immediate['name'], allocate and allocate['name'])
 
         if not immediate:
-            raise RuntimeError("No immediate clusters configured")
+            available = [c['edge_name'] for c in cfg.immediate_clusters]
+            raise RuntimeError(
+                f"No immediate cluster is connected "
+                f"(configured: {available}, online: {edges})"
+            )
 
         # Phase 1: Data acquisition
         self._update_state('data_acquisition', 'Fetching sensor data from CSPOT...')
@@ -848,7 +850,7 @@ class XGFabricSession(PluginSession):
         psij: Any = await asyncio.to_thread(ec.get_plugin, 'psij')
 
         pilot_spec = {
-            "executable": "radical-edge-service.py",
+            "executable": "radical-edge-service.sh",
             "arguments": ["--url", bridge_url, "--name", cluster['child_edge_name']],
             "attributes": {
                 "queue_name": cluster.get('queue', 'regular'),
