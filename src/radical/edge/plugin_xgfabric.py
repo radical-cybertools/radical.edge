@@ -860,7 +860,7 @@ class XGFabricSession(PluginSession):
 
         pilot_spec = {
             "executable": "radical-edge-service.sh",
-            "arguments": ["--url", bridge_url, "--name", cluster['child_edge_name']],
+            "arguments": ["--url", bridge_url, "--name", cluster['edge_name'] + ".1"],
             "attributes": {
                 "queue_name": cluster.get('queue', 'regular'),
                 "account": cluster.get('account', ''),
