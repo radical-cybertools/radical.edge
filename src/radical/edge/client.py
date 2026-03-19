@@ -97,6 +97,17 @@ from typing import Any, Dict, List, Optional, Callable, Tuple
 
 from .plugin_base import Plugin
 
+
+def _raise(resp, context: str = '') -> None:
+    """Raise RuntimeError with HTTP status, optional context, and server detail."""
+    if resp.is_error:
+        try:   detail = str(resp.json().get('detail') or '')
+        except Exception: detail = resp.text or ''
+        parts = [f"HTTP {resp.status_code}"]
+        if context: parts.append(context)
+        if detail:  parts.append(detail)
+        raise RuntimeError(' — '.join(parts))
+
 # Disable SSL warnings for localhost/self-signed certs primarily used in dev
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -319,7 +330,7 @@ class BridgeClient:
         List all connected edges and their plugins.
         """
         resp = self._http.post("/edge/list")
-        resp.raise_for_status()
+        _raise(resp)
 
         data = resp.json().get('data', {})
         edges = data.get('edges', {})
@@ -357,7 +368,7 @@ class EdgeClient:
              "queue_info": {"enabled": False, ...}}
         """
         resp = self._bc._http.post("/edge/list")
-        resp.raise_for_status()
+        _raise(resp)
         data  = resp.json().get('data', {})
         edges = data.get('edges', {})
         edge_data = edges.get(self._edge_id, {})
@@ -373,7 +384,7 @@ class EdgeClient:
 
         # 1. Discover plugin namespace from Bridge
         resp = self.http.post("/edge/list")
-        resp.raise_for_status()
+        _raise(resp)
         data = resp.json().get('data', {})
         edges = data.get('edges', {})
         edge_data = edges.get(self._edge_id)
@@ -473,6 +484,10 @@ class PluginClient:
         """Construct full URL for a path."""
         return f"{self._base_url}/{path.lstrip('/')}"
 
+    def _raise(self, resp, context: str = '') -> None:
+        """Raise RuntimeError with HTTP status, optional context, and server detail."""
+        _raise(resp, context)
+
     def register_session(self, **kwargs: Any) -> None:
         """
         Register a session with the plugin.
@@ -481,7 +496,7 @@ class PluginClient:
         arguments (e.g. ``backends``).
         """
         resp = self._http.post(self._url("register_session"))
-        resp.raise_for_status()
+        self._raise(resp)
         self._sid = resp.json()['sid']
 
     def unregister_session(self) -> None:
@@ -490,7 +505,7 @@ class PluginClient:
         """
         if self._sid:
             resp = self._http.post(self._url(f"unregister_session/{self._sid}"))
-            resp.raise_for_status()
+            self._raise(resp)
             self._sid = None
 
     def close(self) -> None:

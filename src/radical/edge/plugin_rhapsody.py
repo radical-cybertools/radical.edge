@@ -254,7 +254,7 @@ class RhapsodyClient(PluginClient):
         if backends:
             payload['backends'] = backends
         resp = self._http.post(self._url('register_session'), json=payload)
-        resp.raise_for_status()
+        self._raise(resp)
         self._sid = resp.json()['sid']
 
     def submit_tasks(self, task_dicts: list[dict]) -> list[dict]:
@@ -272,7 +272,8 @@ class RhapsodyClient(PluginClient):
 
         url = self._url(f"submit/{self.sid}")
         resp = self._http.post(url, json={"tasks": task_dicts})
-        resp.raise_for_status()
+        exes = [t.get('executable', '?') for t in task_dicts[:3]]
+        self._raise(resp, f"submit {len(task_dicts)} task(s): {exes}")
         return resp.json()
 
     def wait_tasks(self, uids: list[str],
@@ -295,7 +296,7 @@ class RhapsodyClient(PluginClient):
         if timeout is not None:
             payload["timeout"] = timeout
         resp = self._http.post(url, json=payload)
-        resp.raise_for_status()
+        self._raise(resp, f"wait {len(uids)} task(s)")
         return resp.json()
 
     def get_task(self, uid: str) -> dict:
@@ -307,7 +308,7 @@ class RhapsodyClient(PluginClient):
 
         url = self._url(f"task/{self.sid}/{uid}")
         resp = self._http.get(url)
-        resp.raise_for_status()
+        self._raise(resp)
         return resp.json()
 
     def cancel_task(self, uid: str) -> dict:
@@ -319,7 +320,7 @@ class RhapsodyClient(PluginClient):
 
         url = self._url(f"cancel/{self.sid}/{uid}")
         resp = self._http.post(url)
-        resp.raise_for_status()
+        self._raise(resp)
         return resp.json()
 
     def get_statistics(self) -> dict:
@@ -331,7 +332,7 @@ class RhapsodyClient(PluginClient):
 
         url = self._url(f"statistics/{self.sid}")
         resp = self._http.get(url)
-        resp.raise_for_status()
+        self._raise(resp)
         return resp.json()
 
 

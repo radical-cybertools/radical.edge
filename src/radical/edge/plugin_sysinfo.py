@@ -520,7 +520,7 @@ class SysInfoClient(PluginClient):
 
         url = self._url(f"metrics/{self.sid}")
         resp = self._http.get(url)
-        resp.raise_for_status()
+        self._raise(resp)
         return resp.json()
 
 

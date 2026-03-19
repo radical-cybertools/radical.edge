@@ -121,7 +121,7 @@ class LucidClient(PluginClient):
 
         url = self._url(f"pilot_submit/{self.sid}")
         resp = self._http.post(url, json={'description': description})
-        resp.raise_for_status()
+        self._raise(resp)
         return resp.json()
 
     def task_submit(self, description: dict) -> dict:
@@ -133,7 +133,7 @@ class LucidClient(PluginClient):
 
         url = self._url(f"task_submit/{self.sid}")
         resp = self._http.post(url, json={'description': description})
-        resp.raise_for_status()
+        self._raise(resp)
         return resp.json()
 
     def task_wait(self, tid: str) -> dict:
@@ -145,7 +145,7 @@ class LucidClient(PluginClient):
 
         url = self._url(f"task_wait/{self.sid}/{tid}")
         resp = self._http.get(url)
-        resp.raise_for_status()
+        self._raise(resp)
         return resp.json()
 
 

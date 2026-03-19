@@ -3,7 +3,7 @@
   "description"       : "Default XGFabric configuration",
   "local_workspace"   : "/tmp/xgfabric_workspace",
   "cspot_woof_url"    : "woof://128.111.45.61/davisstations/daviscupsout",
-  "cspot_limit"       : 72,
+  "cspot_limit"       : 9,
   "num_simulations"   : 16,
   "batch_size"        : 4,
   "train_models"      : ["pcr", "pinn", "fno"],

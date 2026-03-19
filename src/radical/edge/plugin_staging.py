@@ -231,7 +231,7 @@ class StagingClient(PluginClient):
         if resp.status_code == 409:
             raise FileExistsError(resp.json().get('detail', 'Target exists'))
 
-        resp.raise_for_status()
+        self._raise(resp, f"staging put {src!r} -> {tgt!r}")
         return resp.json()
 
     def get(self, src: str, tgt: str) -> dict:
@@ -264,7 +264,7 @@ class StagingClient(PluginClient):
         if resp.status_code == 404:
             raise FileNotFoundError(resp.json().get('detail', 'File not found'))
 
-        resp.raise_for_status()
+        self._raise(resp, f"staging get {src!r} -> {tgt!r}")
         data = resp.json()
 
         # Create parent directories for local target
@@ -314,7 +314,7 @@ class StagingClient(PluginClient):
                 raise NotADirectoryError(detail)
             raise ValueError(detail)
 
-        resp.raise_for_status()
+        self._raise(resp, f"staging list {path!r}")
         return resp.json()
 
 

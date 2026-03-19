@@ -126,7 +126,7 @@ class QueueInfoClient(PluginClient):
         if user:
             params["user"] = user
         resp = self._http.get(url, params=params)
-        resp.raise_for_status()
+        self._raise(resp)
         return resp.json()
 
     def list_jobs(self, queue: str, user: str = None, force: bool = False) -> dict:
@@ -151,7 +151,7 @@ class QueueInfoClient(PluginClient):
         if user:
             params["user"] = user
         resp = self._http.get(url, params=params)
-        resp.raise_for_status()
+        self._raise(resp)
         return resp.json()
 
     def list_allocations(self, user: str = None, force: bool = False) -> dict:
@@ -166,7 +166,7 @@ class QueueInfoClient(PluginClient):
         if user:
             params["user"] = user
         resp = self._http.get(url, params=params)
-        resp.raise_for_status()
+        self._raise(resp)
         return resp.json()
 
 

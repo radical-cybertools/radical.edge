@@ -1136,68 +1136,68 @@ class XGFabricClient(PluginClient):
     def get_workdir(self) -> Dict:
         """Get current working directory."""
         resp = self._http.get(self._url(f"workdir/{self.sid}"))
-        resp.raise_for_status()
+        self._raise(resp)
         return resp.json()
 
     def set_workdir(self, path: str) -> Dict:
         """Set working directory."""
         resp = self._http.post(self._url(f"workdir/{self.sid}"), json={'path': path})
-        resp.raise_for_status()
+        self._raise(resp)
         return resp.json()
 
     def list_configs(self) -> List[Dict]:
         """List all saved configurations."""
         resp = self._http.get(self._url(f"configs/{self.sid}"))
-        resp.raise_for_status()
+        self._raise(resp)
         return resp.json()
 
     def load_config(self, name: str) -> Dict:
         """Load a configuration by name."""
         resp = self._http.get(self._url(f"config/{self.sid}/{name}"))
-        resp.raise_for_status()
+        self._raise(resp)
         return resp.json()
 
     def save_config(self, config: Dict) -> Dict:
         """Save a configuration."""
         resp = self._http.post(self._url(f"config/{self.sid}"), json=config)
-        resp.raise_for_status()
+        self._raise(resp)
         return resp.json()
 
     def delete_config(self, name: str) -> Dict:
         """Delete a configuration."""
         resp = self._http.post(self._url(f"config/{self.sid}/{name}/delete"))
-        resp.raise_for_status()
+        self._raise(resp)
         return resp.json()
 
     def get_default_config(self) -> Dict:
         """Get default configuration template."""
         resp = self._http.get(self._url(f"config/{self.sid}/default"))
-        resp.raise_for_status()
+        self._raise(resp)
         return resp.json()
 
     def get_test_config(self) -> Dict:
         """Get test configuration template (stub tasks, no CSPOT required)."""
         resp = self._http.get(self._url(f"config/{self.sid}/test"))
-        resp.raise_for_status()
+        self._raise(resp)
         return resp.json()
 
     def get_status(self) -> Dict:
         """Get current workflow status."""
         resp = self._http.get(self._url(f"status/{self.sid}"))
-        resp.raise_for_status()
+        self._raise(resp)
         return resp.json()
 
     def start_workflow(self, config_name: Optional[str] = None) -> Dict:
         """Start workflow execution."""
         payload = {'config_name': config_name} if config_name else {}
         resp = self._http.post(self._url(f"start/{self.sid}"), json=payload)
-        resp.raise_for_status()
+        self._raise(resp)
         return resp.json()
 
     def stop_workflow(self) -> Dict:
         """Stop running workflow."""
         resp = self._http.post(self._url(f"stop/{self.sid}"))
-        resp.raise_for_status()
+        self._raise(resp)
         return resp.json()
 
 

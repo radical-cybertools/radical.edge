@@ -8,16 +8,16 @@
   "mock_sensor_data"  : true,
   "simulation_task"   : {
     "executable" : "bash",
-    "arguments"  : ["-c", "sleep 3 && echo '1 2 3 4'"]
+    "arguments"  : ["-c", "sleep 3 && echo '1 2 3 4' && false"]
   },
   "training_tasks"    : {
     "pcr" : {
       "executable" : "bash",
-      "arguments"  : ["-c", "sleep 1 && echo 'training done'"]
+      "arguments"  : ["-c", "sleep 1 && echo 'training done' && false"]
     }
   },
   "evaluation_task"   : {
     "executable" : "bash",
-    "arguments"  : ["-c", "sleep 1 && echo 'evaluation done'"]
+    "arguments"  : ["-c", "sleep 1 && echo 'evaluation done' && false"]
   }
 }

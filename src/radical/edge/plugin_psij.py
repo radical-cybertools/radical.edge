@@ -318,7 +318,7 @@ class PSIJClient(PluginClient):
         payload = {"job_spec": job_spec, "executor": executor}
 
         resp = self._http.post(url, json=payload)
-        resp.raise_for_status()
+        self._raise(resp, f"psij submit {job_spec.get('executable','?')!r} on {executor!r}")
         return resp.json()
 
     def get_job_status(self, job_id: str) -> Dict[str, Any]:
@@ -337,7 +337,7 @@ class PSIJClient(PluginClient):
         url = self._url(f"status/{self.sid}/{job_id}")
 
         resp = self._http.get(url)
-        resp.raise_for_status()
+        self._raise(resp, f"job status {job_id!r}")
         return resp.json()
 
     def cancel_job(self, job_id: str) -> Dict[str, Any]:
@@ -356,7 +356,7 @@ class PSIJClient(PluginClient):
         url = self._url(f"cancel/{self.sid}/{job_id}")
 
         resp = self._http.post(url)
-        resp.raise_for_status()
+        self._raise(resp, f"cancel job {job_id!r}")
         return resp.json()
 
 
