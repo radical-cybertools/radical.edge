@@ -561,24 +561,21 @@ class XGFabricSession(PluginSession):
         from .client import BridgeClient
         self._bc = BridgeClient(url=bridge_url, cert=bridge_cert)
 
-        # Select clusters from those currently connected — skip any that are offline
+        # Discover which clusters are connected right now (always live, ignores config)
         self._update_state('verifying', 'Verifying edges...')
-        edges = await asyncio.to_thread(self._bc.list_edges)
-        log.info("[XGFabric] _execute_workflow: bridge reports edges=%s", edges)
-
-        immediate = next(
-            (c for c in cfg.immediate_clusters if c['edge_name'] in edges), None)
-        allocate = next(
-            (c for c in cfg.allocate_clusters  if c['edge_name'] in edges), None)
-
+        immediate_list, allocate_list = await self._get_connected_edges()
         log.info("[XGFabric] _execute_workflow: immediate=%s  allocate=%s",
-                 immediate and immediate['name'], allocate and allocate['name'])
+                 [c['name'] for c in immediate_list],
+                 [c['name'] for c in allocate_list])
+
+        immediate = immediate_list[0] if immediate_list else None
+        allocate  = allocate_list[0]  if allocate_list  else None
 
         if not immediate:
-            available = [c['edge_name'] for c in cfg.immediate_clusters]
             raise RuntimeError(
                 f"No immediate cluster is connected "
-                f"(configured: {available}, online: {edges})"
+                f"(online immediate: {[c['edge_name'] for c in immediate_list]}, "
+                f"online allocate: {[c['edge_name'] for c in allocate_list]})"
             )
 
         # Phase 1: Data acquisition
