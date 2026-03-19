@@ -3,6 +3,7 @@
   "description"       : "Test configuration — stub tasks, no CSPOT required",
   "local_workspace"   : "/tmp/xgfabric_workspace",
   "num_simulations"   : 4,
+  "cspot_limit"       : 9,
   "batch_size"        : 2,
   "train_models"      : ["pcr"],
   "mock_sensor_data"  : true,

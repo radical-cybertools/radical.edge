@@ -71,7 +71,7 @@ class WorkflowConfig:
 
     # CSPOT
     cspot_woof_url: str = "woof://128.111.45.61/davisstations/daviscupsout"
-    cspot_limit: int = 72
+    cspot_limit: int = 10
 
     # Workflow
     num_simulations: int = 16
