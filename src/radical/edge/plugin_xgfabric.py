@@ -396,39 +396,47 @@ class XGFabricSession(PluginSession):
             return {'name': edge_name, 'edge_name': edge_name,
                     'has_gpu': False, 'online': True, 'tasks_running': 0}
 
-        # Use cached edges if available (populated by topology updates)
-        if self._connected_edges:
-            log.info("[XGFabric] _get_connected_edges: using cached topology (%d edges)",
-                     len(self._connected_edges))
+        async def _classify(edges_info: Dict) -> tuple[List[Dict], List[Dict]]:
+            """Classify edges_info dict into (immediate, allocate)."""
             immediate, allocate = [], []
-            for edge_name, edge_info in self._connected_edges.items():
+            for edge_name, edge_info in edges_info.items():
                 plugins = edge_info.get('plugins', [])
-                log.info("[XGFabric]   edge=%s  plugins=%s", edge_name, plugins)
-                # FIXME: hardcoded exception — ucsb edges are always immediate
+                # ucsb edges are always immediate (no batch scheduler available)
                 if 'ucsb' in edge_name:
-                    log.info("[XGFabric]   -> immediate (ucsb hardcode)")
+                    log.info("[XGFabric]   %s -> immediate (ucsb)", edge_name)
                     immediate.append(_cluster(edge_name))
                 elif 'queue_info' in plugins and await self._is_enabled(edge_name):
-                    log.info("[XGFabric]   -> allocate (has scheduler)")
+                    log.info("[XGFabric]   %s -> allocate (queue_info enabled)", edge_name)
                     allocate.append(_cluster(edge_name))
                 else:
-                    log.info("[XGFabric]   -> immediate")
+                    log.info("[XGFabric]   %s -> immediate (no scheduler)", edge_name)
                     immediate.append(_cluster(edge_name))
             return immediate, allocate
 
-        # Fallback: query bridge directly (no plugin info available)
-        log.info("[XGFabric] _get_connected_edges: no cached topology — falling back to bridge query "
+        # Use cached topology if available (populated by on_topology_change)
+        if self._connected_edges:
+            log.info("[XGFabric] _get_connected_edges: using cached topology (%d edges)",
+                     len(self._connected_edges))
+            return await _classify(self._connected_edges)
+
+        # Fallback: query bridge for full plugin info and classify the same way
+        log.info("[XGFabric] _get_connected_edges: no cached topology — querying bridge "
                  "(bridge_url=%s)", self._bridge_url)
         if not self._bridge_url:
             return [], []
 
         try:
-            from .client import BridgeClient
-            bc = BridgeClient(url=self._bridge_url, cert=self._bridge_cert)
-            edges = bc.list_edges()
-            bc.close()
-            log.info("[XGFabric] _get_connected_edges: bridge returned %d edges: %s", len(edges), edges)
-            return [_cluster(e) for e in edges], []
+            import httpx
+            verify: Any = self._bridge_cert if self._bridge_cert else False
+            resp = await asyncio.to_thread(
+                lambda: httpx.post(f"{self._bridge_url.rstrip('/')}/edge/list",
+                                   verify=verify, timeout=5))
+            data       = resp.json().get('data', {})
+            edges_info = {name: {'plugins': list(info.get('plugins', {}).keys())}
+                          for name, info in data.get('edges', {}).items()}
+            log.info("[XGFabric] _get_connected_edges: bridge returned %d edges: %s",
+                     len(edges_info), list(edges_info.keys()))
+            return await _classify(edges_info)
 
         except Exception as e:
             log.info("[XGFabric] _get_connected_edges: bridge query failed — %s", e)
