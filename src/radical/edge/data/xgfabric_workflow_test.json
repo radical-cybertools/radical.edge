@@ -1,6 +1,6 @@
 {
   "name"              : "test",
-  "description"       : "Test configuration — stub tasks, no CSPOT required",
+  "description"       : "Test workflow — stub tasks, no CSPOT required",
   "local_workspace"   : "/tmp/xgfabric_workspace",
   "num_simulations"   : 4,
   "cspot_limit"       : 9,
@@ -20,21 +20,5 @@
   "evaluation_task"   : {
     "executable" : "bash",
     "arguments"  : ["-c", "sleep 1 && echo 'evaluation done' && false"]
-  },
-  "cluster_configs"   : {
-    "anvil"    : {
-      "queue"   : "wholenode",
-      "account" : "myproject",
-      "duration": 3600,
-      "nodes"   : 1,
-      "executor": "slurm"
-    },
-    "frontier" : {
-      "queue"   : "batch",
-      "account" : "myproject",
-      "duration": 3600,
-      "nodes"   : 1,
-      "executor": "slurm"
-    }
   }
 }

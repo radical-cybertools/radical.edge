@@ -37,34 +37,29 @@ log = logging.getLogger("radical.edge")
 # -----------------------------------------------------------------------------
 
 @dataclass
-class ClusterConfig:
-    """Configuration for a single cluster/edge."""
-    name: str
-    edge_name: str
-    cluster_type: str = 'immediate'  # 'immediate' or 'allocate'
-    has_gpu: bool = False
-    queue: str = 'regular'
-    account: str = ''
-    duration: int = 3600
-    nodes: int = 1
-    executor: str = 'slurm'
-    child_edge_name: Optional[str] = None
-    workflow_path: str = '~/xgfabric/intheloop'
+class ResourceConfig:
+    """Resource configuration — bridge connection and per-cluster scheduler settings."""
+    name: str = "default"
+    bridge_url: str = "https://localhost:8000"
+    bridge_cert: Optional[str] = None
+    # Per-edge overrides used when submitting pilots via psij.
+    # Keys are edge names; values are dicts with any of:
+    #   queue, account, duration, nodes, executor, workflow_path, custom_attributes
+    cluster_configs: Dict[str, Dict] = field(default_factory=dict)
+
+
+def dict_to_resource_config(d: Dict) -> 'ResourceConfig':
+    """Convert dict to ResourceConfig, ignoring unknown fields."""
+    import dataclasses
+    valid = {f.name for f in dataclasses.fields(ResourceConfig)}
+    return ResourceConfig(**{k: v for k, v in d.items() if k in valid})
 
 
 @dataclass
 class WorkflowConfig:
-    """Complete workflow configuration."""
+    """Workflow configuration — task templates and execution parameters."""
     name: str = "default"
     description: str = ""
-
-    # Bridge connection
-    bridge_url: str = "https://localhost:8000"
-    bridge_cert: Optional[str] = None
-
-    # Clusters
-    immediate_clusters: List[Dict] = field(default_factory=list)
-    allocate_clusters: List[Dict] = field(default_factory=list)
 
     # Paths
     local_workspace: str = "/tmp/xgfabric_workspace"
@@ -78,7 +73,7 @@ class WorkflowConfig:
     batch_size: int = 4
     train_models: List[str] = field(default_factory=lambda: ["pcr", "pinn", "fno"])
 
-    # Task templates (optional — defaults to hardcoded behaviour if absent)
+    # Task templates
     # Simulation task: {workflow_path}, {sim_output_dir}, {wind_speed}, {sim_id}, {wind_dir}
     simulation_task: Optional[Dict] = None
     # Training tasks: model-name → task spec; placeholders: {workflow_path},
@@ -89,11 +84,6 @@ class WorkflowConfig:
 
     # Test/debug: skip CSPOT and generate synthetic sensor data
     mock_sensor_data: bool = False
-
-    # Per-edge resource overrides used when submitting pilots via psij.
-    # Keys are edge names; values are dicts with any of:
-    #   queue, account, duration, nodes, executor, custom_attributes
-    cluster_configs: Dict[str, Dict] = field(default_factory=dict)
 
 
 def config_to_dict(cfg: WorkflowConfig) -> Dict:
@@ -186,6 +176,7 @@ class XGFabricSession(PluginSession):
         self._bridge_cert = bridge_cert
         self._connected_edges: Dict[str, Any] = {}  # Cached connected edges
         self._current_config: Optional[WorkflowConfig] = None
+        self._current_resource_config: Optional[ResourceConfig] = None
         self._state = WorkflowState()
         self._workflow_task: Optional[asyncio.Task] = None
         self._cancel_requested = False
@@ -284,66 +275,12 @@ class XGFabricSession(PluginSession):
             return json.load(f)
 
     async def get_default_config(self) -> Dict:
-        """Get the default configuration template (loaded from xgfabric_default.json)."""
-        cfg = self._load_builtin_config('xgfabric_default.json')
-
-        # Inject runtime-dynamic values
-        cfg['bridge_url']  = self._bridge_url  or 'https://localhost:8000'
-        cfg['bridge_cert'] = self._bridge_cert
-
-        if os.environ.get('XGFABRIC_DEBUG'):
-            debug_workflow = os.path.join(os.getcwd(), 'xgfabric', 'intheloop')
-            cfg['name']        = 'debug'
-            cfg['description'] = 'Local debug configuration'
-            cfg['immediate_clusters'] = [{
-                'name':         self._edge_name,
-                'edge_name':    self._edge_name,
-                'cluster_type': 'immediate',
-                'has_gpu':      False,
-                'workflow_path': debug_workflow,
-            }]
-            cfg['allocate_clusters'] = [{
-                'name':             f'{self._edge_name}_gpu',
-                'edge_name':        self._edge_name,
-                'cluster_type':     'allocate',
-                'has_gpu':          True,
-                'queue':            'debug',
-                'account':          'test',
-                'duration':         600,
-                'nodes':            1,
-                'executor':         'local',
-                'child_edge_name':  f'{self._edge_name}.1',
-                'workflow_path':    debug_workflow,
-            }]
-        else:
-            cfg['immediate_clusters'] = [{
-                'name':         self._edge_name,
-                'edge_name':    self._edge_name,
-                'cluster_type': 'immediate',
-                'has_gpu':      False,
-                'workflow_path': '~/xgfabric/intheloop',
-            }]
-            cfg['allocate_clusters'] = []
-
-        return cfg
+        """Get the default workflow configuration template."""
+        return self._load_builtin_config('xgfabric_workflow_default.json')
 
     async def get_test_config(self) -> Dict:
-        """Get the test configuration template (loaded from xgfabric_test.json)."""
-        cfg = self._load_builtin_config('xgfabric_test.json')
-
-        # Inject runtime-dynamic values
-        cfg['bridge_url']  = self._bridge_url  or 'https://localhost:8000'
-        cfg['bridge_cert'] = self._bridge_cert
-        cfg['immediate_clusters'] = [{
-            'name':         self._edge_name,
-            'edge_name':    self._edge_name,
-            'cluster_type': 'immediate',
-            'has_gpu':      False,
-            'workflow_path': '/tmp/xgfabric_test',
-        }]
-        cfg['allocate_clusters'] = []
-
-        return cfg
+        """Get the test workflow configuration template (stub tasks, no CSPOT required)."""
+        return self._load_builtin_config('xgfabric_workflow_test.json')
 
     # -------------------------------------------------------------------------
     # Workflow Control
@@ -397,12 +334,12 @@ class XGFabricSession(PluginSession):
         Edges with the queue_info plugin AND a working scheduler go into
         allocate_clusters; all others go into immediate_clusters.
         """
-        cfg = self._current_config
+        rc = self._current_resource_config
         def _cluster(edge_name: str) -> Dict:
             base = {'name': edge_name, 'edge_name': edge_name,
                     'has_gpu': False, 'online': True, 'tasks_running': 0}
-            if cfg:
-                base.update(cfg.cluster_configs.get(edge_name, {}))
+            if rc:
+                base.update(rc.cluster_configs.get(edge_name, {}))
             return base
 
         async def _classify(edges_info: Dict) -> tuple[List[Dict], List[Dict]]:
@@ -451,36 +388,22 @@ class XGFabricSession(PluginSession):
             log.info("[XGFabric] _get_connected_edges: bridge query failed — %s", e)
             return [], []
 
-    async def start_workflow(self, config_name: Optional[str] = None) -> Dict:
+    async def start_workflow(self, workflow: str = '__default__',
+                             resource: str = '__default__') -> Dict:
         """Start workflow execution."""
-        log.info("[XGFabric] start_workflow: config_name=%s  status=%s", config_name, self._state.status)
+        log.info("[XGFabric] start_workflow: workflow=%s  resource=%s  status=%s",
+                 workflow, resource, self._state.status)
         if self._state.status == 'running':
             raise HTTPException(status_code=409, detail="Workflow already running")
 
-        # Load config if name provided
-        if config_name == '__default__':
-            # Use built-in default config
-            default_dict = await self.get_default_config()
-            self._current_config = dict_to_config(default_dict)
-        elif config_name == '__test__':
-            # Use built-in test config (fast stub tasks, no CSPOT)
-            test_dict = await self.get_test_config()
-            self._current_config = dict_to_config(test_dict)
-        elif config_name:
-            await self.load_config(config_name)
-        elif not self._current_config:
-            raise HTTPException(status_code=400,
-                                detail="No config loaded. Load or save a config first.")
+        # Load workflow config
+        self._current_config = dict_to_config(await self._load_named_config(workflow, 'workflow'))
 
-        assert self._current_config is not None  # guaranteed by checks above
-        # Reset state with config info, preserving cluster lists populated by get_status()
+        # Load resource config
+        self._current_resource_config = dict_to_resource_config(
+            await self._load_named_config(resource, 'resource'))
+
         cfg = self._current_config
-        log.info("[XGFabric] start_workflow: preserving immediate=%s  allocate=%s",
-                 [c['name'] for c in self._state.immediate_clusters],
-                 [c['name'] for c in self._state.allocate_clusters])
-        log.info("[XGFabric] start_workflow: cfg.immediate=%s  cfg.allocate=%s",
-                 [c['name'] for c in cfg.immediate_clusters],
-                 [c['name'] for c in cfg.allocate_clusters])
         self._state = WorkflowState(
             status='running',
             phase='initializing',
@@ -498,6 +421,33 @@ class XGFabricSession(PluginSession):
         self._workflow_task = asyncio.create_task(self._run_workflow())
 
         return {'status': 'started', 'config': cfg.name}
+
+    async def _load_named_config(self, name: str, kind: str) -> Dict:
+        """Load a workflow or resource config by name or path.
+
+        Special names ``__default__`` and ``__test__`` load the corresponding
+        built-in JSON files; otherwise the name is treated as a file path or a
+        name relative to the config directory.
+        """
+        builtin_map = {
+            ('workflow', '__default__'): 'xgfabric_workflow_default.json',
+            ('workflow', '__test__'):    'xgfabric_workflow_test.json',
+            ('resource', '__default__'): 'xgfabric_resource_default.json',
+            ('resource', '__test__'):    'xgfabric_resource_test.json',
+        }
+        filename = builtin_map.get((kind, name))
+        if filename:
+            return self._load_builtin_config(filename)
+
+        p = Path(name)
+        config_file = (p if p.suffix else p.with_suffix('.json')) \
+            if (p.is_absolute() or p.exists()) \
+            else self._config_dir / (name if name.endswith('.json') else f'{name}.json')
+        if not config_file.exists():
+            raise HTTPException(status_code=404,
+                                detail=f"{kind.capitalize()} config '{name}' not found")
+        with open(config_file) as f:
+            return json.load(f)
 
     async def stop_workflow(self) -> Dict:
         """Stop running workflow."""
@@ -550,20 +500,14 @@ class XGFabricSession(PluginSession):
         assert self._current_config is not None
         cfg = self._current_config
 
-        log.info("[XGFabric] _execute_workflow: starting — "
-                 "cfg.bridge_url=%s  session.bridge_url=%s",
-                 cfg.bridge_url, self._bridge_url)
-        log.info("[XGFabric] _execute_workflow: cfg.immediate_clusters=%s",
-                 cfg.immediate_clusters)
-        log.info("[XGFabric] _execute_workflow: cfg.allocate_clusters=%s",
-                 cfg.allocate_clusters)
+        rc = self._current_resource_config
+        log.info("[XGFabric] _execute_workflow: starting — session.bridge_url=%s",
+                 self._bridge_url)
 
-        # Initialize bridge client
-        # Always prefer the live bridge URL from the session (i.e. the URL this
-        # edge is actually connected to) over whatever was baked into the config
-        # at save time — the saved URL may be stale (e.g. localhost vs public IP).
-        bridge_url  = self._bridge_url  or cfg.bridge_url
-        bridge_cert = self._bridge_cert or cfg.bridge_cert
+        # Always prefer the live bridge URL from the session over the resource config —
+        # the saved URL may be stale (e.g. localhost vs public IP).
+        bridge_url  = self._bridge_url  or (rc.bridge_url  if rc else 'https://localhost:8000')
+        bridge_cert = self._bridge_cert or (rc.bridge_cert if rc else None)
         log.info("[XGFabric] _execute_workflow: effective bridge_url=%s  cert=%s",
                  bridge_url, bridge_cert)
         self._update_state('connecting', 'Connecting to bridge...')
@@ -596,7 +540,7 @@ class XGFabricSession(PluginSession):
         # Phase 2: Submit pilot (async)
         if allocate:
             self._update_state('pilot_submit', f"Submitting pilot job to {allocate['name']}...")
-            pilot_id = await self._submit_pilot(allocate, cfg.bridge_url)
+            pilot_id = await self._submit_pilot(allocate, bridge_url)
             self._state.pilot_jobs[allocate['name']] = pilot_id
 
         # Phase 3: Stage data and run simulations
@@ -646,41 +590,6 @@ class XGFabricSession(PluginSession):
         self._state.log.insert(0, entry)
         if len(self._state.log) > 50:
             self._state.log = self._state.log[:50]
-
-    def _update_cluster_status(self):
-        """Update cluster status from current config and bridge."""
-        if not self._current_config:
-            return
-
-        cfg = self._current_config
-        online_edges = self._bc.list_edges() if self._bc else []
-
-        # Update immediate clusters
-        self._state.immediate_clusters = []
-        for c in cfg.immediate_clusters:
-            edge_name = c.get('child_edge_name') or c['edge_name']
-            self._state.immediate_clusters.append({
-                'name': c['name'],
-                'edge_name': c['edge_name'],
-                'has_gpu': c.get('has_gpu', False),
-                'online': edge_name in online_edges,
-                'tasks_running': 0,
-            })
-
-        # Update allocate clusters
-        self._state.allocate_clusters = []
-        for c in cfg.allocate_clusters:
-            child_edge = c.get('child_edge_name')
-            pilot_id = self._state.pilot_jobs.get(c['name']) if hasattr(self._state, 'pilot_jobs') else None
-            self._state.allocate_clusters.append({
-                'name': c['name'],
-                'edge_name': c['edge_name'],
-                'child_edge_name': child_edge,
-                'has_gpu': c.get('has_gpu', False),
-                'online': child_edge in online_edges if child_edge else False,
-                'pilot_job_id': pilot_id,
-                'pilot_status': 'pending' if pilot_id else None,
-            })
 
     def _notify_state(self):
         """Send state notification via SSE."""
@@ -1121,7 +1030,9 @@ class XGFabricSession(PluginSession):
                 cfg = self._current_config
                 assert cfg is not None
                 assert self._bc is not None
-                for c in cfg.immediate_clusters + cfg.allocate_clusters:
+                all_clusters = (self._state.immediate_clusters
+                               + self._state.allocate_clusters)
+                for c in all_clusters:
                     if c.get('name') == cluster_name:
                         ec   = self._bc.get_edge_client(c['edge_name'])
                         psij = await asyncio.to_thread(ec.get_plugin, 'psij')
@@ -1205,10 +1116,11 @@ class XGFabricClient(PluginClient):
         self._raise(resp)
         return resp.json()
 
-    def start_workflow(self, config_name: Optional[str] = None) -> Dict:
+    def start_workflow(self, workflow: str = '__default__',
+                       resource: str = '__default__') -> Dict:
         """Start workflow execution."""
-        payload = {'config_name': config_name} if config_name else {}
-        resp = self._http.post(self._url(f"start/{self.sid}"), json=payload)
+        resp = self._http.post(self._url(f"start/{self.sid}"),
+                               json={'workflow': workflow, 'resource': resource})
         self._raise(resp)
         return resp.json()
 
@@ -1351,8 +1263,11 @@ class PluginXGFabric(Plugin):
     async def start_workflow(self, request: Request) -> JSONResponse:
         sid = request.path_params['sid']
         data = await request.json()
-        config_name = data.get('config_name')
-        return await self._forward(sid, XGFabricSession.start_workflow, config_name=config_name)
+        # Accept both new-style {workflow, resource} and legacy {config_name} from explorer
+        workflow = data.get('workflow') or data.get('config_name') or '__default__'
+        resource = data.get('resource', '__default__')
+        return await self._forward(sid, XGFabricSession.start_workflow,
+                                   workflow=workflow, resource=resource)
 
     async def stop_workflow(self, request: Request) -> JSONResponse:
         sid = request.path_params['sid']

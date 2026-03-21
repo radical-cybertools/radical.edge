@@ -10,7 +10,7 @@ Usage:
 
 Examples:
     python examples/xgfabric.py --bridge-url https://bridge:8000 --edge thinkie
-    python examples/xgfabric.py --config myconfig
+    python examples/xgfabric.py -w myworkflow -r myresource
     RADICAL_BRIDGE_URL=https://bridge:8000 python examples/xgfabric.py
 """
 
@@ -80,19 +80,26 @@ def main():
         description="Run an XGFabric workflow end-to-end and stream progress.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
-    parser.add_argument('--bridge-url', default=os.environ.get('RADICAL_BRIDGE_URL',
+    parser.add_argument('-u', '--bridge-url',
+                        default=os.environ.get('RADICAL_BRIDGE_URL',
                         'https://localhost:8000'), help='Bridge URL')
-    parser.add_argument('--bridge-cert', default=os.environ.get('RADICAL_BRIDGE_CERT'),
+    parser.add_argument('-c', '--bridge-cert',
+                        default=os.environ.get('RADICAL_BRIDGE_CERT'),
                         help='Path to bridge CA certificate')
-    parser.add_argument('--edge',   default='local',
+    parser.add_argument('-e', '--edge',     default='local',
                         help='Edge name where xgfabric plugin is running')
-    parser.add_argument('--config', default='__default__',
-                        help='Config name to use (__default__ = built-in template)')
+    parser.add_argument('-w', '--workflow', default='__default__',
+                        help='Workflow config name or path (__default__ = built-in)')
+    parser.add_argument('-r', '--resource', default='__default__',
+                        help='Resource config name or path (__default__ = built-in)')
     args = parser.parse_args()
+
+    print(args)
 
     bc  = BridgeClient(url=args.bridge_url, cert=args.bridge_cert)
     ec  = bc.get_edge_client(args.edge)
     xgf = ec.get_plugin('xgfabric')
+
 
     done   = threading.Event()
     failed = threading.Event()
@@ -113,7 +120,7 @@ def main():
     try:
         # Show initial cluster/config state before starting
         print(f"Connecting to bridge: {args.bridge_url}")
-        print(f"Edge: {args.edge}  Config: {args.config}")
+        print(f"Edge: {args.edge}  Workflow: {args.workflow}  Resource: {args.resource}")
         _print_status(xgf.get_status())
 
         # Register for topology and workflow notifications
@@ -121,8 +128,8 @@ def main():
         xgf.register_notification_callback(on_status, topic='workflow_status')
 
         # Start the workflow
-        print(f"\nStarting workflow ({args.config})...")
-        result = xgf.start_workflow(args.config)
+        print(f"\nStarting workflow (workflow={args.workflow}, resource={args.resource})...")
+        result = xgf.start_workflow(args.workflow, args.resource)
         print(f"Started: {result}")
 
         # Wait for completion driven by SSE notifications

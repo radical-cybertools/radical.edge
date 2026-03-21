@@ -1,0 +1,20 @@
+{
+  "name"            : "test",
+  "bridge_url"      : "https://localhost:8000",
+  "cluster_configs" : {
+    "anvil"    : {
+      "queue"   : "wholenode",
+      "account" : "dmr140125",
+      "duration": 600,
+      "nodes"   : 1,
+      "executor": "slurm"
+    },
+    "frontier" : {
+      "queue"   : "batch",
+      "account" : "fs183",
+      "duration": 600,
+      "nodes"   : 1,
+      "executor": "slurm"
+    }
+  }
+}

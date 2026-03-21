@@ -1,6 +1,6 @@
 {
   "name"              : "default",
-  "description"       : "Default XGFabric configuration",
+  "description"       : "Default XGFabric workflow configuration",
   "local_workspace"   : "/tmp/xgfabric_workspace",
   "cspot_woof_url"    : "woof://128.111.45.61/davisstations/daviscupsout",
   "cspot_limit"       : 9,
