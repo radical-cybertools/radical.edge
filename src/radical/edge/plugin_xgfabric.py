@@ -600,15 +600,28 @@ class XGFabricSession(PluginSession):
         self._add_log(message)
         self._notify_state()
 
-    def _add_log(self, message: str):
+    def _add_log(self, message: str, level: str = 'info'):
         """Add entry to execution log (most recent first, max 50 entries)."""
         entry = {
-            'time': datetime.now(timezone.utc).strftime('%H:%M:%S'),
-            'message': message
+            'time':    datetime.now(timezone.utc).strftime('%H:%M:%S'),
+            'level':   level,
+            'message': message,
         }
         self._state.log.insert(0, entry)
         if len(self._state.log) > 50:
             self._state.log = self._state.log[:50]
+
+    def _log_task_error(self, label: str, t: dict):
+        """Log a task failure immediately and notify clients."""
+        exit_code = t.get('exit_code')
+        stderr    = (t.get('stderr') or '').strip()
+        state     = t.get('state', '?')
+        msg = f"FAILED {label}: state={state} exit={exit_code}"
+        if stderr:
+            msg += f" | {stderr[:200]}"
+        log.warning("[XGFabric] %s", msg)
+        self._add_log(msg, level='error')
+        self._notify_state()
 
     def _notify_state(self):
         """Send state notification via SSE."""
@@ -943,20 +956,23 @@ class XGFabricSession(PluginSession):
                         continue  # still running — will be included in next poll
 
                     pending.discard(uid)
-                    if 'COMPLETED' in state:
+                    exit_code = t.get('exit_code')
+                    task_ok   = 'COMPLETED' in state and exit_code in (None, 0)
+                    if task_ok:
                         completed_results.append(uid_to_result[uid])
                     else:
-                        log.warning("[XGFabric] Task %s: state=%s", uid, state)
+                        self._log_task_error(f"sim {uid}", t)
 
                     self._state.completed_simulations += 1
-                    self._notify_state()
+                    if task_ok:
+                        self._notify_state()
 
             if abort_for_pilot:
                 break
 
         if not completed_results:
-            log.warning("[XGFabric] No simulations completed successfully "
-                        "(%d total submitted)", len(tasks))
+            raise RuntimeError(
+                f"All {len(tasks)} simulations failed — cannot proceed to training")
 
         return completed_results
 
@@ -1009,7 +1025,12 @@ class XGFabricSession(PluginSession):
 
             task = self._render_task(cfg.training_tasks[model], model=model, **subs)
             submitted = await asyncio.to_thread(rhapsody.submit_tasks, [task])
-            await asyncio.to_thread(rhapsody.wait_tasks, [submitted[0]['uid']])
+            results = await asyncio.to_thread(rhapsody.wait_tasks, [submitted[0]['uid']])
+            t = results[0] if results else {}
+            if t.get('exit_code') not in (None, 0) or \
+                    str(t.get('state', '')).upper() != 'COMPLETED':
+                self._log_task_error(f"training/{model}", t)
+                raise RuntimeError(f"Training {model} failed (exit={t.get('exit_code')})")
 
     # -------------------------------------------------------------------------
     # Evaluation
@@ -1034,7 +1055,12 @@ class XGFabricSession(PluginSession):
                                  eval_output=eval_output)
         self._update_state('evaluation', 'Computing metrics...', 90)
         submitted = await asyncio.to_thread(rhapsody.submit_tasks, [task])
-        await asyncio.to_thread(rhapsody.wait_tasks, [submitted[0]['uid']])
+        results   = await asyncio.to_thread(rhapsody.wait_tasks, [submitted[0]['uid']])
+        t = results[0] if results else {}
+        if t.get('exit_code') not in (None, 0) or \
+                str(t.get('state', '')).upper() != 'COMPLETED':
+            self._log_task_error("evaluation", t)
+            raise RuntimeError(f"Evaluation failed (exit={t.get('exit_code')})")
 
     # -------------------------------------------------------------------------
     # Cleanup

@@ -20,7 +20,6 @@
     },
     "ucsb": {
       "workflow_path": "~/xgfabric/intheloop"
-    },
-    ...
+    }
   }
 }

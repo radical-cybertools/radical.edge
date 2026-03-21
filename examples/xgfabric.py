@@ -101,20 +101,29 @@ def main():
     xgf = ec.get_plugin('xgfabric')
 
 
-    done   = threading.Event()
-    failed = threading.Event()
+    done      = threading.Event()
+    last_data = {}
+    seen_logs = set()   # timestamps of log entries already printed
 
     def on_topology(edges):
         ts = time.strftime('%H:%M:%S')
         print(f"[{ts}] topology: {list(edges.keys())}", flush=True)
 
     def on_status(edge, plugin, topic, data):
+        last_data.update(data)
+
+        # Print any new error log entries immediately
+        for entry in data.get('log', []):
+            key = (entry.get('time'), entry.get('message'))
+            if entry.get('level') == 'error' and key not in seen_logs:
+                seen_logs.add(key)
+                print(f"  [{entry['time']}] TASK FAILED: {entry['message']}",
+                      flush=True)
+
         _print_status(data)
+
         st = data.get('status')
-        if st == 'completed':
-            done.set()
-        elif st == 'failed':
-            failed.set()
+        if st in ('completed', 'failed'):
             done.set()
 
     try:
@@ -137,8 +146,10 @@ def main():
         while not done.wait(timeout=5):
             pass  # SSE callbacks drive the display; timeout is just a safety net
 
-        if failed.is_set():
-            print("\nWorkflow FAILED.", file=sys.stderr)
+        final_status = last_data.get('status')
+        final_error  = last_data.get('error', '')
+        if final_status == 'failed':
+            print(f"\nWorkflow FAILED: {final_error}", file=sys.stderr)
             sys.exit(1)
         else:
             print("\nWorkflow completed successfully.")
