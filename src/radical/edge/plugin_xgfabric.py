@@ -613,14 +613,26 @@ class XGFabricSession(PluginSession):
         if len(self._state.log) > 50:
             self._state.log = self._state.log[:50]
 
-    def _log_task_error(self, label: str, t: dict):
+    def _log_task_error(self, label: str, t: dict, task_spec: Optional[Dict] = None):
         """Log a task failure immediately and notify clients."""
-        exit_code = t.get('exit_code')
-        stderr    = (t.get('stderr') or '').strip()
         state     = t.get('state', '?')
+        exit_code = t.get('exit_code')
+        exception = (t.get('exception') or '').strip()
+        stdout    = (t.get('stdout')    or '').strip()
+        stderr    = (t.get('stderr')    or '').strip()
+
         msg = f"FAILED {label}: state={state} exit={exit_code}"
+        if task_spec:
+            cmd = task_spec.get('executable', '')
+            args = ' '.join(str(a) for a in task_spec.get('arguments', []))
+            msg += f" | cmd: {cmd} {args}"[:120]
+        if exception:
+            msg += f" | exception: {exception[:200]}"
         if stderr:
-            msg += f" | {stderr[:200]}"
+            msg += f" | stderr: {stderr[:200]}"
+        if stdout and not stderr:
+            msg += f" | stdout: {stdout[:200]}"
+
         log.warning("[XGFabric] %s", msg)
         self._add_log(msg, level='error')
         self._notify_state()
@@ -960,11 +972,14 @@ class XGFabricSession(PluginSession):
 
                     pending.discard(uid)
                     exit_code = t.get('exit_code')
-                    task_ok   = 'COMPLETED' in state and exit_code in (None, 0)
+                    task_ok   = (state == 'COMPLETED') and exit_code in (None, 0)
                     if task_ok:
                         completed_results.append(uid_to_result[uid])
                     else:
-                        self._log_task_error(f"sim {uid}", t)
+                        j = next((idx for idx, sub in enumerate(submitted)
+                                  if sub.get('uid') == uid), None)
+                        spec = batch[j] if j is not None else None
+                        self._log_task_error(f"sim {uid}", t, spec)
 
                     self._state.completed_simulations += 1
                     if task_ok:
@@ -1033,7 +1048,7 @@ class XGFabricSession(PluginSession):
             t = results[0] if results else {}
             if t.get('exit_code') not in (None, 0) or \
                     str(t.get('state', '')).upper() != 'COMPLETED':
-                self._log_task_error(f"training/{model}", t)
+                self._log_task_error(f"training/{model}", t, task)
                 raise RuntimeError(f"Training {model} failed (exit={t.get('exit_code')})")
 
     # -------------------------------------------------------------------------
@@ -1063,7 +1078,7 @@ class XGFabricSession(PluginSession):
         t = results[0] if results else {}
         if t.get('exit_code') not in (None, 0) or \
                 str(t.get('state', '')).upper() != 'COMPLETED':
-            self._log_task_error("evaluation", t)
+            self._log_task_error("evaluation", t, task)
             raise RuntimeError(f"Evaluation failed (exit={t.get('exit_code')})")
 
     # -------------------------------------------------------------------------
