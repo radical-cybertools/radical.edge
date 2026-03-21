@@ -182,15 +182,20 @@ async function loadQueueJobs(api, sid, queue, btn) {
     if (!jobs.length) {
       body = `<p style="color:var(--muted)">No jobs in <strong>${queue}</strong>.</p>`;
     } else {
+      const CANCELLABLE = new Set(['RUNNING', 'PENDING', 'CONFIGURING', 'SUSPENDED']);
+
       let html = `<table>
         <thead><tr>
-          <th>Job ID</th><th>Name</th><th>User</th><th>State</th><th>Nodes</th><th>Time Used</th>
+          <th>Job ID</th><th>Name</th><th>User</th><th>State</th><th>Nodes</th><th>Time Used</th><th></th>
         </tr></thead><tbody>`;
 
       for (const j of jobs) {
         const jobId = j.job_id || j.id || '-';
         const st = j.state || j.job_state || '-';
         const badge = { 'RUNNING': 'badge-green', 'PENDING': 'badge-orange', 'COMPLETED': 'badge-blue', 'FAILED': 'badge-red' }[st] || 'badge-gray';
+        const cancelBtn = CANCELLABLE.has(st)
+          ? `<button class="btn btn-danger btn-sm cancel-job-btn" data-job-id="${jobId}" title="Cancel job ${jobId}">✕</button>`
+          : '';
         html += `<tr class="job-row" data-job-id="${jobId}">
           <td><strong>${jobId}</strong></td>
           <td>${j.job_name || j.name || '-'}</td>
@@ -198,6 +203,7 @@ async function loadQueueJobs(api, sid, queue, btn) {
           <td><span class="badge ${badge}">${st}</span></td>
           <td>${j.nodes || j.num_nodes || '-'}</td>
           <td>${formatDuration(j.time_used)}</td>
+          <td>${cancelBtn}</td>
         </tr>`;
       }
       html += '</tbody></table>';
@@ -209,9 +215,30 @@ async function loadQueueJobs(api, sid, queue, btn) {
 
     // Bind job row clicks
     document.querySelectorAll('.job-row').forEach(row => {
-      row.addEventListener('click', () => {
+      row.addEventListener('click', (e) => {
+        if (e.target.closest('.cancel-job-btn')) return;
         const jobId = row.dataset.jobId;
         showJobDetail(jobId);
+      });
+    });
+
+    // Bind cancel buttons
+    document.querySelectorAll('.cancel-job-btn').forEach(cancelBtn => {
+      cancelBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const jobId = cancelBtn.dataset.jobId;
+        cancelBtn.disabled = true;
+        cancelBtn.textContent = '…';
+        try {
+          await api.fetch(`cancel/${sid}/${encodeURIComponent(jobId)}`, { method: 'POST' });
+          api.flash(`Job ${jobId} canceled`);
+          cancelBtn.closest('tr').querySelector('.badge').textContent = 'CANCELED';
+          cancelBtn.remove();
+        } catch (err) {
+          api.flash('Cancel failed: ' + err.message, false);
+          cancelBtn.disabled = false;
+          cancelBtn.textContent = '✕';
+        }
       });
     });
 

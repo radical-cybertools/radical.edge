@@ -185,6 +185,8 @@ class XGFabricSession(PluginSession):
         self._bc = None
         # Cache of resolved home dirs per edge (populated on first use)
         self._homedir_cache: Dict[str, str] = {}
+        # Active rhapsody client + pending task UIDs for the current batch (for cleanup)
+        self._pending_tasks: Optional[tuple] = None  # (rhapsody_client, set[uid])
 
     async def _resolve_path(self, edge_name: str, path: str) -> str:
         """Expand a leading '~' to the home directory on the remote edge."""
@@ -926,6 +928,7 @@ class XGFabricSession(PluginSession):
                 uid_to_result[uid] = f"{sim_output_dir}/sim_{sim_idx}_ws_{ws}_wd_{wd}.csv"
 
             pending = set(uid_to_result)
+            self._pending_tasks = (rhapsody, pending)
 
             while pending:
                 if self._cancel_requested:
@@ -967,6 +970,7 @@ class XGFabricSession(PluginSession):
                     if task_ok:
                         self._notify_state()
 
+            self._pending_tasks = None
             if abort_for_pilot:
                 break
 
@@ -1068,6 +1072,17 @@ class XGFabricSession(PluginSession):
 
     async def _cleanup_on_failure(self):
         """Clean up resources on failure."""
+        # Cancel any pending rhapsody tasks from the current batch
+        if self._pending_tasks:
+            rhapsody, pending = self._pending_tasks
+            self._pending_tasks = None
+            for uid in list(pending):
+                try:
+                    await asyncio.to_thread(rhapsody.cancel_task, uid)
+                    log.info("[XGFabric] Cancelled task %s", uid)
+                except Exception as e:
+                    log.warning("[XGFabric] Failed to cancel task %s: %s", uid, e)
+
         # Cancel pilot jobs
         for cluster_name, pilot_id in self._state.pilot_jobs.items():
             try:

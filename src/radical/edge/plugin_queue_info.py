@@ -84,6 +84,18 @@ class QueueInfoSession(PluginSession):
         return await asyncio.to_thread(self._backend.list_jobs,
                                       queue, user, force)
 
+    async def cancel_job(self, job_id: str) -> dict:
+        """Cancel a job via scancel."""
+        self._check_active()
+        import subprocess
+        result = subprocess.run(['scancel', str(job_id)],
+                                capture_output=True, text=True, timeout=10)
+        if result.returncode != 0:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=500,
+                                detail=f"scancel failed: {result.stderr.strip()}")
+        return {'job_id': job_id, 'status': 'canceled'}
+
     async def list_allocations(self, user=None, force=False):
         """
         List allocations/projects.
@@ -152,6 +164,14 @@ class QueueInfoClient(PluginClient):
             params["user"] = user
         resp = self._http.get(url, params=params)
         self._raise(resp)
+        return resp.json()
+
+    def cancel_job(self, job_id: str) -> dict:
+        """Cancel a job by ID."""
+        if not self.sid:
+            raise RuntimeError("No active session")
+        resp = self._http.post(self._url(f"cancel/{self.sid}/{job_id}"))
+        self._raise(resp, f"cancel job {job_id!r}")
         return resp.json()
 
     def list_allocations(self, user: str = None, force: bool = False) -> dict:
@@ -229,6 +249,7 @@ class PluginQueueInfo(Plugin):
         self.add_route_get('get_info/{sid}', self.get_info)
         self.add_route_get('list_jobs/{sid}/{queue}', self.list_jobs)
         self.add_route_get('list_allocations/{sid}', self.list_allocations)
+        self.add_route_post('cancel/{sid}/{job_id}', self.cancel_job)
 
         self._log_routes()
 
@@ -287,4 +308,10 @@ class PluginQueueInfo(Plugin):
 
         return await self._forward(sid, QueueInfoSession.list_allocations,
                                    user=user, force=force)
+
+    async def cancel_job(self, request: Request) -> JSONResponse:
+        """Cancel a job by ID."""
+        sid    = request.path_params['sid']
+        job_id = request.path_params['job_id']
+        return await self._forward(sid, QueueInfoSession.cancel_job, job_id=job_id)
 

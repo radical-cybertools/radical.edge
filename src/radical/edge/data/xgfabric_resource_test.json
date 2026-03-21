@@ -12,7 +12,7 @@
     },
     "frontier" : {
       "queue"   : "batch",
-      "account" : "fs183",
+      "account" : "fus183",
       "duration": 600,
       "nodes"   : 1,
       "executor": "slurm",
