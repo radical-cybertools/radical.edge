@@ -7,14 +7,20 @@
       "account" : "dmr140125",
       "duration": 600,
       "nodes"   : 1,
-      "executor": "slurm"
+      "executor": "slurm",
+      "workflow_path": "~/xgfabric/intheloop"
     },
     "frontier" : {
       "queue"   : "batch",
       "account" : "fs183",
       "duration": 600,
       "nodes"   : 1,
-      "executor": "slurm"
-    }
+      "executor": "slurm",
+      "workflow_path": "~/xgfabric/intheloop"
+    },
+    "ucsb": {
+      "workflow_path": "~/xgfabric/intheloop"
+    },
+    ...
   }
 }

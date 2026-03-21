@@ -562,7 +562,8 @@ class PluginSysInfo(Plugin):
         self._provider.start_prefetch()
 
         # Register routes
-        self.add_route_get('metrics/{sid}', self.get_metrics_endpoint)
+        self.add_route_get('homedir',        self.homedir_endpoint)
+        self.add_route_get('metrics/{sid}',  self.get_metrics_endpoint)
 
         self._log_routes()
 
@@ -571,6 +572,10 @@ class PluginSysInfo(Plugin):
         Custom session creation to pass the provider.
         """
         return SysInfoSession(sid, self._provider)
+
+    async def homedir_endpoint(self, request: Request) -> JSONResponse:
+        """Return the home directory of the edge-side process."""
+        return JSONResponse({'homedir': os.path.expanduser('~')})
 
     async def get_metrics_endpoint(self, request: Request) -> JSONResponse:
         """

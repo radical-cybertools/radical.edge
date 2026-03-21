@@ -183,6 +183,25 @@ class XGFabricSession(PluginSession):
 
         # Bridge client for communicating with other edges
         self._bc = None
+        # Cache of resolved home dirs per edge (populated on first use)
+        self._homedir_cache: Dict[str, str] = {}
+
+    async def _resolve_path(self, edge_name: str, path: str) -> str:
+        """Expand a leading '~' to the home directory on the remote edge."""
+        if not path.startswith('~'):
+            return path
+        if edge_name not in self._homedir_cache:
+            url = f"{self._bridge_url.rstrip('/')}/{edge_name}/sysinfo/homedir"
+            try:
+                import httpx
+                verify: Any = self._bridge_cert if self._bridge_cert else False
+                resp = await asyncio.to_thread(
+                    lambda: httpx.get(url, verify=verify, timeout=5))
+                self._homedir_cache[edge_name] = resp.json().get('homedir', '~')
+            except Exception as e:
+                log.warning("[XGFabric] _resolve_path(%s): failed — %s", edge_name, e)
+                return path
+        return path.replace('~', self._homedir_cache[edge_name], 1)
 
     def update_connected_edges(self, edges: Dict[str, Any]):
         """Update the cached list of connected edges."""
@@ -797,7 +816,7 @@ class XGFabricSession(PluginSession):
     async def _stage_sensor_data(self, cluster: Dict, sensor_csv: Path):
         """Stage sensor data to cluster."""
         staging = await asyncio.to_thread(self._get_plugin, cluster, 'staging')
-        workflow_path = os.path.expanduser(cluster['workflow_path'])
+        workflow_path = await self._resolve_path(cluster['edge_name'], cluster['workflow_path'])
         remote_path = f"{workflow_path}/data/sensor_out.csv"
         await asyncio.to_thread(staging.put, str(sensor_csv), remote_path, overwrite=True)
 
@@ -812,7 +831,7 @@ class XGFabricSession(PluginSession):
 
         staging_dir = Path(self._current_config.local_workspace) / "staging"
         staging_dir.mkdir(parents=True, exist_ok=True)
-        dest_workflow = os.path.expanduser(dest['workflow_path'])
+        dest_workflow = await self._resolve_path(dest['edge_name'], dest['workflow_path'])
 
         for i, remote_path in enumerate(sim_results):
             if self._cancel_requested:
@@ -845,7 +864,7 @@ class XGFabricSession(PluginSession):
         assert cfg is not None
         params = self._generate_sim_params(sensor_csv, cfg.num_simulations)
 
-        workflow_path  = os.path.expanduser(cluster['workflow_path'])
+        workflow_path  = await self._resolve_path(cluster['edge_name'], cluster['workflow_path'])
         sim_output_dir = f"{workflow_path}/simulations"
         rhapsody       = await asyncio.to_thread(self._get_plugin, cluster, 'rhapsody')
 
@@ -967,7 +986,7 @@ class XGFabricSession(PluginSession):
         """Run ML training on cluster."""
         cfg = self._current_config
         assert cfg is not None
-        workflow_path = os.path.expanduser(cluster['workflow_path'])
+        workflow_path = await self._resolve_path(cluster['edge_name'], cluster['workflow_path'])
         sensor_dir = f"{workflow_path}/data"
         sim_dir = f"{workflow_path}/simulations"
         output_dir = f"{workflow_path}/models"
@@ -1001,7 +1020,7 @@ class XGFabricSession(PluginSession):
         assert self._current_config is not None
         cfg = self._current_config
 
-        workflow_path = os.path.expanduser(cluster['workflow_path'])
+        workflow_path = await self._resolve_path(cluster['edge_name'], cluster['workflow_path'])
         sensor_file = f"{workflow_path}/data/sensor_out.csv"
         eval_output = f"{workflow_path}/evaluation"
         rhapsody = await asyncio.to_thread(self._get_plugin, cluster, 'rhapsody')
