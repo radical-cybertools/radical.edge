@@ -635,6 +635,7 @@ class XGFabricSession(PluginSession):
 
         log.warning("[XGFabric] %s", msg)
         self._add_log(msg, level='error')
+        self._state.error = msg
         self._notify_state()
 
     def _notify_state(self):
