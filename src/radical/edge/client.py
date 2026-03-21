@@ -485,8 +485,9 @@ class PluginClient:
         return f"{self._base_url}/{path.lstrip('/')}"
 
     def _raise(self, resp, context: str = '') -> None:
-        """Raise RuntimeError with HTTP status, optional context, and server detail."""
-        _raise(resp, context)
+        """Raise RuntimeError with HTTP status, origin, optional context, and server detail."""
+        origin = '/'.join(filter(None, [self._edge_id, self._plugin_name]))
+        _raise(resp, f"[{origin}] {context}" if context else f"[{origin}]")
 
     def register_session(self, **kwargs: Any) -> None:
         """
