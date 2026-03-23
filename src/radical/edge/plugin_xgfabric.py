@@ -1287,7 +1287,7 @@ class PluginXGFabric(Plugin):
         self._connected_edges = edges
 
         for name in curr - prev:
-            plugins = list(edges[name].get('plugins', {}).keys())
+            plugins = list(edges[name].get('plugins', []))
             log.info("[XGFabric] Edge connected: %s  plugins=%s", name, plugins)
         for name in prev - curr:
             log.info("[XGFabric] Edge disconnected: %s", name)
