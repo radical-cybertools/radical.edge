@@ -2203,14 +2203,16 @@
 
         // Try to load plugin module first
         module = await loadPlugin(pluginName);
-        if (module && module.template) {
+        const api = createPluginAPI(edgeName, pluginName);
+        const tmpl = module && module.template && module.template();
+        if (tmpl) {
           // Create page from module template
           page = document.createElement('div');
           page.className = 'page';
           page.id = 'page-' + pid;
           page.dataset.edgeName = edgeName;
           page.dataset.pluginName = pluginName;
-          page.innerHTML = module.template();
+          page.innerHTML = tmpl;
 
           // Set edge label
           const edgeLabel = page.querySelector('.edge-label');
@@ -2218,13 +2220,9 @@
 
           document.querySelector('main').appendChild(page);
 
-          // Initialize plugin
-          const api = createPluginAPI(edgeName, pluginName);
           if (module.init) {
             module.init(page, api);
           }
-
-          pluginPageModules[pid] = { module, api };
         }
 
         // Fall back to ui_config dynamic rendering
@@ -2244,6 +2242,9 @@
           flash(`No UI template for plugin: ${pluginName}`, false);
           return;
         }
+
+        // Register module for notification routing regardless of page type
+        if (module) pluginPageModules[pid] = { module, api };
 
         activeDynamicPages[pid] = page;
       }
@@ -2273,12 +2274,14 @@
       const pid = `${edgeName}__${plugin}`;
       const pageModule = pluginPageModules[pid];
       if (pageModule && pageModule.module.onNotification) {
+        const idField = pageModule.module.notificationConfig?.idField || 'uid';
+        const taskId = d[idField] || '';
+        // Store for race-condition replay (task completes before DOM entry created)
+        if (taskId) pendingNotifications[`${edgeName}/${plugin}/${taskId}`] = data;
         const page = activeDynamicPages[pid];
         if (page) {
           pageModule.module.onNotification(data, page, pageModule.api);
           // Also update task registry for sidebar
-          const idField = pageModule.module.notificationConfig?.idField || 'uid';
-          const taskId = d[idField] || '';
           const state = d.state || '?';
           if (taskId) updateTaskState(edgeName, plugin, taskId, state);
         }
@@ -2348,9 +2351,17 @@
       document.getElementById('jobs-overlay').classList.remove('visible');
     }
 
-    // Plugin modules handle their own notification state via onNotification
     function processPendingNotification(edgeName, pluginName, taskId) {
-      // No-op: notification state is now managed by plugin modules
+      const key = `${edgeName}/${pluginName}/${taskId}`;
+      const pending = pendingNotifications[key];
+      if (!pending) return;
+      delete pendingNotifications[key];
+      const pid = `${edgeName}__${pluginName}`;
+      const pageModule = pluginPageModules[pid];
+      if (pageModule && pageModule.module.onNotification) {
+        const page = activeDynamicPages[pid];
+        if (page) pageModule.module.onNotification(pending, page, pageModule.api);
+      }
     }
 
     // Keyboard handler for overlay (Escape to close)

@@ -580,10 +580,38 @@ async def root():
     return Response(content="edge_explorer.html not found", status_code=404)
 
 
+# Cache mapping plugin_name -> absolute JS path (or None if not found).
+# Populated lazily on first miss; None means "looked, not found".
+_plugin_ui_module_cache: Dict[str, str] = {}
+
+
+def _build_ui_module_cache() -> None:
+    """Scan installed radical.edge.plugins entry points for ui_module paths."""
+    try:
+        from importlib.metadata import entry_points
+        eps = entry_points(group='radical.edge.plugins')
+        for ep in eps:
+            if ep.name in _plugin_ui_module_cache:
+                continue
+            try:
+                cls = ep.load()
+                path = getattr(cls, 'ui_module', None)
+                if path and os.path.exists(path):
+                    _plugin_ui_module_cache[ep.name] = path
+                    log.info("[Bridge] UI module for plugin '%s': %s", ep.name, path)
+                else:
+                    log.warning("[Bridge] Plugin '%s' has no UI module (ui_module=%s)",
+                                ep.name, path)
+            except Exception as e:
+                log.warning("[Bridge] Could not load entry point '%s': %s", ep.name, e)
+    except Exception as e:
+        log.debug("[Bridge] Entry point scan failed: %s", e)
+
+
 @app.get("/plugins/{filename}", tags=["UI"], include_in_schema=False)
 async def serve_plugin(filename: str):
-    """Serve plugin UI modules from the plugins directory."""
-    import os
+    """Serve plugin UI modules — first from radical.edge's own plugins dir,
+    then from paths declared via ui_module on registered plugin classes."""
     import re
 
     # Validate filename (only allow .js files with safe names)
@@ -592,31 +620,38 @@ async def serve_plugin(filename: str):
 
     plugin_path = None
 
-    # Try importlib.resources first
+    # 1. Try radical.edge's own data/plugins/ via importlib.resources
     try:
         from importlib.resources import files
         data_dir = files('radical.edge').joinpath('data').joinpath('plugins')
         candidate = data_dir.joinpath(filename)
-        if hasattr(candidate, '__fspath__'):
-            plugin_path = os.fspath(candidate)
-        else:
-            plugin_path = str(candidate)
-        if not os.path.exists(plugin_path):
-            plugin_path = None
+        candidate_path = os.fspath(candidate) if hasattr(candidate, '__fspath__') \
+                         else str(candidate)
+        if os.path.exists(candidate_path):
+            plugin_path = candidate_path
     except Exception:
         pass
 
-    # Fallback: try pkg_resources
+    # Fallback: pkg_resources
     if not plugin_path:
         try:
             import pkg_resources
-            plugin_path = pkg_resources.resource_filename(
+            candidate_path = pkg_resources.resource_filename(
                 'radical.edge', f'data/plugins/{filename}'
             )
-            if not os.path.exists(plugin_path):
-                plugin_path = None
+            if os.path.exists(candidate_path):
+                plugin_path = candidate_path
         except Exception:
             pass
+
+    # 2. Try ui_module declared on external plugin classes
+    if not plugin_path:
+        plugin_name = filename[:-3]  # strip .js
+        if plugin_name not in _plugin_ui_module_cache:
+            _build_ui_module_cache()
+        plugin_path = _plugin_ui_module_cache.get(plugin_name)
+        if not plugin_path:
+            log.warning("[Bridge] No UI module found for plugin '%s'", plugin_name)
 
     if plugin_path and os.path.exists(plugin_path):
         return FileResponse(

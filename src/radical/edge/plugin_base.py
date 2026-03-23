@@ -98,6 +98,7 @@ class Plugin(object):
     version: str = '0.0.1'
     session_ttl: int = 3600  # Default: 1 hour session timeout
     ui_config: Union[Dict, UIConfig, None] = None  # UI configuration for portal
+    ui_module: Optional[str] = None  # Absolute path to JS plugin module, or None
 
     def __init_subclass__(cls, **kwargs):
         """Auto-register subclasses that define plugin_name."""
