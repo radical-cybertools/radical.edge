@@ -207,8 +207,8 @@ class XGFabricSession(PluginSession):
 
     def update_connected_edges(self, edges: Dict[str, Any]):
         """Update the cached list of connected edges."""
-        log.info("[XGFabric] Session %s: topology update — %d edges: %s",
-                 self._sid, len(edges), list(edges.keys()))
+        log.debug("[XGFabric] Session %s: topology update — %d edges: %s",
+                  self._sid, len(edges), list(edges.keys()))
         self._connected_edges = edges
 
     # -------------------------------------------------------------------------
@@ -1282,9 +1282,15 @@ class PluginXGFabric(Plugin):
 
     async def on_topology_change(self, edges: dict):
         """Handle topology updates from the bridge."""
+        prev  = set(self._connected_edges or {})
+        curr  = set(edges)
         self._connected_edges = edges
-        log.info("[XGFabric] on_topology_change: %d edges: %s",
-                 len(edges), {k: v.get('plugins') for k, v in edges.items()})
+
+        for name in curr - prev:
+            plugins = list(edges[name].get('plugins', {}).keys())
+            log.info("[XGFabric] Edge connected: %s  plugins=%s", name, plugins)
+        for name in prev - curr:
+            log.info("[XGFabric] Edge disconnected: %s", name)
 
         # Update all active sessions and push updated cluster list to clients
         for session in self._sessions.values():

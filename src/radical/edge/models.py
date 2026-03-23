@@ -17,8 +17,8 @@ class RegisterMessage(BaseModel):
     """Edge registration message sent when connecting to the bridge."""
     type: Literal["register"] = "register"
     edge_name: str = Field(..., description="Name of the edge service")
-    plugin_name: Optional[str] = Field(None, description="Plugin name (if registering a plugin)")
-    endpoint: Dict[str, Any] = Field(default_factory=dict, description="Endpoint metadata")
+    endpoint: Dict[str, Any] = Field(default_factory=dict, description="Edge endpoint metadata")
+    plugins: Dict[str, Dict[str, Any]] = Field(default_factory=dict, description="Plugin metadata keyed by plugin name")
 
 
 class ResponseMessage(BaseModel):

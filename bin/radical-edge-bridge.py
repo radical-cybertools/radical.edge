@@ -224,51 +224,36 @@ async def register(ws: WebSocket):
 
             elif data.get("type") == "register":
                 frame_edge_name = data.get("edge_name")
-                plugin_name = data.get("plugin_name")
-                endpoint_data = data.get("endpoint", {})
 
                 if not frame_edge_name:
                     print("[Bridge] Registration missing edge_name")
                     continue
 
-                # On first registration message (edge base), set the session edge_name
-                # and store connection
-                if not edge_name:
-                    edge_name = frame_edge_name
+                if frame_edge_name in edges:
+                    print(f"[Bridge] Edge '{frame_edge_name}' already connected.")
+                    await ws.send_text(json.dumps({
+                        "type": "error",
+                        "message": f"Edge '{frame_edge_name}' already used"
+                    }))
+                    return
 
-                    # specific check: if connection exists for this name, reject
-                    if edge_name in edges:
-                        print(f"[Bridge] Edge '{edge_name}' already connected.")
-                        await ws.send_text(json.dumps({
-                            "type": "error",
-                            "message": f"Edge '{edge_name}' already used"
-                        }))
-                        return
+                edge_name = frame_edge_name
+                edges[edge_name] = ws
+                endpoints["edges"][edge_name] = {
+                    "endpoint": data.get("endpoint", {}),
+                    "plugins": {},
+                }
 
-                    edges[edge_name] = ws
-                    print(f"[Bridge] Edge '{edge_name}' registered connection")
-
-                # Verify consistent naming in session
-                if frame_edge_name != edge_name:
-                    print(f"[Bridge] Edge name mismatch: {frame_edge_name} != {edge_name}")
-                    continue
-
-                # Initialize edge in endpoints registry if new
-                if edge_name not in endpoints["edges"]:
-                    endpoints["edges"][edge_name] = {"plugins": {}}
-
-                # Register plugin
-                if plugin_name:
-                    print(f"[Bridge] Registering plugin: {plugin_name} on {edge_name}")
-                    js_content = endpoint_data.pop("ui_module", None)
+                for pname, pdata in data.get("plugins", {}).items():
+                    js_content = pdata.pop("ui_module", None)
                     if js_content:
-                        _plugin_ui_module_js[plugin_name] = js_content
+                        _plugin_ui_module_js[pname] = js_content
                         log.info("[Bridge] Cached UI module for plugin '%s' from edge '%s'",
-                                 plugin_name, edge_name)
-                    endpoints["edges"][edge_name]["plugins"][plugin_name] = endpoint_data
-                else:
-                    # Edge base endpoint (radical.edge)
-                    endpoints["edges"][edge_name]["endpoint"] = endpoint_data
+                                 pname, edge_name)
+                    endpoints["edges"][edge_name]["plugins"][pname] = pdata
+
+                plugin_names = list(endpoints["edges"][edge_name]["plugins"].keys())
+                print(f"[Bridge] Edge '{edge_name}' registered  plugins={plugin_names}")
 
                 await broadcast_event("topology", endpoints)
                 await broadcast_topology_to_edges()

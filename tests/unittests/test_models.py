@@ -19,26 +19,28 @@ class TestEdgeToBridgeMessages:
         msg = RegisterMessage(edge_name="test-edge")
         assert msg.type == "register"
         assert msg.edge_name == "test-edge"
-        assert msg.plugin_name is None
         assert msg.endpoint == {}
+        assert msg.plugins == {}
 
-    def test_register_message_with_plugin(self):
-        """Test RegisterMessage with plugin registration."""
+    def test_register_message_with_plugins(self):
+        """Test RegisterMessage with plugin data."""
         msg = RegisterMessage(
             edge_name="test-edge",
-            plugin_name="sysinfo",
-            endpoint={"namespace": "/test-edge/sysinfo"}
+            plugins={"sysinfo": {"namespace": "/test-edge/sysinfo", "version": "1.0"}}
         )
-        assert msg.plugin_name == "sysinfo"
-        assert msg.endpoint["namespace"] == "/test-edge/sysinfo"
+        assert "sysinfo" in msg.plugins
+        assert msg.plugins["sysinfo"]["namespace"] == "/test-edge/sysinfo"
 
     def test_register_message_serialization(self):
         """Test RegisterMessage JSON serialization."""
-        msg = RegisterMessage(edge_name="test-edge", plugin_name="psij")
+        msg = RegisterMessage(
+            edge_name="test-edge",
+            plugins={"psij": {"version": "0.1"}},
+        )
         data = msg.model_dump()
         assert data["type"] == "register"
         assert data["edge_name"] == "test-edge"
-        assert data["plugin_name"] == "psij"
+        assert "psij" in data["plugins"]
 
     def test_response_message(self):
         """Test ResponseMessage creation."""

@@ -287,14 +287,9 @@ class EdgeService:
                             log.info("[Edge] Connected to %s", self._bridge_url)
                             backoff = 0.5  # Reset backoff on success
 
-                            # Initial Registration using Pydantic models
+                            # Register edge + all plugins in a single message
                             async with self._send_lock:
-                                base_reg = RegisterMessage(
-                                    edge_name=self._name,
-                                    endpoint={"type": "radical.edge"}
-                                )
-                                await ws.send(base_reg.model_dump_json())
-
+                                plugins_data = {}
                                 for pname, plugin in self._plugins.items():
                                     ui_module_content = None
                                     ui_module_path = getattr(plugin.__class__, 'ui_module', None)
@@ -305,22 +300,23 @@ class EdgeService:
                                         except Exception:
                                             log.warning("[Edge] Could not read ui_module for %s: %s",
                                                         pname, ui_module_path)
+                                    plugins_data[pname] = {
+                                        "type": pname,
+                                        "namespace": f"/{self._name}{plugin.namespace}",
+                                        "version": getattr(plugin, 'version', '0.0.1'),
+                                        "enabled": plugin.is_enabled(),
+                                        "ui_config": ui_config_to_dict(
+                                            getattr(plugin, 'ui_config', None)
+                                        ),
+                                        "ui_module": ui_module_content,
+                                    }
 
-                                    plugin_reg = RegisterMessage(
-                                        edge_name=self._name,
-                                        plugin_name=pname,
-                                        endpoint={
-                                            "type": pname,
-                                            "namespace": f"/{self._name}{plugin.namespace}",
-                                            "version": getattr(plugin, 'version', '0.0.1'),
-                                            "enabled": plugin.is_enabled(),
-                                            "ui_config": ui_config_to_dict(
-                                                getattr(plugin, 'ui_config', None)
-                                            ),
-                                            "ui_module": ui_module_content,
-                                        }
-                                    )
-                                    await ws.send(plugin_reg.model_dump_json())
+                                reg = RegisterMessage(
+                                    edge_name=self._name,
+                                    endpoint={"type": "radical.edge"},
+                                    plugins=plugins_data,
+                                )
+                                await ws.send(reg.model_dump_json())
 
                             # Processing Loop
                             while not self._stop_event.is_set():
