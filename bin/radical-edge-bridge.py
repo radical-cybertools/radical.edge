@@ -261,6 +261,11 @@ async def register(ws: WebSocket):
                 if plugin_name:
                     print(f"[Bridge] Registering plugin: {plugin_name} on {edge_name}")
                     endpoints["edges"][edge_name]["plugins"][plugin_name] = endpoint_data
+                    js_content = endpoint_data.get("ui_module")
+                    if js_content and plugin_name not in _plugin_ui_module_js:
+                        _plugin_ui_module_js[plugin_name] = js_content
+                        log.info("[Bridge] Cached UI module for plugin '%s' from edge '%s'",
+                                 plugin_name, edge_name)
                 else:
                     # Edge base endpoint (radical.edge)
                     endpoints["edges"][edge_name]["endpoint"] = endpoint_data
@@ -580,32 +585,8 @@ async def root():
     return Response(content="edge_explorer.html not found", status_code=404)
 
 
-# Cache mapping plugin_name -> absolute JS path (or None if not found).
-# Populated lazily on first miss; None means "looked, not found".
-_plugin_ui_module_cache: Dict[str, str] = {}
-
-
-def _build_ui_module_cache() -> None:
-    """Scan installed radical.edge.plugins entry points for ui_module paths."""
-    try:
-        from importlib.metadata import entry_points
-        eps = entry_points(group='radical.edge.plugins')
-        for ep in eps:
-            if ep.name in _plugin_ui_module_cache:
-                continue
-            try:
-                cls = ep.load()
-                path = getattr(cls, 'ui_module', None)
-                if path and os.path.exists(path):
-                    _plugin_ui_module_cache[ep.name] = path
-                    log.info("[Bridge] UI module for plugin '%s': %s", ep.name, path)
-                else:
-                    log.warning("[Bridge] Plugin '%s' has no UI module (ui_module=%s)",
-                                ep.name, path)
-            except Exception as e:
-                log.warning("[Bridge] Could not load entry point '%s': %s", ep.name, e)
-    except Exception as e:
-        log.debug("[Bridge] Entry point scan failed: %s", e)
+# JS content pushed by edges at registration time: plugin_name -> JS string.
+_plugin_ui_module_js: Dict[str, str] = {}
 
 
 @app.get("/plugins/{filename}", tags=["UI"], include_in_schema=False)
@@ -644,14 +625,21 @@ async def serve_plugin(filename: str):
         except Exception:
             pass
 
-    # 2. Try ui_module declared on external plugin classes
+    # 2. Try JS content pushed by edges at registration time
     if not plugin_path:
         plugin_name = filename[:-3]  # strip .js
-        if plugin_name not in _plugin_ui_module_cache:
-            _build_ui_module_cache()
-        plugin_path = _plugin_ui_module_cache.get(plugin_name)
-        if not plugin_path:
-            log.warning("[Bridge] No UI module found for plugin '%s'", plugin_name)
+        js_content = _plugin_ui_module_js.get(plugin_name)
+        if js_content:
+            return Response(
+                js_content,
+                media_type="application/javascript",
+                headers={
+                    "Cache-Control": "no-cache, no-store, must-revalidate",
+                    "Pragma": "no-cache",
+                    "Expires": "0"
+                }
+            )
+        log.warning("[Bridge] No UI module found for plugin '%s'", plugin_name)
 
     if plugin_path and os.path.exists(plugin_path):
         return FileResponse(

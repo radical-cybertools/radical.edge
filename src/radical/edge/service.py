@@ -296,6 +296,16 @@ class EdgeService:
                                 await ws.send(base_reg.model_dump_json())
 
                                 for pname, plugin in self._plugins.items():
+                                    ui_module_content = None
+                                    ui_module_path = getattr(plugin.__class__, 'ui_module', None)
+                                    if ui_module_path and os.path.isfile(ui_module_path):
+                                        try:
+                                            with open(ui_module_path, encoding='utf-8') as f:
+                                                ui_module_content = f.read()
+                                        except Exception:
+                                            log.warning("[Edge] Could not read ui_module for %s: %s",
+                                                        pname, ui_module_path)
+
                                     plugin_reg = RegisterMessage(
                                         edge_name=self._name,
                                         plugin_name=pname,
@@ -306,7 +316,8 @@ class EdgeService:
                                             "enabled": plugin.is_enabled(),
                                             "ui_config": ui_config_to_dict(
                                                 getattr(plugin, 'ui_config', None)
-                                            )
+                                            ),
+                                            "ui_module": ui_module_content,
                                         }
                                     )
                                     await ws.send(plugin_reg.model_dump_json())
