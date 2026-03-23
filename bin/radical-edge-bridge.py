@@ -260,12 +260,12 @@ async def register(ws: WebSocket):
                 # Register plugin
                 if plugin_name:
                     print(f"[Bridge] Registering plugin: {plugin_name} on {edge_name}")
-                    endpoints["edges"][edge_name]["plugins"][plugin_name] = endpoint_data
-                    js_content = endpoint_data.get("ui_module")
+                    js_content = endpoint_data.pop("ui_module", None)
                     if js_content:
                         _plugin_ui_module_js[plugin_name] = js_content
                         log.info("[Bridge] Cached UI module for plugin '%s' from edge '%s'",
                                  plugin_name, edge_name)
+                    endpoints["edges"][edge_name]["plugins"][plugin_name] = endpoint_data
                 else:
                     # Edge base endpoint (radical.edge)
                     endpoints["edges"][edge_name]["endpoint"] = endpoint_data
