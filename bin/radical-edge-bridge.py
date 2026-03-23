@@ -262,7 +262,7 @@ async def register(ws: WebSocket):
                     print(f"[Bridge] Registering plugin: {plugin_name} on {edge_name}")
                     endpoints["edges"][edge_name]["plugins"][plugin_name] = endpoint_data
                     js_content = endpoint_data.get("ui_module")
-                    if js_content and plugin_name not in _plugin_ui_module_js:
+                    if js_content:
                         _plugin_ui_module_js[plugin_name] = js_content
                         log.info("[Bridge] Cached UI module for plugin '%s' from edge '%s'",
                                  plugin_name, edge_name)
