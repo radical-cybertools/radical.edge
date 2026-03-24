@@ -52,18 +52,23 @@ async def main():
     Main entry point for the standalone Radical Edge Service.
     """
     parser = argparse.ArgumentParser(description="Radical Edge Service")
-    parser.add_argument("--name", "-n", nargs="?", help="Edge name")
-    parser.add_argument("--url", "-u", nargs="?", help="Bridge URL")
+    parser.add_argument("--name",    "-n", nargs="?", help="Edge name")
+    parser.add_argument("--url",     "-u", nargs="?", help="Bridge URL")
+    parser.add_argument("--plugins", "-p", default="all",
+                        help="Comma-separated plugins to load (default: all). "
+                             "Prefix matching supported: 'sys'→sysinfo, "
+                             "'q'→queue_info, 'ro'→rose, etc.")
 
     args = parser.parse_args()
 
     edge_name = args.name
-    edge_url = args.url or os.environ.get("RADICAL_BRIDGE_URL", "https://localhost:8000")
+    edge_url  = args.url or os.environ.get("RADICAL_BRIDGE_URL", "https://localhost:8000")
+    plugins   = [t.strip() for t in args.plugins.split(',') if t.strip()]
 
     # Validate SSL certificate before connecting
     validate_ssl_cert(edge_url)
 
-    service = EdgeService(bridge_url=edge_url, name=edge_name)
+    service = EdgeService(bridge_url=edge_url, name=edge_name, plugins=plugins)
     loop = asyncio.get_running_loop()
     stop_event = asyncio.Event()
 

@@ -31,6 +31,44 @@ from radical.edge.ui_schema import ui_config_to_dict
 log = logging.getLogger("radical.edge")
 
 
+def _resolve_plugin_names(requested: list, available: list) -> list:
+    """Resolve a requested plugin list against the available plugin names.
+
+    Supports prefix matching: 'sys' matches 'sysinfo', 'q' matches 'queue_info'.
+    Exact matches take priority over prefix matches.
+
+    Args:
+        requested: List of tokens from the user, or ['all'].
+        available: Full list of registered plugin names.
+
+    Returns:
+        Ordered list of resolved plugin names.
+
+    Raises:
+        ValueError: If a token matches nothing or is ambiguous.
+    """
+    if requested == ['all']:
+        return list(available)
+
+    result = []
+    for token in requested:
+        if token in available:
+            result.append(token)
+            continue
+        matches = [p for p in available if p.startswith(token)]
+        if not matches:
+            raise ValueError(
+                f"No plugin matches '{token}'. "
+                f"Available: {', '.join(sorted(available))}"
+            )
+        if len(matches) > 1:
+            raise ValueError(
+                f"Ambiguous plugin name '{token}': matches {sorted(matches)}"
+            )
+        result.append(matches[0])
+    return result
+
+
 class EdgeService:
     """
     Embedded Radical Edge Service.
@@ -46,7 +84,8 @@ class EdgeService:
         app (FastAPI): The internal FastAPI application hosting the plugins.
     """
 
-    def __init__(self, bridge_url: Optional[str] = None, name: Optional[str] = None):
+    def __init__(self, bridge_url: Optional[str] = None, name: Optional[str] = None,
+                 plugins: Optional[list] = None):
         """
         Initialize the Edge Service.
 
@@ -64,6 +103,7 @@ class EdgeService:
 
         self._plugins: Dict[str, Plugin] = {}
         self._name: str = name or socket.gethostname()
+        self._plugin_filter: list = plugins or ['all']
         self._app.state.edge_name = self._name
         self._app.state.edge_service = self
         self._ws: Optional[websockets.WebSocketClientProtocol] = None
@@ -101,8 +141,12 @@ class EdgeService:
         except Exception:
             log.debug("[Edge] No external plugins found via entry points")
 
-        # Instantiate all registered plugins
-        for pname in Plugin.get_plugin_names():
+        # Resolve requested plugin list (supports prefix matching)
+        to_load = _resolve_plugin_names(self._plugin_filter, Plugin.get_plugin_names())
+        log.info("[Edge] Loading plugins: %s", to_load)
+
+        # Instantiate resolved plugins
+        for pname in to_load:
 
             try:
                 pclass = Plugin.get_plugin_class(pname)
