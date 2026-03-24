@@ -223,7 +223,7 @@ async function cancelTask(page, api, uid, btn) {
     api.flash(`Task ${uid.slice(0, 12)}… canceled`);
 
     // Update the state badge
-    const entry = page.querySelector(`#rh-task-${api.edgeName}-${uid}`);
+    const entry = document.getElementById(`rh-task-${api.edgeName}-${uid}`);
     if (entry) {
       const badge = entry.querySelector('.rh-task-state');
       if (badge) {
@@ -239,7 +239,7 @@ async function cancelTask(page, api, uid, btn) {
 
 function applyNotification(page, edgeName, uid, state, data) {
   const entryId = `rh-task-${edgeName}-${uid}`;
-  const entry = page.querySelector(`#${entryId}`);
+  const entry = document.getElementById(entryId);
   if (!entry) return false;
 
   const stateEl = entry.querySelector('.rh-task-state');

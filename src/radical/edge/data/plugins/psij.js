@@ -339,7 +339,7 @@ async function cancelJob(page, api, jobId, btn) {
     api.flash(`Job ${jobId.slice(0, 8)}… canceled`);
 
     // Update the state badge
-    const entry = page.querySelector(`#psij-job-${api.edgeName}-${jobId}`);
+    const entry = document.getElementById(`psij-job-${api.edgeName}-${jobId}`);
     if (entry) {
       const badge = entry.querySelector('.psij-job-state');
       if (badge) {
@@ -355,7 +355,7 @@ async function cancelJob(page, api, jobId, btn) {
 
 function applyNotification(page, edgeName, jobId, state, data) {
   const entryId = `psij-job-${edgeName}-${jobId}`;
-  const entry = page.querySelector(`#${entryId}`);
+  const entry = document.getElementById(entryId);
   if (!entry) return false;
 
   const stateEl = entry.querySelector('.psij-job-state');
