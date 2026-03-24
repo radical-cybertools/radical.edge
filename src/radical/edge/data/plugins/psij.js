@@ -319,11 +319,10 @@ async function submitJob(page, api) {
     // Check for pending notifications
     api.processPendingNotification('psij', jobId);
 
-    // Update the args field for the NEXT submission
+    // Update only --name for the NEXT submission, keep user edits
     const argsInput = page.querySelector('.p-args');
     const nextName  = getNextEdgeChildName(api.edgeName);
-    const plugins   = api.getPluginNames().join(',');
-    argsInput.value = `--url ${api.bridgeUrl} --name ${nextName} -p ${plugins}`;
+    argsInput.value = argsInput.value.replace(/--name\s+\S+/, `--name ${nextName}`);
 
   } catch (e) {
     output.innerHTML += `<span class="err">Submit error: ${api.escHtml(e.message)}</span>\n`;
