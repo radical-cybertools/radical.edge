@@ -5,7 +5,9 @@ Exposes the RHAPSODY Session/Task API so that remote clients can submit
 and monitor compute / AI tasks on edge nodes.
 '''
 
+import asyncio
 import logging
+import uuid
 
 from fastapi import FastAPI, HTTPException, Request
 from starlette.responses import JSONResponse
@@ -89,7 +91,6 @@ class RhapsodySession(PluginSession):
 
         # Start one background watcher per task so each notifies independently
         if self._notify:
-            import asyncio
             for t in tasks:
                 asyncio.ensure_future(self._watch_task(t))
 
@@ -405,8 +406,6 @@ class PluginRhapsody(Plugin):
 
         Accepts an optional JSON body with ``{"backends": ["name", ...]}``.
         """
-        import uuid as _uuid
-
         try:
             data = await request.json()
         except Exception:
@@ -415,7 +414,7 @@ class PluginRhapsody(Plugin):
         backend_names = data.get('backends')
 
         async with self._id_lock:
-            sid = f"session.{_uuid.uuid4().hex[:8]}"
+            sid = f"session.{uuid.uuid4().hex[:8]}"
 
 
         session = self._create_session(sid, backend_names=backend_names)

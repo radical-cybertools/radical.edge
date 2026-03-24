@@ -89,7 +89,7 @@ Key endpoints:
 - **rhapsody** (`plugin_rhapsody.py`) – Task execution via Rhapsody backends (local, Dragon, Flux).
 - **lucid** (`plugin_lucid.py`) – RADICAL Pilot integration.
 - **xgfabric** (`plugin_xgfabric.py`) – ExaGraph fabric operations. Classifies connected edges as `immediate_clusters` (direct execution) or `allocate_clusters` (batch submission via SLURM). An edge is classified as `allocate` only if it has the `queue_info` plugin **and** its `is_enabled` check returns `true`; otherwise it is `immediate`. Cluster lists are updated in real-time when edges connect/disconnect via `on_topology_change`.
-- **staging** (`plugin_staging.py`) – File transfer between client and edge. Supports `put(src, tgt)` to upload and `get(src, tgt)` to download files. Parent directories are created automatically (with INFO log). Never overwrites existing files.
+- **staging** (`plugin_staging.py`) – File transfer between client and edge. Supports `put(src, tgt)` to upload and `get(src, tgt)` to download files. Parent directories are created automatically (with INFO log). Existing files are protected by default (`overwrite=False`).
 
 ### WebSocket protocol
 

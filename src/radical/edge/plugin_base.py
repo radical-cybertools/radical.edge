@@ -100,6 +100,18 @@ class Plugin(object):
     ui_config: Union[Dict, UIConfig, None] = None  # UI configuration for portal
     ui_module: Optional[str] = None  # Absolute path to JS plugin module, or None
 
+    @classmethod
+    def is_enabled(cls) -> bool:
+        """
+        Return True if this plugin should be loaded and registered on this edge.
+
+        Override in subclasses to gate loading on runtime conditions (e.g.
+        presence of an external binary).  Plugins that return False are never
+        instantiated by the edge service and therefore never appear in the
+        Explorer or in /edge/list responses.
+        """
+        return True
+
     def __init_subclass__(cls, **kwargs):
         """Auto-register subclasses that define plugin_name."""
         super().__init_subclass__(**kwargs)

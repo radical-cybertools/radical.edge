@@ -1,4 +1,5 @@
 
+import getpass
 import os
 import re
 import json
@@ -91,6 +92,15 @@ class QueueInfo(ABC):
         self._cache_time : dict        = {}
         self._cache_lock : threading.Lock = threading.Lock()
 
+    @staticmethod
+    def _check_user(user):
+        """Resolve user argument: None → current user, '*' → None (all)."""
+        if user is None:
+            return getpass.getuser()
+        if user == '*':
+            return None
+        return user
+
     def start_prefetch(self):
         """
         Start a background thread to prefetch queue info and allocations.
@@ -98,8 +108,7 @@ class QueueInfo(ABC):
         This lazily fills the cache so later queries are faster.
         """
         def _prefetch():
-            import getpass
-            user = getpass.getuser()
+            user = self._check_user(None)
             try:
                 # Prefetch queue info for current user
                 self.get_info(user=user)
@@ -150,11 +159,7 @@ class QueueInfo(ABC):
         Returns:
             dict: {"queues": {<partition_name>: {...}, ...}}
         """
-        if user is None:
-            import getpass
-            user = getpass.getuser()
-        elif user == '*':
-            user = None
+        user = self._check_user(user)
 
         key = f'info:{user}'
         return self._get_cached(key, force, self._collect_info_filtered, user)
@@ -174,11 +179,7 @@ class QueueInfo(ABC):
         Returns:
             dict: {"jobs": [<job_dict>, ...]}
         """
-        if user is None:
-            import getpass
-            user = getpass.getuser()
-        elif user == '*':
-            user = None
+        user = self._check_user(user)
 
         key = f'jobs:{queue}:{user}'
         return self._get_cached(key, force, self._collect_jobs, queue, user)
@@ -190,11 +191,7 @@ class QueueInfo(ABC):
         When user=None, defaults to the current user. To return all
         rows, pass user='*'.
         """
-        if user is None:
-            import getpass
-            user = getpass.getuser()
-        elif user == '*':
-            user = None
+        user = self._check_user(user)
 
         key = f'alloc:{user}'
         return self._get_cached(key, force, self._collect_allocations, user)

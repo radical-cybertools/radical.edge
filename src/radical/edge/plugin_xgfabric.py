@@ -11,6 +11,8 @@ The plugin runs on a local edge and communicates with remote edges
 '''
 
 import asyncio
+import csv
+import dataclasses
 import json
 import logging
 import os
@@ -20,14 +22,17 @@ import subprocess
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from starlette.responses import JSONResponse
 
+import httpx
+
 from .plugin_session_base import PluginSession
 from .plugin_base import Plugin
-from .client import PluginClient
+from .client import BridgeClient, PluginClient
 
 log = logging.getLogger("radical.edge")
 
@@ -50,7 +55,6 @@ class ResourceConfig:
 
 def dict_to_resource_config(d: Dict) -> 'ResourceConfig':
     """Convert dict to ResourceConfig, ignoring unknown fields."""
-    import dataclasses
     valid = {f.name for f in dataclasses.fields(ResourceConfig)}
     return ResourceConfig(**{k: v for k, v in d.items() if k in valid})
 
@@ -93,8 +97,6 @@ def config_to_dict(cfg: WorkflowConfig) -> Dict:
 
 def dict_to_config(d: Dict) -> WorkflowConfig:
     """Convert dict to WorkflowConfig, filtering unknown fields."""
-    import dataclasses
-
     # Get valid field names from the dataclass
     valid_fields = {f.name for f in dataclasses.fields(WorkflowConfig)}
 
@@ -195,7 +197,6 @@ class XGFabricSession(PluginSession):
         if edge_name not in self._homedir_cache:
             url = f"{self._bridge_url.rstrip('/')}/{edge_name}/sysinfo/homedir"
             try:
-                import httpx
                 verify: Any = self._bridge_cert if self._bridge_cert else False
                 resp = await asyncio.to_thread(
                     lambda: httpx.get(url, verify=verify, timeout=5))
@@ -338,7 +339,6 @@ class XGFabricSession(PluginSession):
             return False
         url = self._bridge_url.rstrip('/') + f'/{edge_name}/queue_info/is_enabled'
         try:
-            import httpx
             verify: Any = self._bridge_cert if self._bridge_cert else False
             resp = await asyncio.to_thread(
                 lambda: httpx.get(url, verify=verify, timeout=5))
@@ -393,7 +393,6 @@ class XGFabricSession(PluginSession):
             return [], []
 
         try:
-            import httpx
             verify: Any = self._bridge_cert if self._bridge_cert else False
             resp = await asyncio.to_thread(
                 lambda: httpx.post(f"{self._bridge_url.rstrip('/')}/edge/list",
@@ -532,7 +531,6 @@ class XGFabricSession(PluginSession):
         log.info("[XGFabric] _execute_workflow: effective bridge_url=%s  cert=%s",
                  bridge_url, bridge_cert)
         self._update_state('connecting', 'Connecting to bridge...')
-        from .client import BridgeClient
         self._bc = BridgeClient(url=bridge_url, cert=bridge_cert)
 
         # Discover which clusters are connected right now (always live, ignores config)
@@ -687,9 +685,8 @@ class XGFabricSession(PluginSession):
 
         if cfg.mock_sensor_data:
             log.info("[XGFabric] _acquire_sensor_data: mock mode — writing synthetic CSV")
-            import csv as _csv
             with open(output_file, 'w', newline='') as f:
-                writer = _csv.DictWriter(f, fieldnames=['dt', 'windspeed', 'windavg', 'winddir'])
+                writer = csv.DictWriter(f, fieldnames=['dt', 'windspeed', 'windavg', 'winddir'])
                 writer.writeheader()
                 for i in range(max(cfg.num_simulations, 8)):
                     writer.writerow({'dt': f'2024-01-01T{i:02d}:00:00+00:00',
@@ -702,10 +699,15 @@ class XGFabricSession(PluginSession):
         # Find senspot-get
         senspot_path = self._find_senspot_get()
 
+        # Validate URL before passing to subprocess
+        parsed = urlparse(cfg.cspot_woof_url)
+        if not parsed.scheme or not parsed.netloc:
+            raise ValueError(f"invalid cspot_woof_url: {cfg.cspot_woof_url!r}")
+
         # Fetch latest sequence number
-        cmd = f"{senspot_path} -W {cfg.cspot_woof_url}"
+        cmd = [senspot_path, '-W', cfg.cspot_woof_url]
         result = await asyncio.to_thread(
-            subprocess.run, cmd, shell=True, capture_output=True, text=True, timeout=30
+            subprocess.run, cmd, capture_output=True, text=True, timeout=30
         )
         if result.returncode != 0:
             raise RuntimeError(f"senspot-get failed: {result.stderr}")
@@ -728,9 +730,9 @@ class XGFabricSession(PluginSession):
             if self._cancel_requested:
                 raise asyncio.CancelledError()
 
-            cmd = f"{senspot_path} -W {cfg.cspot_woof_url} -S {current_seq}"
+            cmd = [senspot_path, '-W', cfg.cspot_woof_url, '-S', str(current_seq)]
             result = await asyncio.to_thread(
-                subprocess.run, cmd, shell=True, capture_output=True, text=True, timeout=30
+                subprocess.run, cmd, capture_output=True, text=True, timeout=30
             )
             if result.returncode == 0:
                 output = result.stdout.strip()
@@ -1004,7 +1006,6 @@ class XGFabricSession(PluginSession):
 
     def _generate_sim_params(self, sensor_csv: Path, num_sims: int) -> List:
         """Generate simulation parameters from sensor data."""
-        import csv
         wind_speeds = []
         with open(sensor_csv, 'r') as f:
             reader = csv.DictReader(f)

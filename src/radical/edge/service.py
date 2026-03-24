@@ -150,6 +150,11 @@ class EdgeService:
 
             try:
                 pclass = Plugin.get_plugin_class(pname)
+
+                if not pclass.is_enabled():
+                    log.info("[Edge] Plugin disabled via definition: %s", pname)
+                    continue
+
                 pinstance = pclass(app=self._app)
                 self._plugins[pname] = pinstance
                 if pinstance.is_enabled():

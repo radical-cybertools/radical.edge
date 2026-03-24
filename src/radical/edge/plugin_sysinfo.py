@@ -5,14 +5,17 @@ __copyright__ = 'Copyright 2024, RADICAL@Rutgers'
 __license__   = 'MIT'
 
 
-import os
-import time
-import psutil
-import socket
-import logging
-import platform
-import subprocess
+import glob
 import json
+import logging
+import os
+import platform
+import psutil
+import re
+import socket
+import subprocess
+import threading
+import time
 
 from typing import Dict, List, Any
 
@@ -41,8 +44,6 @@ class SysInfoProvider:
 
         This lazily fills the detection cache so later queries are faster.
         """
-        import threading
-
         def _prefetch():
             try:
                 self._ensure_detected()
@@ -74,8 +75,6 @@ class SysInfoProvider:
     def _detect_disk_type(self, device: str) -> str:
         """Detect storage type (SSD/HDD) via /sys/block on Linux."""
         try:
-            import re
-
             dev_name = os.path.basename(device)
 
             # Handle different device naming patterns
@@ -183,7 +182,6 @@ class SysInfoProvider:
     def _detect_intel_gpus(self) -> List[Dict[str, Any]]:
         """Detect Intel GPUs via sysfs."""
         try:
-            import glob
             gpus = []
 
             # Intel PCI vendor ID

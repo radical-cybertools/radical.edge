@@ -77,11 +77,19 @@ The Bridge acts as a public-facing reverse proxy that:
     redoc_url="/redoc"
 )
 
+origins = [
+    "http://localhost",
+    "http://localhost:8080",
+    "https://localhost",
+    "https://localhost:8080",
+    "https://dev-1.bv-brc.org",
+]
+
 # LUCID needs that setting
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=["*"],              # or a list of URLs
+    allow_origins=origins,
     allow_methods=["*"],              # or ["GET", "POST", ...]
     allow_headers=["*"],              # or a list of headers
 )
@@ -307,12 +315,16 @@ async def register(ws: WebSocket):
             else:
                 print(f"[Bridge] Disconnected duplicate/inactive session for: {edge_name}")
 
-        # Fail any in-flight requests
+        # Fail any in-flight requests for this edge
         async with pending_lock:
-            for _, fut in list(pending.items()):
-                if not fut.done():
-                    fut.set_exception(HTTPException(503, "Edge disconnected"))
-            pending.clear()
+            to_remove = []
+            for req_id, fut in pending.items():
+                if getattr(fut, 'edge_name', None) == edge_name:
+                    if not fut.done():
+                        fut.set_exception(HTTPException(503, "Edge disconnected"))
+                    to_remove.append(req_id)
+            for req_id in to_remove:
+                del pending[req_id]
 
 
 def _strip_headers(request: Request) -> dict:
@@ -701,7 +713,8 @@ async def proxy(full_path: str, request: Request):
         "body"     : body,
     }
 
-    fut = asyncio.get_event_loop().create_future()
+    fut = asyncio.get_running_loop().create_future()
+    fut.edge_name = edge_name
     async with pending_lock:
         pending[req_id] = fut
 
@@ -714,7 +727,6 @@ async def proxy(full_path: str, request: Request):
         raise
 
     try:
-        # FIXME: how do we gracefully handle long-running requests?
         resp = await asyncio.wait_for(fut, timeout=REQUEST_TIMEOUT)
 
     except asyncio.TimeoutError as exc:
