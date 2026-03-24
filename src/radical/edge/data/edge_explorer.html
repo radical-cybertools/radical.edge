@@ -2274,10 +2274,14 @@
       const pid = `${edgeName}__${plugin}`;
       const pageModule = pluginPageModules[pid];
       if (pageModule && pageModule.module.onNotification) {
-        const idField = pageModule.module.notificationConfig?.idField || 'uid';
+        const idField       = pageModule.module.notificationConfig?.idField || 'uid';
+        const configTopic   = pageModule.module.notificationConfig?.topic;
         const taskId = d[idField] || '';
-        // Store for race-condition replay (task completes before DOM entry created)
-        if (taskId) pendingNotifications[`${edgeName}/${plugin}/${taskId}`] = data;
+        // Store for race-condition replay only for the plugin's configured topic,
+        // so transient events (e.g. task_event) don't overwrite the state notification.
+        if (taskId && (!configTopic || data.topic === configTopic)) {
+          pendingNotifications[`${edgeName}/${plugin}/${taskId}`] = data;
+        }
         const page = activeDynamicPages[pid];
         if (page) {
           pageModule.module.onNotification(data, page, pageModule.api);

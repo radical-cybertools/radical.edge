@@ -13,9 +13,7 @@ RADICAL Edge is a bridge-based distributed framework that connects external RCT 
 ## Build & Install
 
 ```sh
-pip install -e .             # editable install (preferred for development)
-# or via Makefile:
-make install                 # creates ./ve virtualenv and installs into it
+pip install .
 ```
 
 ## Running Locally
