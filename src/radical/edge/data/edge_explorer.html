@@ -1268,6 +1268,9 @@
         getQueueData: ()     => queueDataCache[edgeName],
         setQueueData: (data) => { queueDataCache[edgeName] = data; },
 
+        // Plugin list for this edge
+        getPluginNames: () => Object.keys(edgeData[edgeName]?.plugins || {}),
+
         // Edge management
         disconnectEdge: (event) => disconnectEdge(event, edgeName),
       };

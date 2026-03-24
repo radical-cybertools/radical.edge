@@ -152,7 +152,8 @@ export function init(page, api) {
   const argsInput = page.querySelector('.p-args');
   if (argsInput && !argsInput.value) {
     const nextName = getNextEdgeChildName(api.edgeName);
-    argsInput.value = `--url ${api.bridgeUrl} --name ${nextName}`;
+    const plugins  = api.getPluginNames().join(',');
+    argsInput.value = `--url ${api.bridgeUrl} --name ${nextName} -p ${plugins}`;
   }
 
   // Prefill from cached queue data if already available
@@ -320,8 +321,9 @@ async function submitJob(page, api) {
 
     // Update the args field for the NEXT submission
     const argsInput = page.querySelector('.p-args');
-    const nextName = getNextEdgeChildName(api.edgeName);
-    argsInput.value = `--url ${api.bridgeUrl} --name ${nextName}`;
+    const nextName  = getNextEdgeChildName(api.edgeName);
+    const plugins   = api.getPluginNames().join(',');
+    argsInput.value = `--url ${api.bridgeUrl} --name ${nextName} -p ${plugins}`;
 
   } catch (e) {
     output.innerHTML += `<span class="err">Submit error: ${api.escHtml(e.message)}</span>\n`;

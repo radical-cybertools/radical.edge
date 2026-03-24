@@ -73,9 +73,10 @@ def main():
 
     # Step 3: Submit sub-edge via PsiJ
     child_name = f"{parent_eid}.x"
+    plugins    = ','.join(parent.list_plugins().keys())
     job_spec = {
         "executable": "radical-edge-service.py",
-        "arguments": ["--url", bridge_url, "--name", child_name],
+        "arguments": ["--url", bridge_url, "--name", child_name, "-p", plugins],
         "attributes": {
             "queue_name": queue,
             "account": account,
