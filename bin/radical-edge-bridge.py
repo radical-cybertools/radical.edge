@@ -185,7 +185,6 @@ async def register(ws: WebSocket):
 
     await ws.accept()
     edge_name = None
-    print("[Bridge] Edge connected")
 
     # Heartbeat
     async def pinger():
@@ -239,6 +238,7 @@ async def register(ws: WebSocket):
 
                 edge_name = frame_edge_name
                 edges[edge_name] = ws
+                print(f"[Bridge] Edge '{edge_name}' connected")
                 endpoints["edges"][edge_name] = {
                     "endpoint": data.get("endpoint", {}),
                     "plugins": {},
