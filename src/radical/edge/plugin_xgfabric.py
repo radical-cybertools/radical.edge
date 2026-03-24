@@ -823,9 +823,15 @@ class XGFabricSession(PluginSession):
         ec = self._bc.get_edge_client(cluster['edge_name'])
         psij: Any = await asyncio.to_thread(ec.get_plugin, 'psij')
 
+        args = ["--url", bridge_url, "--name", cluster['edge_name'] + ".1"]
+
+        edge_svc      = self._app.state.edge_service
+        plugin_filter = edge_svc._plugin_filter
+        args += ["-p", ",".join(plugin_filter)]
+
         pilot_spec = {
             "executable": "radical-edge-service.sh",
-            "arguments": ["--url", bridge_url, "--name", cluster['edge_name'] + ".1"],
+            "arguments": args,
             "attributes": {
                 "queue_name": cluster.get('queue', 'regular'),
                 "account": cluster.get('account', ''),
