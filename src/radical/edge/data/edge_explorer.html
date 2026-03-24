@@ -392,6 +392,85 @@
       font-weight: 700;
     }
 
+    .monitor-area {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 4px 8px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: .8rem;
+      max-height: 400px;
+      overflow-y: auto;
+      color: var(--text-dim);
+      min-height: 24px;
+    }
+    .monitor-area .ok {
+      color: var(--accent2);
+    }
+    .monitor-area .err {
+      color: var(--danger);
+    }
+    .monitor-area .info {
+      color: var(--accent);
+    }
+    .monitor-area.sysinfo-content {
+      max-height: none;
+    }
+    .queueinfo-content,
+    .monitor-area.queueinfo-content {
+      max-height: none !important;
+      overflow-y: visible !important;
+      overflow-x: auto;
+      background: transparent;
+      border: none;
+      padding: 0;
+    }
+    .partitions-card {
+      background: transparent;
+      border: none;
+      padding: 0;
+    }
+    .task-entry {
+      margin: 0;
+      padding: 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+    }
+    .task-entry:last-child {
+      border-bottom: none;
+    }
+    .task-entry>summary {
+      display: list-item;
+      list-style-position: outside;
+      margin-left: 18px;
+      cursor: pointer;
+      padding: 4px 0;
+      user-select: none;
+      font-size: 0.85em;
+      outline: none;
+    }
+    .task-entry>summary>.task-summary-content {
+      display: inline-flex;
+      align-items: center;
+      vertical-align: top;
+      width: 100%;
+      margin-left: -4px;
+    }
+    .task-entry>.task-log {
+      margin: 0 0 4px 18px;
+      padding: 4px 0 4px 10px;
+      border-left: 2px solid var(--border);
+      font-size: 0.82em;
+      line-height: 1.2;
+    }
+    .task-entry>.task-log pre {
+      margin: 0;
+      padding: 0;
+      white-space: pre-wrap;
+      background: transparent;
+      border: none;
+      font-family: 'JetBrains Mono', monospace;
+    }
+
     .task-cancel-btn {
       background: transparent;
       border: none;
@@ -1533,25 +1612,7 @@
               const endpoint = monitor.auto_load.replace('{sid}', sid);
               const data = await apiFetch(`${ns}/${endpoint}`);
 
-              // Use plugin-specific renderer if available, else show JSON
-              if (pluginName === 'sysinfo') {
-                content.innerHTML = renderSysinfo(data);
-              } else if (pluginName === 'queue_info') {
-                // Fetch allocations to go with queue info
-                let allocs = { allocations: [] };
-                try {
-                  allocs = await apiFetch(`${ns}/list_allocations/${sid}`);
-                } catch (e) { console.warn("Could not fetch allocations:", e); }
-
-                const queuesObj = data.partitions || data.queues || data || {};
-                const queues = Array.isArray(queuesObj) ? queuesObj : Object.values(queuesObj);
-                const allocations = allocs.allocations || [];
-                queueDataCache[edgeName] = { queues, allocations };
-
-                content.innerHTML = renderQueueInfo(queues, allocations, edgeName, sid, ns);
-              } else {
-                content.innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
-              }
+              content.innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
             } catch (e) {
               content.innerHTML = `<div class="card"><p style="color:var(--danger)">Error: ${e.message}</p></div>`;
             }
@@ -2289,6 +2350,229 @@
           const state = d.state || '?';
           if (taskId) updateTaskState(edgeName, plugin, taskId, state);
         }
+      }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    //  PsiJ / Rhapsody actions
+    // ─────────────────────────────────────────────────────────────
+
+    const psijEdgeCounters = {};  // per-edge child counter
+
+    function getNextEdgeChildName(edgeName) {
+      if (!psijEdgeCounters[edgeName]) psijEdgeCounters[edgeName] = 0;
+      psijEdgeCounters[edgeName]++;
+      return `${edgeName}.${psijEdgeCounters[edgeName]}`;
+    }
+
+    function addPsijAttributeRow(btn) {
+      const container = btn.previousElementSibling;
+      const row = document.createElement('div');
+      row.style.display = 'flex';
+      row.style.gap = '10px';
+      row.style.marginBottom = '8px';
+      row.innerHTML = `
+        <input class="p-attr-key" type="text" placeholder="Key (e.g. slurm.constraint)" style="flex:1;" />
+        <input class="p-attr-val" type="text" placeholder="Value (e.g. cpu_gen_1)" style="flex:2;" />
+        <button class="btn btn-secondary btn-sm" onclick="this.parentElement.remove()" style="padding: 4px 10px;">❌</button>
+      `;
+      container.appendChild(row);
+    }
+
+    async function cancelPsijJob(event, edgeName, jobId) {
+      event.stopPropagation();
+      const btn = event.target;
+      btn.disabled = true;
+
+      try {
+        const key = `${edgeName}/psij`;
+        const sid = sessions[key];
+        if (!sid) {
+          flash('No active session for PsiJ', false);
+          return;
+        }
+
+        const ns = getNs(edgeName, 'psij');
+        await apiFetch(`${ns}/cancel/${sid}/${jobId}`, { method: 'POST' });
+        flash(`Job ${jobId.slice(0, 8)}… canceled`);
+
+        const entry = document.getElementById(`psij-job-${jobId}`);
+        if (entry) {
+          const badge = entry.querySelector('.psij-job-state');
+          if (badge) {
+            badge.textContent = 'CANCELED';
+            badge.className = 'psij-job-state badge badge-red';
+          }
+        }
+      } catch (e) {
+        flash('Cancel failed: ' + e.message, false);
+        btn.disabled = false;
+      }
+    }
+
+    async function cancelRhapsodyTask(event, edgeName, uid) {
+      event.stopPropagation();
+      const btn = event.target;
+      btn.disabled = true;
+
+      try {
+        const key = `${edgeName}/rhapsody`;
+        const sid = sessions[key];
+        if (!sid) {
+          flash('No active session for Rhapsody', false);
+          return;
+        }
+
+        const ns = getNs(edgeName, 'rhapsody');
+        await apiFetch(`${ns}/cancel/${sid}/${uid}`, { method: 'POST' });
+        flash(`Task ${uid.slice(0, 12)}… canceled`);
+
+        const entry = document.getElementById(`rh-task-${edgeName}-${uid}`);
+        if (entry) {
+          const badge = entry.querySelector('.rh-task-state');
+          if (badge) {
+            badge.textContent = 'CANCELED';
+            badge.className = 'rh-task-state badge badge-red';
+          }
+        }
+      } catch (e) {
+        flash('Cancel failed: ' + e.message, false);
+        btn.disabled = false;
+      }
+    }
+
+    function updateEdgeLaunchArgs(page, edgeName, selector) {
+      const argsInput = page.querySelector(selector);
+      if (argsInput) {
+        const url = BRIDGE.replace(/\/$/, '');
+        const childName = getNextEdgeChildName(edgeName);
+        argsInput.value = `--url ${url} --name ${childName}`;
+      }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    //  Bridge management
+    // ─────────────────────────────────────────────────────────────
+
+    async function terminateBridge(event) {
+      event.stopPropagation();
+
+      if (!confirm('Terminate the bridge?\n\nConnected edges will NOT be terminated and may reconnect to another bridge.')) {
+        return;
+      }
+
+      try {
+        await apiFetch('/bridge/terminate', { method: 'POST' });
+        flash('Bridge is terminating...');
+        setTimeout(() => doDisconnect(), 1000);
+      } catch (e) {
+        flash('Terminate failed: ' + e.message, false);
+      }
+    }
+
+    async function submitRemoteEdge() {
+      const card   = document.getElementById('bridgeEdgeSubmit');
+      const name   = card.querySelector('.bridge-edge-name').value.trim();
+      const target = card.querySelector('.bridge-target').value.trim();
+      const exec   = card.querySelector('.bridge-executor').value;
+      const queue  = card.querySelector('.bridge-queue').value.trim();
+      const acct   = card.querySelector('.bridge-account').value.trim();
+      const dur    = card.querySelector('.bridge-duration').value.trim() || '3600';
+      const nodes  = card.querySelector('.bridge-nodes').value || '1';
+
+      if (!name)   { flash('Edge name is required', false); return; }
+      if (!target) { flash('Resource SSH target is required', false); return; }
+
+      const payload = {
+        edge_name: name,
+        target:    target,
+        executor:  exec,
+        queue:     queue || null,
+        account:   acct || null,
+        duration:  parseInt(dur, 10),
+        nodes:     parseInt(nodes, 10)
+      };
+
+      try {
+        await apiFetch('/edge/submit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        flash(`Edge "${name}" submitted to ${target}`);
+        refreshEdgeJobs();
+      } catch (e) {
+        if (e.message.includes('501') || e.message.toLowerCase().includes('not implemented')) {
+          flash('Remote edge submission not yet implemented on backend', false);
+        } else {
+          flash('Submit failed: ' + e.message, false);
+        }
+      }
+    }
+
+    async function refreshEdgeJobs() {
+      const output = document.querySelector('#bridgeEdgeJobs .bridge-jobs-output');
+      try {
+        const data = await apiFetch('/edge/jobs');
+        if (!data || !data.jobs || data.jobs.length === 0) {
+          output.innerHTML = '<div style="color:var(--muted); font-style:italic;">No edge jobs submitted yet.</div>';
+          return;
+        }
+        let html = '<table style="width:100%; border-collapse:collapse;">';
+        html += '<tr style="text-align:left; border-bottom:1px solid var(--border);"><th>Job ID</th><th>Edge</th><th>Resource</th><th>State</th><th></th></tr>';
+        for (const job of data.jobs) {
+          html += `<tr>
+            <td style="padding:4px 8px;">${escHtml(job.job_id)}</td>
+            <td style="padding:4px 8px;">${escHtml(job.edge_name)}</td>
+            <td style="padding:4px 8px;">${escHtml(job.resource)}</td>
+            <td style="padding:4px 8px;">${escHtml(job.state)}</td>
+            <td style="padding:4px 8px;"><button class="btn btn-danger btn-sm" onclick="cancelEdgeJob('${escHtml(job.job_id)}')">[x]</button></td>
+          </tr>`;
+        }
+        html += '</table>';
+        output.innerHTML = html;
+      } catch (e) {
+        if (e.message.includes('501') || e.message.toLowerCase().includes('not implemented')) {
+          output.innerHTML = '<div style="color:var(--muted); font-style:italic;">Job tracking not yet implemented.</div>';
+        } else {
+          output.innerHTML = `<div style="color:var(--error);">Error: ${escHtml(e.message)}</div>`;
+        }
+      }
+    }
+
+    async function cancelEdgeJob(jobId) {
+      if (!confirm(`Cancel edge job "${jobId}"?`)) return;
+      try {
+        await apiFetch(`/edge/job/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' });
+        flash(`Edge job "${jobId}" cancelled`);
+        refreshEdgeJobs();
+      } catch (e) {
+        if (e.message.includes('501') || e.message.toLowerCase().includes('not implemented')) {
+          flash('Job cancellation not yet implemented', false);
+        } else {
+          flash('Cancel failed: ' + e.message, false);
+        }
+      }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    //  Edge disconnect
+    // ─────────────────────────────────────────────────────────────
+    async function disconnectEdge(event, edgeName) {
+      event.stopPropagation();
+      const btn = event.target;
+
+      if (!confirm(`Disconnect edge "${edgeName}"?\n\nThis will terminate the edge service.`)) {
+        return;
+      }
+
+      btn.disabled = true;
+      try {
+        await apiFetch(`/edge/disconnect/${encodeURIComponent(edgeName)}`, { method: 'POST' });
+        flash(`Edge "${edgeName}" disconnected`);
+      } catch (e) {
+        flash('Disconnect failed: ' + e.message, false);
+        btn.disabled = false;
       }
     }
 
