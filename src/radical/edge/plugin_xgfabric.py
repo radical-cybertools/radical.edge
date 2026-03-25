@@ -193,6 +193,20 @@ class XGFabricSession(PluginSession):
         # Active rhapsody client + pending task UIDs for the current batch (for cleanup)
         self._pending_tasks: Optional[tuple] = None  # (rhapsody_client, set[uid])
 
+    def _verify(self) -> Any:
+        """Return SSL verification argument for httpx calls."""
+        return self._bridge_cert if self._bridge_cert else False
+
+    async def _http_get(self, url: str, **kwargs) -> Any:
+        """Run httpx.get in a thread with appropriate SSL verification."""
+        verify = self._verify()
+        return await asyncio.to_thread(lambda: httpx.get(url, verify=verify, **kwargs))
+
+    async def _http_post(self, url: str, **kwargs) -> Any:
+        """Run httpx.post in a thread with appropriate SSL verification."""
+        verify = self._verify()
+        return await asyncio.to_thread(lambda: httpx.post(url, verify=verify, **kwargs))
+
     async def _resolve_path(self, edge_name: str, path: str) -> str:
         """Expand a leading '~' to the home directory on the remote edge."""
         if not path.startswith('~'):
@@ -200,9 +214,7 @@ class XGFabricSession(PluginSession):
         if edge_name not in self._homedir_cache:
             url = f"{self._bridge_url.rstrip('/')}/{edge_name}/sysinfo/homedir"
             try:
-                verify: Any = self._bridge_cert if self._bridge_cert else False
-                resp = await asyncio.to_thread(
-                    lambda: httpx.get(url, verify=verify, timeout=5))
+                resp = await self._http_get(url, timeout=5)
                 self._homedir_cache[edge_name] = resp.json().get('homedir', '~')
             except Exception as e:
                 log.warning("[XGFabric] _resolve_path(%s): failed — %s", edge_name, e)
@@ -343,9 +355,7 @@ class XGFabricSession(PluginSession):
         url = self._bridge_url.rstrip('/') + f'/{edge_name}/queue_info/is_enabled'
         try:
 
-            verify: Any = self._bridge_cert if self._bridge_cert else False
-            resp = await asyncio.to_thread(
-                lambda: httpx.get(url, verify=verify, timeout=5))
+            resp = await self._http_get(url, timeout=5)
             result = resp.json().get('available', False)
             log.info("[XGFabric] _is_enabled(%s): available=%s", edge_name, result)
             return result
@@ -398,10 +408,8 @@ class XGFabricSession(PluginSession):
 
         try:
 
-            verify: Any = self._bridge_cert if self._bridge_cert else False
-            resp = await asyncio.to_thread(
-                lambda: httpx.post(f"{self._bridge_url.rstrip('/')}/edge/list",
-                                   verify=verify, timeout=5))
+            resp = await self._http_post(
+                f"{self._bridge_url.rstrip('/')}/edge/list", timeout=5)
             data       = resp.json().get('data', {})
             edges_info = {name: {'plugins': list(info.get('plugins', {}).keys())}
                           for name, info in data.get('edges', {}).items()}
