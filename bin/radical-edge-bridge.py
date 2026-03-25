@@ -719,7 +719,6 @@ async def proxy(full_path: str, request: Request):
         raise
 
     try:
-        # FIXME: how do we gracefully handle long-running requests?
         resp = await asyncio.wait_for(fut, timeout=REQUEST_TIMEOUT)
 
     except asyncio.TimeoutError as exc:
@@ -824,8 +823,6 @@ if __name__ == "__main__":
     validate_ssl_config(ssl_certfile, ssl_keyfile)
 
     # Construct bridge URL based on config
-    # FIXME: get FQHN for 0.0.0.0
-    protocol = "wss" if ssl_certfile else "ws"
     advertise_host = "localhost" if host == "0.0.0.0" else host
     bridge_url = f"https://{advertise_host}:{port}/register"
 
