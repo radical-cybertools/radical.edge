@@ -706,7 +706,7 @@ async def proxy(full_path: str, request: Request):
         "body"     : body,
     }
 
-    fut = asyncio.get_event_loop().create_future()
+    fut = asyncio.get_running_loop().create_future()
     async with pending_lock:
         pending[req_id] = (fut, edge_name)
 
