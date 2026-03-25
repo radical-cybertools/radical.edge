@@ -219,7 +219,12 @@ async def register(ws: WebSocket):
                 msg = await asyncio.wait_for(ws.receive_text(), timeout=1.0)
             except asyncio.TimeoutError:
                 continue  # Check shutdown_event again
-            data = json.loads(msg)
+            try:
+                data = json.loads(msg)
+            except json.JSONDecodeError:
+                log.warning("[Bridge] Malformed JSON from edge '%s': %s",
+                            edge_name or '(unregistered)', msg[:200])
+                continue
 
             if data.get("type") == "pong":
                 pass
@@ -270,7 +275,11 @@ async def register(ws: WebSocket):
                 })
 
             elif data.get("type") == "response":
-                req_id = data["req_id"]
+                req_id = data.get("req_id")
+                if not req_id:
+                    log.warning("[Bridge] Response from '%s' missing req_id: %s",
+                                edge_name, str(data)[:200])
+                    continue
                 async with pending_lock:
                     entry = pending.pop(req_id, None)
 
