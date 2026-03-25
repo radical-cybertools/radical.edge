@@ -43,7 +43,11 @@ let currentJobsData = [];
 let myJobsData = [];
 let queueDataCache = {};
 
+// Shared with api.escHtml — set in init()
+let escHtml = s => String(s || '');  // safe fallback until init()
+
 export function init(page, api) {
+  escHtml = api.escHtml;
   // Bind refresh button
   const refreshBtn = page.querySelector('[data-action="refresh"]');
   if (refreshBtn) {
@@ -92,7 +96,7 @@ async function loadQueueInfo(page, api) {
     // Load user's jobs into the inline table
     loadMyJobs(content, api, sid);
   } catch (e) {
-    content.innerHTML = `<div class="card"><p style="color:var(--danger)">Error: ${api.escHtml(e.message)}</p></div>`;
+    content.innerHTML = `<div class="card"><p style="color:var(--danger)">Error: ${escHtml(e.message)}</p></div>`;
     api.flash('QueueInfo error: ' + e.message, false);
   }
 }
@@ -375,7 +379,7 @@ async function loadMyJobs(content, api, sid) {
     });
 
   } catch (e) {
-    area.innerHTML = `<div class="card"><div class="card-title">👤 Jobs</div><p style="color:var(--danger)">Error: ${api.escHtml(e.message)}</p></div>`;
+    area.innerHTML = `<div class="card"><div class="card-title">👤 Jobs</div><p style="color:var(--danger)">Error: ${escHtml(e.message)}</p></div>`;
   }
 }
 
@@ -467,7 +471,3 @@ function formatDuration(seconds) {
   return `${s}s`;
 }
 
-function escHtml(s) {
-  if (!s) return '';
-  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}

@@ -6,6 +6,9 @@
 
 export const name = 'rhapsody';
 
+// Shared with api.escHtml — set in init()
+let escHtml = s => String(s || '');  // safe fallback until init()
+
 // Buffer for notifications that arrive before task entries are created
 const pendingNotifications = {};  // uid -> { data, timestamp }
 
@@ -50,6 +53,8 @@ export function css() {
 }
 
 export function init(page, api) {
+  escHtml = api.escHtml;
+
   const submitBtn = page.querySelector('[data-action="submit"]');
   if (submitBtn) {
     submitBtn.addEventListener('click', () => submitTask(page, api));
@@ -362,7 +367,3 @@ function stateBadge(state) {
   return 'badge-orange';
 }
 
-function escHtml(s) {
-  if (!s) return '';
-  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}

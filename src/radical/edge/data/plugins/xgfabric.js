@@ -6,6 +6,9 @@
 
 export const name = 'xgfabric';
 
+// Shared with api.escHtml — set in init()
+let escHtml = s => String(s || '');  // safe fallback until init()
+
 // Module-level state
 let currentConfig = null;
 const sessions = {};      // edgeName -> sid
@@ -166,6 +169,8 @@ export function css() {
 }
 
 export function init(page, api) {
+  escHtml = api.escHtml;
+
   // Bind buttons
   page.querySelector('[data-action="api-docs"]')?.addEventListener('click', (e) => {
     e.preventDefault();
@@ -559,7 +564,3 @@ async function stopWorkflow(page, api, btn) {
 //  Utility functions
 // ─────────────────────────────────────────────────────────────
 
-function escHtml(s) {
-  if (!s) return '';
-  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}

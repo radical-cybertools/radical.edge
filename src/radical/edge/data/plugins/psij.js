@@ -6,6 +6,9 @@
 
 export const name = 'psij';
 
+// Shared with api.escHtml — set in init()
+let escHtml = s => String(s || '');  // safe fallback until init()
+
 // Per-edge child counters for generating unique edge names
 const edgeCounters = {};
 
@@ -71,6 +74,8 @@ export function css() {
 }
 
 export function init(page, api) {
+  escHtml = api.escHtml;
+
   // Bind add attribute button
   const addAttrBtn = page.querySelector('[data-action="add-attr"]');
   if (addAttrBtn) {
@@ -510,7 +515,3 @@ function stateBadge(state) {
   return 'badge-orange';
 }
 
-function escHtml(s) {
-  if (!s) return '';
-  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
