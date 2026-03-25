@@ -79,13 +79,14 @@ The Bridge acts as a public-facing reverse proxy that:
     redoc_url="/redoc"
 )
 
-# LUCID needs that setting
+# LUCID needs credentials; browsers reject credentials + wildcard origin,
+# so we must list allowed origins explicitly.
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=["*"],              # or a list of URLs
-    allow_methods=["*"],              # or ["GET", "POST", ...]
-    allow_headers=["*"],              # or a list of headers
+    allow_origins=["https://dev-1.bv-brc.org"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
