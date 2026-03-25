@@ -69,6 +69,7 @@ export function css() {
 
 // Module-level state
 let currentJobsData = [];
+let myJobsData = [];
 let queueDataCache = {};
 
 export function init(page, api) {
@@ -116,6 +117,9 @@ async function loadQueueInfo(page, api) {
         loadQueueJobs(api, sid, queue, btn);
       });
     });
+
+    // Load user's jobs into the inline table
+    loadMyJobs(content, api, sid);
   } catch (e) {
     content.innerHTML = `<div class="card"><p style="color:var(--danger)">Error: ${api.escHtml(e.message)}</p></div>`;
     api.flash('QueueInfo error: ' + e.message, false);
@@ -323,6 +327,150 @@ function showJobDetail(jobId) {
   document.querySelectorAll('.job-row').forEach(r => r.classList.remove('selected'));
   const selectedRow = document.querySelector(`.job-row[data-job-id="${jobId}"]`);
   if (selectedRow) selectedRow.classList.add('selected');
+}
+
+async function loadMyJobs(content, api, sid) {
+  const area = content.querySelector('#qi-jobs-area');
+  if (!area) return;
+
+  area.innerHTML = '<div class="card"><div class="card-title">👤 My Jobs</div><div class="empty"><div class="spinner"></div><p style="margin-top:10px">Loading…</p></div></div>';
+
+  try {
+    const data = await api.fetch(`list_all_jobs/${sid}?force=true`);
+    const jobs = data.jobs || [];
+    myJobsData = jobs;
+
+    if (!jobs.length) {
+      area.innerHTML = '<div class="card"><div class="card-title">👤 My Jobs</div><p style="color:var(--muted)">No active jobs.</p></div>';
+      return;
+    }
+
+    const CANCELLABLE = new Set(['RUNNING', 'PENDING', 'CONFIGURING', 'SUSPENDED']);
+    let html = `<div class="card"><div class="card-title">👤 My Jobs</div>
+      <table>
+        <thead><tr>
+          <th>Job ID</th><th>Name</th><th>Partition</th><th>State</th><th>Nodes</th><th>Time Used</th><th></th>
+        </tr></thead><tbody>`;
+
+    for (const j of jobs) {
+      const jobId = j.job_id || j.id || '-';
+      const st = j.state || j.job_state || '-';
+      const badge = { 'RUNNING': 'badge-green', 'PENDING': 'badge-orange', 'COMPLETED': 'badge-blue', 'FAILED': 'badge-red' }[st] || 'badge-gray';
+      const cancelBtn = CANCELLABLE.has(st)
+        ? `<button class="btn btn-danger btn-sm my-cancel-job-btn" data-job-id="${jobId}" title="Cancel job ${jobId}">✕</button>`
+        : '';
+      html += `<tr class="job-row my-job-row" data-job-id="${jobId}">
+        <td><strong>${jobId}</strong></td>
+        <td>${j.job_name || j.name || '-'}</td>
+        <td>${j.partition || '-'}</td>
+        <td><span class="badge ${badge}">${st}</span></td>
+        <td>${j.nodes || j.num_nodes || '-'}</td>
+        <td>${formatDuration(j.time_used)}</td>
+        <td>${cancelBtn}</td>
+      </tr>`;
+    }
+    html += '</tbody></table></div>';
+    area.innerHTML = html;
+
+    // Bind row clicks to show detail overlay
+    area.querySelectorAll('.my-job-row').forEach(row => {
+      row.addEventListener('click', (e) => {
+        if (e.target.closest('.my-cancel-job-btn')) return;
+        const jobId = row.dataset.jobId;
+        showJobDetailOverlay(jobId, api);
+      });
+    });
+
+    // Bind cancel buttons
+    area.querySelectorAll('.my-cancel-job-btn').forEach(cancelBtn => {
+      cancelBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const jobId = cancelBtn.dataset.jobId;
+        cancelBtn.disabled = true;
+        cancelBtn.textContent = '…';
+        try {
+          await api.fetch(`cancel/${sid}/${encodeURIComponent(jobId)}`, { method: 'POST' });
+          api.flash(`Job ${jobId} canceled`);
+          cancelBtn.closest('tr').querySelector('.badge').textContent = 'CANCELED';
+          cancelBtn.remove();
+        } catch (err) {
+          api.flash('Cancel failed: ' + err.message, false);
+          cancelBtn.disabled = false;
+          cancelBtn.textContent = '✕';
+        }
+      });
+    });
+
+  } catch (e) {
+    area.innerHTML = `<div class="card"><div class="card-title">👤 My Jobs</div><p style="color:var(--danger)">Error: ${api.escHtml(e.message)}</p></div>`;
+  }
+}
+
+function showJobDetailOverlay(jobId, api) {
+  const job = myJobsData.find(j => (j.job_id || j.id) === jobId);
+  if (!job) return;
+
+  const st = job.state || job.job_state || '-';
+  const badge = { 'RUNNING': 'badge-green', 'PENDING': 'badge-orange', 'COMPLETED': 'badge-blue', 'FAILED': 'badge-red' }[st] || 'badge-gray';
+
+  const body = `
+    <div class="job-detail-grid">
+      <div class="job-detail-item">
+        <span class="label">Job Name</span>
+        <span class="value">${job.job_name || job.name || '-'}</span>
+      </div>
+      <div class="job-detail-item">
+        <span class="label">State</span>
+        <span class="value"><span class="badge ${badge}">${st}</span></span>
+      </div>
+      <div class="job-detail-item">
+        <span class="label">User</span>
+        <span class="value">${job.user || job.user_name || '-'}</span>
+      </div>
+      <div class="job-detail-item">
+        <span class="label">Partition</span>
+        <span class="value">${job.partition || '-'}</span>
+      </div>
+      <div class="job-detail-item">
+        <span class="label">Account</span>
+        <span class="value">${job.account || '-'}</span>
+      </div>
+      <div class="job-detail-item">
+        <span class="label">Nodes</span>
+        <span class="value">${job.nodes || job.num_nodes || '-'}</span>
+      </div>
+      <div class="job-detail-item">
+        <span class="label">CPUs</span>
+        <span class="value">${job.cpus || '-'}</span>
+      </div>
+      <div class="job-detail-item">
+        <span class="label">Node List</span>
+        <span class="value">${job.node_list || '-'}</span>
+      </div>
+      <div class="job-detail-item">
+        <span class="label">Submit Time</span>
+        <span class="value">${formatTimestamp(job.submit_time)}</span>
+      </div>
+      <div class="job-detail-item">
+        <span class="label">Start Time</span>
+        <span class="value">${formatTimestamp(job.start_time)}</span>
+      </div>
+      <div class="job-detail-item">
+        <span class="label">Time Limit</span>
+        <span class="value">${job.time_limit ? formatDuration(job.time_limit * 60) : '-'}</span>
+      </div>
+      <div class="job-detail-item">
+        <span class="label">Time Used</span>
+        <span class="value">${formatDuration(job.time_used)}</span>
+      </div>
+      <div class="job-detail-item">
+        <span class="label">Priority</span>
+        <span class="value">${job.priority || '-'}</span>
+      </div>
+    </div>
+  `;
+
+  api.showOverlay(`📋 Job Details: ${job.job_id || job.id || '-'}`, body);
 }
 
 // ─────────────────────────────────────────────────────────────

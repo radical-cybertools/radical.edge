@@ -185,6 +185,29 @@ class QueueInfo(ABC):
         return self._get_cached(key, force, self._collect_jobs, queue, user)
 
 
+    def list_all_jobs(self, user=None, force=False):
+        """
+        List all jobs for a user across all partitions.
+
+        Args:
+            user (str): User to filter jobs for. When None (default),
+                defaults to the current user. Pass user='*' to return all
+                jobs.
+            force (bool): Bypass cache if True.
+
+        Returns:
+            dict: {"jobs": [<job_dict>, ...]}
+        """
+        if user is None:
+
+            user = getpass.getuser()
+        elif user == '*':
+            user = None
+
+        key = f'all_jobs:{user}'
+        return self._get_cached(key, force, self._collect_all_user_jobs, user)
+
+
     def list_allocations(self, user=None, force=False):
         """
         List allocations/projects.  If user is set, filter to that user.
@@ -386,6 +409,56 @@ class QueueInfoSlurm(QueueInfo):
         """
 
         cmd = ['squeue', '--json', '-p', queue]
+        if user:
+            cmd.extend(['--user', user])
+
+        stdout = self._run(cmd)
+        jobs   = json.loads(stdout).get('jobs', [])
+
+        now    = time.time()
+        result = []
+        for job in jobs:
+
+            start = _unwrap(job.get('start_time', {})) or 0
+            state = (job.get('job_state', ['UNKNOWN']) or ['UNKNOWN'])[0]
+
+            if state == 'RUNNING' and start > 0:
+                time_used = int(now - start)
+            else:
+                time_used = 0
+
+            result.append({
+                'job_id'     : str(job.get('job_id', '')),
+                'job_name'   : job.get('name', ''),
+                'user'       : job.get('user_name', ''),
+                'partition'  : job.get('partition', ''),
+                'state'      : state,
+                'nodes'      : _unwrap(job.get('node_count', {})) or 0,
+                'cpus'       : _unwrap(job.get('cpus', {}))       or 0,
+                'time_limit' : _unwrap(job.get('time_limit', {})),
+                'time_used'  : time_used,
+                'submit_time': _unwrap(job.get('submit_time', {})) or 0,
+                'start_time' : start,
+                'priority'   : _unwrap(job.get('priority', {}))   or 0,
+                'account'    : job.get('account', ''),
+                'node_list'  : job.get('nodes', ''),
+            })
+
+        return {'jobs': result}
+
+
+    def _collect_all_user_jobs(self, user):
+        """
+        Collect all jobs for a user across all partitions via squeue --json.
+
+        Args:
+          user (str): Optional user name for server-side filtering.
+
+        Returns:
+          dict: {"jobs": [<job_dict>, ...]}
+        """
+
+        cmd = ['squeue', '--json']
         if user:
             cmd.extend(['--user', user])
 

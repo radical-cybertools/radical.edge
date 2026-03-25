@@ -84,6 +84,23 @@ class QueueInfoSession(PluginSession):
         return await asyncio.to_thread(self._backend.list_jobs,
                                       queue, user, force)
 
+    async def list_all_jobs(self, user=None, force=False):
+        """
+        List all jobs for the user across all partitions.
+
+        Args:
+            user (str): User to filter jobs for. When None (default),
+                defaults to the current user. Pass user='*' to return all
+                jobs (admin view).
+            force (bool): Bypass cache if True.
+
+        Returns:
+            dict: Job listing from the backend.
+        """
+        self._check_active()
+        return await asyncio.to_thread(self._backend.list_all_jobs,
+                                       user, force)
+
     async def cancel_job(self, job_id: str) -> dict:
         """Cancel a job via scancel."""
         self._check_active()
@@ -157,6 +174,28 @@ class QueueInfoClient(PluginClient):
             raise RuntimeError("No active session")
 
         url = self._url(f"list_jobs/{self.sid}/{queue}")
+        params = {"force": str(force).lower()}
+        if user:
+            params["user"] = user
+        resp = self._http.get(url, params=params)
+        self._raise(resp)
+        return resp.json()
+
+    def list_all_jobs(self, user: str = None, force: bool = False) -> dict:
+        """
+        List all jobs for the user across all partitions.
+
+        Args:
+            user (str): User to filter jobs for.
+            force (bool): Bypass cache if True.
+
+        Returns:
+            dict: Job listing.
+        """
+        if not self.sid:
+            raise RuntimeError("No active session")
+
+        url = self._url(f"list_all_jobs/{self.sid}")
         params = {"force": str(force).lower()}
         if user:
             params["user"] = user
@@ -246,6 +285,7 @@ class PluginQueueInfo(Plugin):
         self.add_route_get('is_enabled', self.is_enabled_endpoint)
         self.add_route_get('get_info/{sid}', self.get_info)
         self.add_route_get('list_jobs/{sid}/{queue}', self.list_jobs)
+        self.add_route_get('list_all_jobs/{sid}', self.list_all_jobs)
         self.add_route_get('list_allocations/{sid}', self.list_allocations)
         self.add_route_post('cancel/{sid}/{job_id}', self.cancel_job)
 
@@ -293,6 +333,16 @@ class PluginQueueInfo(Plugin):
 
         return await self._forward(sid, QueueInfoSession.list_jobs,
                                    queue, user=user, force=force)
+
+    async def list_all_jobs(self, request: Request) -> JSONResponse:
+        """List all jobs for the user across all partitions."""
+        data  = request.path_params
+        sid   = data['sid']
+        user  = request.query_params.get('user')
+        force = request.query_params.get('force', '').lower() == 'true'
+
+        return await self._forward(sid, QueueInfoSession.list_all_jobs,
+                                   user=user, force=force)
 
     async def list_allocations(self, request: Request) -> JSONResponse:
         """List allocations/projects."""
