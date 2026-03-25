@@ -92,12 +92,21 @@ async def test_get_job_status(mock_psij):
     
     mock_job = MagicMock()
     mock_job.id = 'job.123'
+    mock_job.native_id = '12345'
     mock_job.status.state = psij.JobState.ACTIVE
     mock_job.status.message = "Running"
     mock_job.status.exit_code = None
     mock_job.status.time = None
-    
+    mock_job.spec = MagicMock()
+    mock_job.spec.stdout_path = None
+    mock_job.spec.stderr_path = None
+
     p_session._jobs['job.123'] = mock_job
+    p_session._job_meta['job.123'] = {
+        'executable': '/bin/test',
+        'arguments':  [],
+        'executor':   'local',
+    }
     
     # Get status
     resp = client.get(f"{plugin.namespace}/status/{sid}/job.123")

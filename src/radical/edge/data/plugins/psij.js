@@ -244,11 +244,11 @@ function addJobRow(page, api, job) {
   const canCancel = CANCELLABLE.has(st) || !TERMINAL.has(st);
 
   tr.innerHTML = `
-    <td><strong>${job.job_id.slice(0, 12)}…</strong></td>
+    <td><strong>${escHtml(job.job_id.slice(0, 12))}…</strong></td>
     <td><code>${escHtml(shortExec)}</code></td>
     <td>${escHtml(job.executor || 'local')}</td>
     <td><span class="badge ${badge}">${st}</span></td>
-    <td>${canCancel ? `<button class="btn btn-danger btn-sm psij-cancel-btn" data-job-id="${job.job_id}" title="Cancel">✕</button>` : ''}</td>
+    <td>${canCancel ? `<button class="btn btn-danger btn-sm psij-cancel-btn" title="Cancel">✕</button>` : ''}</td>
   `;
 
   // Row click → detail overlay
@@ -257,7 +257,7 @@ function addJobRow(page, api, job) {
     openJobDetail(api, job.job_id);
   });
 
-  // Cancel button
+  // Cancel button — uses job_id from closure, not from data attribute
   const cancelBtn = tr.querySelector('.psij-cancel-btn');
   if (cancelBtn) {
     cancelBtn.addEventListener('click', async (e) => {
@@ -266,7 +266,7 @@ function addJobRow(page, api, job) {
       cancelBtn.textContent = '…';
       try {
         const sid = await api.getSession('psij');
-        await api.fetch(`cancel/${sid}/${job.job_id}`, { method: 'POST' });
+        await api.fetch(`cancel/${sid}/${encodeURIComponent(job.job_id)}`, { method: 'POST' });
         api.flash(`Job ${job.job_id.slice(0, 8)}… canceled`);
       } catch (err) {
         api.flash('Cancel failed: ' + err.message, false);
@@ -280,7 +280,7 @@ function addJobRow(page, api, job) {
 }
 
 function updateJobRow(page, jobId, state, data) {
-  const row = page.querySelector(`.job-row[data-job-id="${jobId}"]`);
+  const row = page.querySelector(`.job-row[data-job-id="${CSS.escape(jobId)}"]`);
   if (!row) return;
 
   const badge = row.querySelector('.badge');
@@ -395,19 +395,19 @@ function renderDetailOverlay(api, job) {
   const argsStr = Array.isArray(job.arguments) ? job.arguments.join(' ') : (job.arguments || '-');
 
   const fields = [
-    ['Job ID',    job.job_id || '-'],
-    ['Native ID', job.native_id || '-'],
+    ['Job ID',    escHtml(job.job_id || '-')],
+    ['Native ID', escHtml(job.native_id || '-')],
     ['State',     `<span id="psij-detail-state" class="badge ${badge}">${st}</span>`],
     ['Exit Code', `<span id="psij-detail-rc">${job.exit_code ?? '-'}</span>`],
     ['Executable', job.executable || '-'],
     ['Arguments', `<code>${escHtml(argsStr)}</code>`],
-    ['Executor',  job.executor || '-'],
-    ['Queue',     job.queue_name || '-'],
-    ['Account',   job.account || '-'],
+    ['Executor',  escHtml(job.executor || '-')],
+    ['Queue',     escHtml(job.queue_name || '-')],
+    ['Account',   escHtml(job.account || '-')],
     ['Nodes',     job.node_count || '-'],
     ['Duration',  job.duration ? `${job.duration}s` : '-'],
-    ['Directory', job.directory || '-'],
-    ['Message',   job.message || '-'],
+    ['Directory', escHtml(job.directory || '-')],
+    ['Message',   escHtml(job.message || '-')],
   ];
 
   let body = '<div class="job-detail-grid">';
@@ -431,7 +431,7 @@ function renderDetailOverlay(api, job) {
     </div>
   `;
 
-  const title = `🚀 Job Details: ${(job.job_id || '').slice(0, 12)}…`;
+  const title = `🚀 Job Details: ${escHtml((job.job_id || '').slice(0, 12))}…`;
   api.showOverlay(title, body);
 }
 

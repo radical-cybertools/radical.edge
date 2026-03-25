@@ -139,11 +139,11 @@ function addTaskRow(page, api, task) {
   const canCancel = !CANCELLABLE_NOT.has(st);
 
   tr.innerHTML = `
-    <td><strong>${(task.uid || '').slice(0, 16)}…</strong></td>
+    <td><strong>${escHtml((task.uid || '').slice(0, 16))}…</strong></td>
     <td><code>${escHtml(shortExec)}</code></td>
     <td>${escHtml(task.backend || 'concurrent')}</td>
     <td><span class="badge ${badge}">${st}</span></td>
-    <td>${canCancel ? `<button class="btn btn-danger btn-sm rh-cancel-btn" data-uid="${task.uid}" title="Cancel">✕</button>` : ''}</td>
+    <td>${canCancel ? `<button class="btn btn-danger btn-sm rh-cancel-btn" title="Cancel">✕</button>` : ''}</td>
   `;
 
   // Row click → detail overlay
@@ -152,7 +152,7 @@ function addTaskRow(page, api, task) {
     openTaskDetail(api, task.uid);
   });
 
-  // Cancel button
+  // Cancel button — uses uid from closure, not from data attribute
   const cancelBtn = tr.querySelector('.rh-cancel-btn');
   if (cancelBtn) {
     cancelBtn.addEventListener('click', async (e) => {
@@ -161,7 +161,7 @@ function addTaskRow(page, api, task) {
       cancelBtn.textContent = '…';
       try {
         const sid = await api.getSession('rhapsody');
-        await api.fetch(`cancel/${sid}/${task.uid}`, { method: 'POST' });
+        await api.fetch(`cancel/${sid}/${encodeURIComponent(task.uid)}`, { method: 'POST' });
         api.flash(`Task ${task.uid.slice(0, 12)}… canceled`);
       } catch (err) {
         api.flash('Cancel failed: ' + err.message, false);
@@ -175,7 +175,7 @@ function addTaskRow(page, api, task) {
 }
 
 function updateTaskRow(page, uid, state, data) {
-  const row = page.querySelector(`.task-row[data-uid="${uid}"]`);
+  const row = page.querySelector(`.task-row[data-uid="${CSS.escape(uid)}"]`);
   if (!row) return false;
 
   const badge = row.querySelector('.badge');
@@ -282,12 +282,12 @@ function renderDetailOverlay(api, task) {
   const argsStr = Array.isArray(task.arguments) ? task.arguments.join(' ') : (task.arguments || '-');
 
   const fields = [
-    ['UID',        task.uid || '-'],
+    ['UID',        escHtml(task.uid || '-')],
     ['State',      `<span id="rh-detail-state" class="badge ${badge}">${st}</span>`],
     ['Exit Code',  `<span id="rh-detail-rc">${task.exit_code ?? task.retval ?? '-'}</span>`],
-    ['Executable', task.executable || '-'],
+    ['Executable', escHtml(task.executable || '-')],
     ['Arguments',  `<code>${escHtml(argsStr)}</code>`],
-    ['Backend',    task.backend || '-'],
+    ['Backend',    escHtml(task.backend || '-')],
   ];
 
   let body = '<div class="job-detail-grid">';
@@ -316,7 +316,7 @@ function renderDetailOverlay(api, task) {
     </div>
   `;
 
-  const title = `🎼 Task Details: ${(task.uid || '').slice(0, 16)}…`;
+  const title = `🎼 Task Details: ${escHtml((task.uid || '').slice(0, 16))}…`;
   api.showOverlay(title, body);
 }
 
