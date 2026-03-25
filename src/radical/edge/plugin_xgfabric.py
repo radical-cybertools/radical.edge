@@ -266,7 +266,14 @@ class XGFabricSession(PluginSession):
         return sorted(configs, key=lambda x: x['name'])
 
     async def load_config(self, name: str) -> Dict:
-        """Load a configuration by name or absolute/relative path."""
+        """Load a workflow config by name, path, or builtin alias ('default', 'test')."""
+        _builtins = {
+            'default': 'xgfabric_workflow_default.json',
+            'test':    'xgfabric_workflow_test.json',
+        }
+        if name in _builtins:
+            return self._load_builtin_config(_builtins[name])
+
         p = Path(name)
         if p.is_absolute() or p.exists():
             config_file = p if p.suffix else p.with_suffix('.json')
@@ -310,14 +317,6 @@ class XGFabricSession(PluginSession):
         data_dir = os.path.join(os.path.dirname(__file__), 'data')
         with open(os.path.join(data_dir, filename)) as f:
             return json.load(f)
-
-    async def get_default_config(self) -> Dict:
-        """Get the default workflow configuration template."""
-        return self._load_builtin_config('xgfabric_workflow_default.json')
-
-    async def get_test_config(self) -> Dict:
-        """Get the test workflow configuration template (stub tasks, no CSPOT required)."""
-        return self._load_builtin_config('xgfabric_workflow_test.json')
 
     # -------------------------------------------------------------------------
     # Workflow Control
@@ -429,12 +428,12 @@ class XGFabricSession(PluginSession):
         if self._state.status == 'running':
             raise HTTPException(status_code=409, detail="Workflow already running")
 
-        # Load workflow config
-        self._current_config = dict_to_config(await self._load_named_config(workflow, 'workflow'))
+        # Load workflow config (handles 'default', 'test', and user configs)
+        self._current_config = dict_to_config(await self.load_config(workflow))
 
         # Load resource config
         self._current_resource_config = dict_to_resource_config(
-            await self._load_named_config(resource, 'resource'))
+            await self._load_resource_config(resource))
 
         cfg = self._current_config
         self._state = WorkflowState(
@@ -455,30 +454,23 @@ class XGFabricSession(PluginSession):
 
         return {'status': 'started', 'config': cfg.name}
 
-    async def _load_named_config(self, name: str, kind: str) -> Dict:
-        """Load a workflow or resource config by name or path.
-
-        Special names ``__default__`` and ``__test__`` load the corresponding
-        built-in JSON files; otherwise the name is treated as a file path or a
-        name relative to the config directory.
-        """
-        builtin_map = {
-            ('workflow', '__default__'): 'xgfabric_workflow_default.json',
-            ('workflow', '__test__'):    'xgfabric_workflow_test.json',
-            ('resource', '__default__'): 'xgfabric_resource_default.json',
-            ('resource', '__test__'):    'xgfabric_resource_test.json',
+    async def _load_resource_config(self, name: str) -> Dict:
+        """Load a resource config by name or builtin alias ('default', 'test')."""
+        _builtins = {
+            'default':    'xgfabric_resource_default.json',
+            '__default__': 'xgfabric_resource_default.json',
+            'test':        'xgfabric_resource_test.json',
+            '__test__':    'xgfabric_resource_test.json',
         }
-        filename = builtin_map.get((kind, name))
-        if filename:
-            return self._load_builtin_config(filename)
+        if name in _builtins:
+            return self._load_builtin_config(_builtins[name])
 
         p = Path(name)
         config_file = (p if p.suffix else p.with_suffix('.json')) \
             if (p.is_absolute() or p.exists()) \
             else self._config_dir / (name if name.endswith('.json') else f'{name}.json')
         if not config_file.exists():
-            raise HTTPException(status_code=404,
-                                detail=f"{kind.capitalize()} config '{name}' not found")
+            raise HTTPException(status_code=404, detail=f"Resource config '{name}' not found")
         with open(config_file) as f:
             return json.load(f)
 
@@ -1349,11 +1341,11 @@ class PluginXGFabric(Plugin):
 
     async def get_default_config(self, request: Request) -> JSONResponse:
         sid = request.path_params['sid']
-        return await self._forward(sid, XGFabricSession.get_default_config)
+        return await self._forward(sid, XGFabricSession.load_config, name='default')
 
     async def get_test_config(self, request: Request) -> JSONResponse:
         sid = request.path_params['sid']
-        return await self._forward(sid, XGFabricSession.get_test_config)
+        return await self._forward(sid, XGFabricSession.load_config, name='test')
 
     async def load_config(self, request: Request) -> JSONResponse:
         sid = request.path_params['sid']
