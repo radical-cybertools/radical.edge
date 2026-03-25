@@ -26,30 +26,25 @@ documentation after the job/task table+overlay feature landed.
 - [x] `plugin_rhapsody.py`: `_notified_states` dict written from backend callback
   thread and read from async context — added `threading.Lock`
 - [x] Route caching: review agent finding was inaccurate, no such caching exists
-- **commit**: `(next)`
+- **commit**: `821d82c`
 
 ---
 
 ## Priority 2 — UI Quality
 
 ### 2.1 CSS class collisions across plugins
-- [ ] `.job-row` defined in `psij.js` CSS, conflicts with `queue_info.js` `.job-row`
-- [ ] `.job-detail-grid`, `.job-detail-item`, `.job-output-section` duplicated
-  across all three plugin CSS blocks
-- [ ] **Fix**: either namespace classes (`.psij-job-row`, `.rh-task-row`,
-  `.qi-job-row`) or extract shared overlay/detail CSS into `edge_explorer.html`
+- [x] `.job-row` → `.psij-job-row`, `.rh-task-row`, `.qi-job-row` (namespaced)
+- [x] `.job-detail-grid`, `.job-detail-item`, `.job-output-section`,
+  `.job-detail-panel` extracted into `edge_explorer.html`
+- **commit**: `f718beb`
 
 ### 2.2 Event listener leaks
-- [ ] Each call to `openJobDetail()` / `openTaskDetail()` creates a new
-  `setInterval` — the old poller is stopped, but overlay DOM event listeners
-  from previous opens are never removed
-- [ ] Row click listeners in `addJobRow()` / `addTaskRow()` accumulate if rows
-  are re-rendered — use event delegation on `<tbody>` instead
+- [x] N/A — `stopPoller()` is called before each new overlay open; old overlay
+  DOM nodes and listeners are GC'd when `showOverlay` replaces innerHTML
+- [x] Row click listeners added once per row creation (not re-rendered) — no leak
 
 ### 2.3 Null-safety in poll callbacks
-- [ ] `psij.js` poll: `document.getElementById('psij-detail-state')` can be
-  `null` if overlay was closed between fetch start and response
-- [ ] Same pattern in `rhapsody.js` — guard all `getElementById` results
+- [x] Already guarded — all `getElementById` calls followed by `if (el)` check
 
 ---
 
