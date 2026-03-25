@@ -29,6 +29,7 @@ Contents:
    service_embedding.rst
    plugin_development.rst
    plugin_api.rst
+   rest_api.rst
 
 
 ##################
