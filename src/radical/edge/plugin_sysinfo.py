@@ -236,7 +236,7 @@ class SysInfoProvider:
                         if os.path.exists(driver_path):
                             with open(driver_path, 'r') as f:
                                 driver_version = f.read().strip()
-                    except:
+                    except Exception:
                         pass
 
                     gpus.append({
@@ -314,7 +314,7 @@ class SysInfoProvider:
                     # Parse utilization
                     try:
                         util_gpu = float(info.get("GPU use (%)", 0))
-                    except:
+                    except Exception:
                         util_gpu = 0.0
 
                     # Parse memory (Assuming Bytes usually, check output carefully in prod)
@@ -331,7 +331,7 @@ class SysInfoProvider:
                             "mem_used": mem_used // (1024 * 1024),
                             "mem_free": (mem_tot - mem_used) // (1024 * 1024)
                         })
-                    except:
+                    except Exception:
                         metrics.append(g)
 
             except Exception:
