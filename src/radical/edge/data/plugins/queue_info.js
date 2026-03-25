@@ -24,45 +24,16 @@ export function template() {
 
 export function css() {
   return `
-    .job-row {
+    .qi-job-row {
       cursor: pointer;
       transition: background 0.15s;
     }
-    .job-row:hover {
+    .qi-job-row:hover {
       background: var(--hover);
     }
-    .job-row.selected {
+    .qi-job-row.selected {
       background: rgba(59, 130, 246, 0.15);
       border-left: 3px solid var(--primary);
-    }
-    .job-detail-panel {
-      background: rgba(30, 35, 50, 0.5);
-      border-radius: 6px;
-      padding: 12px 16px;
-      margin-top: 12px;
-      font-size: 0.85rem;
-      border: 1px solid var(--border);
-    }
-    .job-detail-panel h4 {
-      margin: 0 0 10px 0;
-      font-size: 0.95rem;
-    }
-    .job-detail-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-      gap: 8px 16px;
-    }
-    .job-detail-item {
-      display: flex;
-      flex-direction: column;
-    }
-    .job-detail-item .label {
-      font-size: 0.75rem;
-      color: var(--muted);
-      text-transform: uppercase;
-    }
-    .job-detail-item .value {
-      font-weight: 500;
     }
   `;
 }
@@ -202,7 +173,7 @@ async function loadQueueJobs(api, sid, queue, btn) {
         const cancelBtn = CANCELLABLE.has(st)
           ? `<button class="btn btn-danger btn-sm cancel-job-btn" data-job-id="${eid}" title="Cancel job ${eid}">✕</button>`
           : '';
-        html += `<tr class="job-row" data-job-id="${eid}">
+        html += `<tr class="qi-job-row" data-job-id="${eid}">
           <td><strong>${eid}</strong></td>
           <td>${escHtml(j.job_name || j.name || '-')}</td>
           <td>${escHtml(j.user || j.user_name || '-')}</td>
@@ -220,7 +191,7 @@ async function loadQueueJobs(api, sid, queue, btn) {
     api.showOverlay(title, body);
 
     // Bind job row clicks — use dataset (already escaped on write)
-    document.querySelectorAll('.job-row').forEach(row => {
+    document.querySelectorAll('.qi-job-row').forEach(row => {
       row.addEventListener('click', (e) => {
         if (e.target.closest('.cancel-job-btn')) return;
         showJobDetail(row.dataset.jobId);
@@ -325,8 +296,8 @@ function showJobDetail(jobId) {
   detailPanel.style.display = 'block';
 
   // Highlight selected row
-  document.querySelectorAll('.job-row').forEach(r => r.classList.remove('selected'));
-  const selectedRow = document.querySelector(`.job-row[data-job-id="${CSS.escape(jobId)}"]`);
+  document.querySelectorAll('.qi-job-row').forEach(r => r.classList.remove('selected'));
+  const selectedRow = document.querySelector(`.qi-job-row[data-job-id="${CSS.escape(jobId)}"]`);
   if (selectedRow) selectedRow.classList.add('selected');
 }
 
@@ -361,7 +332,7 @@ async function loadMyJobs(content, api, sid) {
       const cancelBtn = CANCELLABLE.has(st)
         ? `<button class="btn btn-danger btn-sm my-cancel-job-btn" data-job-id="${eid}" title="Cancel job ${eid}">✕</button>`
         : '';
-      html += `<tr class="job-row my-job-row" data-job-id="${eid}">
+      html += `<tr class="qi-job-row qi-my-job-row" data-job-id="${eid}">
         <td><strong>${eid}</strong></td>
         <td>${escHtml(j.job_name || j.name || '-')}</td>
         <td>${escHtml(j.partition || '-')}</td>
@@ -375,7 +346,7 @@ async function loadMyJobs(content, api, sid) {
     area.innerHTML = html;
 
     // Bind row clicks to show detail overlay
-    area.querySelectorAll('.my-job-row').forEach(row => {
+    area.querySelectorAll('.qi-my-job-row').forEach(row => {
       row.addEventListener('click', (e) => {
         if (e.target.closest('.my-cancel-job-btn')) return;
         const jobId = row.dataset.jobId;

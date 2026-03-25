@@ -62,31 +62,8 @@ export function template() {
 export function css() {
   return `
     .psij-table-area table { width: 100%; }
-    .job-row { cursor: pointer; transition: background 0.15s; }
-    .job-row:hover { background: var(--hover); }
-    .job-detail-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-      gap: 8px 16px;
-    }
-    .job-detail-item { display: flex; flex-direction: column; }
-    .job-detail-item .label {
-      font-size: 0.75rem; color: var(--muted); text-transform: uppercase;
-    }
-    .job-detail-item .value { font-weight: 500; }
-    .job-output-section { margin-top: 12px; }
-    .job-output-section h4 {
-      margin: 0 0 4px 0; font-size: 0.85rem; color: var(--muted);
-      text-transform: uppercase;
-    }
-    .job-output-section pre {
-      background: rgba(0,0,0,0.3); border: 1px solid var(--border);
-      border-radius: 4px; padding: 8px; margin: 0 0 8px 0;
-      max-height: 300px; overflow-y: auto; white-space: pre-wrap;
-      font-size: 0.8rem; font-family: 'JetBrains Mono', monospace;
-    }
-    .job-output-section pre.out-stream { color: var(--accent2); }
-    .job-output-section pre.err-stream { color: var(--danger); }
+    .psij-psij-job-row { cursor: pointer; transition: background 0.15s; }
+    .psij-psij-job-row:hover { background: var(--hover); }
   `;
 }
 
@@ -235,7 +212,7 @@ function addJobRow(page, api, job) {
 
   const tbody = table.querySelector('tbody');
   const tr = document.createElement('tr');
-  tr.className = 'job-row';
+  tr.className = 'psij-job-row';
   tr.dataset.jobId = job.job_id;
 
   const st = job.state || 'NEW';
@@ -280,7 +257,7 @@ function addJobRow(page, api, job) {
 }
 
 function updateJobRow(page, jobId, state, data) {
-  const row = page.querySelector(`.job-row[data-job-id="${CSS.escape(jobId)}"]`);
+  const row = page.querySelector(`.psij-job-row[data-job-id="${CSS.escape(jobId)}"]`);
   if (!row) return;
 
   const badge = row.querySelector('.badge');

@@ -44,31 +44,8 @@ export function template() {
 export function css() {
   return `
     .rh-table-area table { width: 100%; }
-    .task-row { cursor: pointer; transition: background 0.15s; }
-    .task-row:hover { background: var(--hover); }
-    .job-detail-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-      gap: 8px 16px;
-    }
-    .job-detail-item { display: flex; flex-direction: column; }
-    .job-detail-item .label {
-      font-size: 0.75rem; color: var(--muted); text-transform: uppercase;
-    }
-    .job-detail-item .value { font-weight: 500; }
-    .job-output-section { margin-top: 12px; }
-    .job-output-section h4 {
-      margin: 0 0 4px 0; font-size: 0.85rem; color: var(--muted);
-      text-transform: uppercase;
-    }
-    .job-output-section pre {
-      background: rgba(0,0,0,0.3); border: 1px solid var(--border);
-      border-radius: 4px; padding: 8px; margin: 0 0 8px 0;
-      max-height: 300px; overflow-y: auto; white-space: pre-wrap;
-      font-size: 0.8rem; font-family: 'JetBrains Mono', monospace;
-    }
-    .job-output-section pre.out-stream { color: var(--accent2); }
-    .job-output-section pre.err-stream { color: var(--danger); }
+    .rh-rh-task-row { cursor: pointer; transition: background 0.15s; }
+    .rh-rh-task-row:hover { background: var(--hover); }
   `;
 }
 
@@ -130,7 +107,7 @@ function addTaskRow(page, api, task) {
 
   const tbody = table.querySelector('tbody');
   const tr = document.createElement('tr');
-  tr.className = 'task-row';
+  tr.className = 'rh-task-row';
   tr.dataset.uid = task.uid;
 
   const st = task.state || 'SUBMITTED';
@@ -175,7 +152,7 @@ function addTaskRow(page, api, task) {
 }
 
 function updateTaskRow(page, uid, state, data) {
-  const row = page.querySelector(`.task-row[data-uid="${CSS.escape(uid)}"]`);
+  const row = page.querySelector(`.rh-task-row[data-uid="${CSS.escape(uid)}"]`);
   if (!row) return false;
 
   const badge = row.querySelector('.badge');
