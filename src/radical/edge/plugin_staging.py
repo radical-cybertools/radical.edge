@@ -27,8 +27,33 @@ class StagingSession(PluginSession):
     Provides methods to transfer files between client and edge filesystems.
     """
 
+    # Allowed base directories for file operations (resolved via realpath).
+    # All requested paths must reside under one of these.
+    _ALLOWED_BASES = [
+        os.path.realpath(os.path.expanduser('~')),
+        os.path.realpath('/tmp'),
+    ]
+
     def __init__(self, sid: str):
         super().__init__(sid)
+
+    def _validate_path(self, path: str) -> str:
+        """Validate that path is absolute and within an allowed base directory.
+
+        Returns the resolved (real) path.
+
+        Raises:
+            ValueError: If path is not absolute or escapes allowed directories.
+        """
+        if not os.path.isabs(path):
+            raise ValueError(f"Path must be absolute: {path}")
+        resolved = os.path.realpath(path)
+        for base in self._ALLOWED_BASES:
+            if resolved == base or resolved.startswith(base + os.sep):
+                return resolved
+        raise ValueError(
+            f"Path escapes allowed directories: {path} "
+            f"(resolves to {resolved})")
 
     def _ensure_parent_dirs(self, path: str) -> None:
         """Create parent directories if they don't exist."""
@@ -61,9 +86,8 @@ class StagingSession(PluginSession):
         """
         self._check_active()
 
-        # Validate absolute path
-        if not os.path.isabs(filename):
-            raise ValueError(f"Path must be absolute: {filename}")
+        # Validate path is absolute and within allowed directories
+        filename = self._validate_path(filename)
 
         # Check target doesn't exist (unless overwrite requested)
         if not overwrite:
@@ -98,9 +122,8 @@ class StagingSession(PluginSession):
         """
         self._check_active()
 
-        # Validate absolute path
-        if not os.path.isabs(filename):
-            raise ValueError(f"Path must be absolute: {filename}")
+        # Validate path is absolute and within allowed directories
+        filename = self._validate_path(filename)
 
         # Check file exists
         if not os.path.exists(filename):
@@ -141,9 +164,8 @@ class StagingSession(PluginSession):
         """
         self._check_active()
 
-        # Validate absolute path
-        if not os.path.isabs(path):
-            raise ValueError(f"Path must be absolute: {path}")
+        # Validate path is absolute and within allowed directories
+        path = self._validate_path(path)
 
         # Check path exists
         if not os.path.exists(path):
