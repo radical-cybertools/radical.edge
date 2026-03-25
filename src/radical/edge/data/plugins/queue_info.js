@@ -333,7 +333,7 @@ async function loadMyJobs(content, api, sid) {
   const area = content.querySelector('#qi-jobs-area');
   if (!area) return;
 
-  area.innerHTML = '<div class="card"><div class="card-title">👤 My Jobs</div><div class="empty"><div class="spinner"></div><p style="margin-top:10px">Loading…</p></div></div>';
+  area.innerHTML = '<div class="card"><div class="card-title">👤 Jobs</div><div class="empty"><div class="spinner"></div><p style="margin-top:10px">Loading…</p></div></div>';
 
   try {
     const data = await api.fetch(`list_all_jobs/${sid}?force=true`);
@@ -341,12 +341,12 @@ async function loadMyJobs(content, api, sid) {
     myJobsData = jobs;
 
     if (!jobs.length) {
-      area.innerHTML = '<div class="card"><div class="card-title">👤 My Jobs</div><p style="color:var(--muted)">No active jobs.</p></div>';
+      area.innerHTML = '<div class="card"><div class="card-title">👤 Jobs</div><p style="color:var(--muted)">No active jobs.</p></div>';
       return;
     }
 
     const CANCELLABLE = new Set(['RUNNING', 'PENDING', 'CONFIGURING', 'SUSPENDED']);
-    let html = `<div class="card"><div class="card-title">👤 My Jobs</div>
+    let html = `<div class="card"><div class="card-title">👤 Jobs</div>
       <table>
         <thead><tr>
           <th>Job ID</th><th>Name</th><th>Partition</th><th>State</th><th>Nodes</th><th>Time Used</th><th></th>
@@ -402,7 +402,7 @@ async function loadMyJobs(content, api, sid) {
     });
 
   } catch (e) {
-    area.innerHTML = `<div class="card"><div class="card-title">👤 My Jobs</div><p style="color:var(--danger)">Error: ${api.escHtml(e.message)}</p></div>`;
+    area.innerHTML = `<div class="card"><div class="card-title">👤 Jobs</div><p style="color:var(--danger)">Error: ${api.escHtml(e.message)}</p></div>`;
   }
 }
 
