@@ -277,8 +277,13 @@ class QueueInfoSlurm(QueueInfo):
     def _run(self, cmd):
         """Run a subprocess with self._env, return stdout."""
 
-        result = subprocess.run(cmd, capture_output=True, text=True,
-                                timeout=60, env=self._env, check=True)
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True,
+                                    timeout=60, env=self._env, check=True)
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(
+                f"Command {cmd} failed (rc={e.returncode}): "
+                f"{e.stderr.strip()}") from e
         return result.stdout
 
 
