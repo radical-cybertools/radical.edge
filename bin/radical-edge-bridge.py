@@ -5,6 +5,9 @@ import base64
 import json
 import logging
 import os
+import re
+import signal
+import ssl
 import uuid
 
 from contextlib import asynccontextmanager
@@ -446,9 +449,6 @@ async def terminate_bridge():
     Edges will detect the disconnection and may attempt to reconnect
     (to this or another bridge).
     """
-    import os
-    import signal
-
     # Schedule shutdown after returning response
     async def delayed_shutdown():
         await asyncio.sleep(0.5)  # Give time for response to be sent
@@ -533,8 +533,6 @@ async def list_edge_jobs():
 
 @app.get("/", tags=["UI"], include_in_schema=False)
 async def root():
-    import os
-
     # Try to find edge_explorer.html via importlib.resources (works with editable installs)
     html_path = None
     try:
@@ -583,7 +581,6 @@ _plugin_ui_module_js: Dict[str, str] = {}
 async def serve_plugin(filename: str):
     """Serve plugin UI modules — first from radical.edge's own plugins dir,
     then from paths declared via ui_module on registered plugin classes."""
-    import re
 
     # Validate filename (only allow .js files with safe names)
     if not re.match(r'^[a-z_]+\.js$', filename):
@@ -758,7 +755,6 @@ async def proxy(full_path: str, request: Request):
 
 def validate_ssl_config(certfile: str, keyfile: str) -> None:
     """Validate SSL certificate and key files. Exit on error."""
-    import ssl
 
     if not certfile:
         print("[Bridge] ERROR: SSL certificate required.")
