@@ -29,6 +29,24 @@ PSIJ_POLL_INTERVAL = 10.0
 TERMINAL_STATES = {'COMPLETED', 'FAILED', 'CANCELED'}
 
 
+def _normalize_state(state) -> str:
+    """Normalize a PsiJ JobState to a plain string (strip 'JobState.' prefix)."""
+    s = str(state)
+    return s[9:] if s.startswith('JobState.') else s
+
+
+def _read_output_file(job, attr: str) -> str:
+    """Read stdout or stderr from a job's spec path attribute."""
+    try:
+        path = getattr(job.spec, attr, None)
+        if path and os.path.exists(str(path)):
+            with open(str(path), 'r') as f:
+                return f.read()
+    except Exception:
+        pass
+    return ""
+
+
 class PSIJSession(PluginSession):
     '''
     Session-specific PSIJ state.
@@ -101,36 +119,20 @@ class PSIJSession(PluginSession):
             last_state = [None]  # Use list to allow mutation in closure
 
             def _on_status(j, status):
-                state_str = str(status.state)
-                # Normalize state string (remove 'JobState.' prefix if present)
-                if state_str.startswith('JobState.'):
-                    state_str = state_str[9:]
+                state_str = _normalize_state(status.state)
 
                 # Skip if state hasn't changed
                 if state_str == last_state[0]:
                     return
                 last_state[0] = state_str
 
-                # Check if this is a terminal state
                 is_terminal = state_str in TERMINAL_STATES
 
                 stdout_content = ""
                 stderr_content = ""
                 if is_terminal:
-                    try:
-                        sp = getattr(j.spec, 'stdout_path', None)
-                        if sp and os.path.exists(str(sp)):
-                            with open(str(sp), 'r') as f:
-                                stdout_content = f.read()
-                    except Exception:
-                        pass
-                    try:
-                        sp = getattr(j.spec, 'stderr_path', None)
-                        if sp and os.path.exists(str(sp)):
-                            with open(str(sp), 'r') as f:
-                                stderr_content = f.read()
-                    except Exception:
-                        pass
+                    stdout_content = _read_output_file(j, 'stdout_path')
+                    stderr_content = _read_output_file(j, 'stderr_path')
 
                 if notify:
                     notify("job_status", {
@@ -241,10 +243,8 @@ class PSIJSession(PluginSession):
                 # Check all non-terminal jobs
                 for job_id, job in list(self._jobs.items()):
                     try:
-                        status = job.status
-                        state_str = str(status.state)
-                        if state_str.startswith('JobState.'):
-                            state_str = state_str[9:]
+                        status    = job.status
+                        state_str = _normalize_state(status.state)
 
                         # Skip if state hasn't changed
                         last_state = self._job_states.get(job_id)
@@ -257,20 +257,8 @@ class PSIJSession(PluginSession):
                         stdout_content = ""
                         stderr_content = ""
                         if is_terminal:
-                            try:
-                                sp = getattr(job.spec, 'stdout_path', None)
-                                if sp and os.path.exists(str(sp)):
-                                    with open(str(sp), 'r') as f:
-                                        stdout_content = f.read()
-                            except Exception:
-                                pass
-                            try:
-                                sp = getattr(job.spec, 'stderr_path', None)
-                                if sp and os.path.exists(str(sp)):
-                                    with open(str(sp), 'r') as f:
-                                        stderr_content = f.read()
-                            except Exception:
-                                pass
+                            stdout_content = _read_output_file(job, 'stdout_path')
+                            stderr_content = _read_output_file(job, 'stderr_path')
 
                         if self._notify:
                             self._notify("job_status", {
