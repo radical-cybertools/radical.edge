@@ -11,16 +11,20 @@ The plugin runs on a local edge and communicates with remote edges
 '''
 
 import asyncio
+import csv
 import json
 import logging
 import os
 import re
 import shutil
 import subprocess
+import urllib.parse
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+import httpx
 
 from fastapi import FastAPI, HTTPException, Request
 from starlette.responses import JSONResponse
@@ -702,10 +706,15 @@ class XGFabricSession(PluginSession):
         # Find senspot-get
         senspot_path = self._find_senspot_get()
 
+        # Validate CSPOT URL
+        parsed = urllib.parse.urlparse(cfg.cspot_woof_url)
+        if parsed.scheme not in ('http', 'https', 'woof', ''):
+            raise ValueError(f"Invalid cspot_woof_url scheme: {cfg.cspot_woof_url}")
+
         # Fetch latest sequence number
-        cmd = f"{senspot_path} -W {cfg.cspot_woof_url}"
+        cmd = [senspot_path, '-W', cfg.cspot_woof_url]
         result = await asyncio.to_thread(
-            subprocess.run, cmd, shell=True, capture_output=True, text=True, timeout=30
+            subprocess.run, cmd, capture_output=True, text=True, timeout=30
         )
         if result.returncode != 0:
             raise RuntimeError(f"senspot-get failed: {result.stderr}")
@@ -728,9 +737,9 @@ class XGFabricSession(PluginSession):
             if self._cancel_requested:
                 raise asyncio.CancelledError()
 
-            cmd = f"{senspot_path} -W {cfg.cspot_woof_url} -S {current_seq}"
+            cmd = [senspot_path, '-W', cfg.cspot_woof_url, '-S', str(current_seq)]
             result = await asyncio.to_thread(
-                subprocess.run, cmd, shell=True, capture_output=True, text=True, timeout=30
+                subprocess.run, cmd, capture_output=True, text=True, timeout=30
             )
             if result.returncode == 0:
                 output = result.stdout.strip()
