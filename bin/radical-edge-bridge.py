@@ -40,14 +40,14 @@ async def lifespan(app: FastAPI):
     for q in list(clients_sse):
         try:
             await q.put(None)
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug("[Bridge] SSE queue put failed during shutdown: %s", e)
     # Close WebSocket connections
     for edge_name, ws in list(edges.items()):
         try:
             await ws.close(code=1001, reason="Server shutting down")
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug("[Bridge] WebSocket close failed during shutdown: %s", e)
     edges.clear()
     log.info("[Bridge] Shutdown complete")
 
@@ -205,7 +205,8 @@ async def register(ws: WebSocket):
                 return
             try:
                 await ws.send_text(json.dumps({"type": "ping"}))
-            except Exception:
+            except Exception as e:
+                log.exception("[Bridge] Ping failed for edge: %s", e)
                 return
 
     ping_task = None
@@ -380,9 +381,9 @@ async def sse_events(request: Request):
                 except asyncio.TimeoutError:
                     continue  # Check shutdown_event again
         except asyncio.CancelledError:
-            pass
-        except Exception:
-            pass  # Client disconnected or other error
+            log.debug("[Bridge] SSE client cancelled")
+        except Exception as e:
+            log.exception("[Bridge] SSE client error: %s", e)
         finally:
             clients_sse.discard(q)
 
@@ -558,8 +559,8 @@ async def root():
             html_path = str(candidate)
         if not os.path.exists(html_path):
             html_path = None
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug("[Bridge] importlib.resources lookup failed: %s", e)
 
     # Fallback: try pkg_resources
     if not html_path:
@@ -568,8 +569,8 @@ async def root():
             html_path = pkg_resources.resource_filename('radical.edge', 'data/edge_explorer.html')
             if not os.path.exists(html_path):
                 html_path = None
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug("[Bridge] pkg_resources lookup failed: %s", e)
 
     if html_path and os.path.exists(html_path):
         # Disable caching for development - ensures latest version is served
@@ -606,8 +607,8 @@ async def serve_plugin(filename: str):
                          else str(candidate)
         if os.path.exists(candidate_path):
             plugin_path = candidate_path
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug("[Bridge] importlib.resources plugin lookup failed: %s", e)
 
     # Fallback: pkg_resources
     if not plugin_path:
@@ -618,8 +619,8 @@ async def serve_plugin(filename: str):
             )
             if os.path.exists(candidate_path):
                 plugin_path = candidate_path
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug("[Bridge] pkg_resources plugin lookup failed: %s", e)
 
     # 2. Try JS content pushed by edges at registration time
     if not plugin_path:
@@ -739,7 +740,8 @@ async def proxy(full_path: str, request: Request):
     if resp.get("is_binary"):
         try:
             raw = base64.b64decode(resp_body or b"")
-        except Exception:
+        except Exception as e:
+            log.exception("[Bridge] Failed to decode binary response: %s", e)
             raw = b""
 
         return Response(content=raw, status_code=status, headers=headers)
@@ -756,8 +758,8 @@ async def proxy(full_path: str, request: Request):
                 return JSONResponse(content=json.loads(content),
                                     status_code=status, headers=headers)
 
-            except Exception:
-                pass
+            except Exception as e:
+                log.exception("[Bridge] Failed to parse JSON response: %s", e)
 
         return Response(content=content, status_code=status, headers=headers)
 
