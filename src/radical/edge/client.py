@@ -319,12 +319,6 @@ class BridgeClient:
         self._listener_stop.set()
         self._http.close()
 
-    def __enter__(self) -> "BridgeClient":
-        return self
-
-    def __exit__(self, _exc_type: Any, _exc_val: Any, _exc_tb: Any) -> None:
-        self.close()
-
     def list_edges(self) -> List[str]:
         """
         List all connected edges and their plugins.
