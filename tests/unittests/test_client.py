@@ -19,12 +19,13 @@ def test_bridge_client(mock_get, mock_post):
         }
     }
     
-    with BridgeClient(url="http://test") as bc:
-        edges = bc.list_edges()
-        assert edges == ['edge1', 'edge2']
-        
-        edge_client = bc.get_edge_client("edge1")
-        assert edge_client._edge_id == "edge1"
+    bc = BridgeClient(url="http://test")
+    edges = bc.list_edges()
+    assert edges == ['edge1', 'edge2']
+
+    edge_client = bc.get_edge_client("edge1")
+    assert edge_client._edge_id == "edge1"
+    bc.close()
 
 class DummyPluginClient(PluginClient):
     pass

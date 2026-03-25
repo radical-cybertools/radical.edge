@@ -109,11 +109,9 @@ class PSIJSession(PluginSession):
             if hasattr(ex, 'poll_interval'):
                 ex.poll_interval = self._poll_interval
 
-            ex.submit(job)
-
             self._jobs[job.id] = job
 
-            # Register a status callback to push notifications on state changes
+            # Register status callback BEFORE submit so no transitions are missed
             notify = self._notify
             job_id = job.id
             last_state = [None]  # Use list to allow mutation in closure
@@ -145,6 +143,8 @@ class PSIJSession(PluginSession):
 
             job.set_job_status_callback(_on_status)
 
+            ex.submit(job)
+
             # Start background polling for job status updates
             self._start_polling()
 
@@ -163,33 +163,15 @@ class PSIJSession(PluginSession):
         if not job:
             raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
 
-        status = job.status
-        stdout_content = ""
-        stderr_content = ""
+        status    = job.status
+        state_str = _normalize_state(status.state)
 
-        try:
-            stdout_path = getattr(job.spec, 'stdout_path', None)
-            if stdout_path:
-                stdout_path_str = str(stdout_path)
-                if os.path.exists(stdout_path_str):
-                    with open(stdout_path_str, 'r') as f:
-                        stdout_content = f.read()
-        except Exception:
-            pass
-
-        try:
-            stderr_path = getattr(job.spec, 'stderr_path', None)
-            if stderr_path:
-                stderr_path_str = str(stderr_path)
-                if os.path.exists(stderr_path_str):
-                    with open(stderr_path_str, 'r') as f:
-                        stderr_content = f.read()
-        except Exception:
-            pass
+        stdout_content = _read_output_file(job, 'stdout_path')
+        stderr_content = _read_output_file(job, 'stderr_path')
 
         return {
             "job_id": job_id,
-            "state": str(status.state),
+            "state": state_str,
             "message": status.message,
             "exit_code": status.exit_code,
             "time": status.time,
@@ -236,9 +218,15 @@ class PSIJSession(PluginSession):
         '''
         Background task that polls job status and sends notifications.
         '''
+        first = True
         while True:
             try:
-                await asyncio.sleep(self._poll_interval)
+                if first:
+                    # Short delay on first poll to catch fast state transitions
+                    await asyncio.sleep(0.5)
+                    first = False
+                else:
+                    await asyncio.sleep(self._poll_interval)
 
                 # Check all non-terminal jobs
                 for job_id, job in list(self._jobs.items()):
