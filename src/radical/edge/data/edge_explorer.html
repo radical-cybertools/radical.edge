@@ -1292,8 +1292,6 @@
 
         // Task management
         registerTask: (plugin, id, label) => registerTask(edgeName, plugin, id, label),
-        // Plugin modules handle their own notification state via onNotification
-        processPendingNotification: () => {},
 
         // Queue data cache (shared across plugins, keyed by edgeName)
         getQueueData: ()     => queueDataCache[edgeName],

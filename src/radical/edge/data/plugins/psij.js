@@ -9,6 +9,9 @@ export const name = 'psij';
 // Per-edge child counters for generating unique edge names
 const edgeCounters = {};
 
+// Buffer for notifications that arrive before job entries are created
+const pendingNotifications = {};  // jobId -> { data, state }
+
 // Module-level job tracking: jobId -> {job_id, executable, arguments, state, ...}
 let psijJobs = {};
 let activePoller = null;   // interval ID for detail overlay polling
@@ -112,8 +115,13 @@ export function onNotification(data, page, api) {
     if (data.data?.stderr) psijJobs[jobId].stderr = data.data.stderr;
   }
 
-  // Update table row
-  updateJobRow(page, jobId, state, data.data);
+  // Update table row; buffer if job entry doesn't exist yet
+  const row = page.querySelector(`.psij-job-row[data-job-id="${CSS.escape(jobId)}"]`);
+  if (row) {
+    updateJobRow(page, jobId, state, data.data);
+  } else if (jobId) {
+    pendingNotifications[jobId] = { data: data.data, state };
+  }
 }
 
 export const notificationConfig = {
@@ -472,8 +480,13 @@ async function submitJob(page, api) {
     // Add row to table
     addJobRow(page, api, jobData);
 
-    // Check for pending notifications
-    api.processPendingNotification('psij', jobId);
+    // Drain any buffered notifications that arrived before row existed
+    if (pendingNotifications[jobId]) {
+      const pending = pendingNotifications[jobId];
+      updateJobRow(page, jobId, pending.state, pending.data);
+      if (psijJobs[jobId]) Object.assign(psijJobs[jobId], pending.data);
+      delete pendingNotifications[jobId];
+    }
 
     // Update only --name for the NEXT submission
     const argsInput = page.querySelector('.p-args');
