@@ -35,16 +35,38 @@ def _normalize_state(state) -> str:
     return s[9:] if s.startswith('JobState.') else s
 
 
-def _read_output_file(job, attr: str) -> str:
-    """Read stdout or stderr from a job's spec path attribute."""
+def _read_output_file(job, attr: str, offset: int = 0) -> str:
+    """Read stdout or stderr from a job's spec path attribute.
+
+    Args:
+        job:    PsiJ job object.
+        attr:   Attribute name on job.spec ('stdout_path' or 'stderr_path').
+        offset: Byte offset to start reading from (0 = full file).
+
+    Returns:
+        Content read from the file starting at offset.
+    """
     try:
         path = getattr(job.spec, attr, None)
         if path and os.path.exists(str(path)):
             with open(str(path), 'r') as f:
+                if offset > 0:
+                    f.seek(offset)
                 return f.read()
     except Exception:
         pass
     return ""
+
+
+def _output_file_size(job, attr: str) -> int:
+    """Return the byte size of a job's stdout/stderr file, or 0."""
+    try:
+        path = getattr(job.spec, attr, None)
+        if path and os.path.exists(str(path)):
+            return os.path.getsize(str(path))
+    except Exception:
+        pass
+    return 0
 
 
 class PSIJSession(PluginSession):
@@ -56,7 +78,8 @@ class PSIJSession(PluginSession):
 
     def __init__(self, sid: str, **kwargs: Any):
         super().__init__(sid)
-        self._jobs: Dict[str, Any] = {}  # local job cache: job_id -> psij.Job
+        self._jobs: Dict[str, Any] = {}       # job_id -> psij.Job
+        self._job_meta: Dict[str, dict] = {}  # job_id -> submission metadata
         self._job_states: Dict[str, str] = {}  # track last known state per job
         self._poll_interval = kwargs.get('poll_interval', self.poll_interval)
         self._poll_task = None
@@ -111,6 +134,19 @@ class PSIJSession(PluginSession):
 
             self._jobs[job.id] = job
 
+            # Store submission metadata for later retrieval
+            attribs = job_spec_dict.get('attributes', {})
+            self._job_meta[job.id] = {
+                'executable':  executable,
+                'arguments':   arguments or [],
+                'executor':    executor_name,
+                'directory':   job_spec_dict.get('directory'),
+                'queue_name':  attribs.get('queue_name'),
+                'account':     attribs.get('account'),
+                'node_count':  attribs.get('node_count'),
+                'duration':    attribs.get('duration'),
+            }
+
             # Register status callback BEFORE submit so no transitions are missed
             notify = self._notify
             job_id = job.id
@@ -155,9 +191,11 @@ class PSIJSession(PluginSession):
             log.exception("Job submission failed: %s", e)
             raise HTTPException(status_code=500, detail=str(e)) from e
 
-    async def get_job_status(self, job_id: str) -> Dict[str, Any]:
+    async def get_job_status(self, job_id: str,
+                            stdout_offset: int = 0,
+                            stderr_offset: int = 0) -> Dict[str, Any]:
         '''
-        Get job status.
+        Get job status with metadata and optional stdout/stderr offset.
         '''
         job = self._jobs.get(job_id)
         if not job:
@@ -166,18 +204,53 @@ class PSIJSession(PluginSession):
         status    = job.status
         state_str = _normalize_state(status.state)
 
-        stdout_content = _read_output_file(job, 'stdout_path')
-        stderr_content = _read_output_file(job, 'stderr_path')
+        stdout_content = _read_output_file(job, 'stdout_path', stdout_offset)
+        stderr_content = _read_output_file(job, 'stderr_path', stderr_offset)
+
+        meta = self._job_meta.get(job_id, {})
 
         return {
-            "job_id": job_id,
-            "state": state_str,
-            "message": status.message,
-            "exit_code": status.exit_code,
-            "time": status.time,
-            "stdout": stdout_content,
-            "stderr": stderr_content
+            "job_id":        job_id,
+            "native_id":     job.native_id,
+            "state":         state_str,
+            "message":       status.message,
+            "exit_code":     status.exit_code,
+            "time":          status.time,
+            "executable":    meta.get('executable'),
+            "arguments":     meta.get('arguments', []),
+            "executor":      meta.get('executor'),
+            "directory":     meta.get('directory'),
+            "queue_name":    meta.get('queue_name'),
+            "account":       meta.get('account'),
+            "node_count":    meta.get('node_count'),
+            "duration":      meta.get('duration'),
+            "stdout":        stdout_content,
+            "stderr":        stderr_content,
+            "stdout_offset": _output_file_size(job, 'stdout_path'),
+            "stderr_offset": _output_file_size(job, 'stderr_path'),
         }
+
+    async def list_jobs(self) -> Dict[str, Any]:
+        '''
+        List all jobs in this session with current state and metadata.
+        '''
+        jobs = []
+        for job_id, job in self._jobs.items():
+            state_str = _normalize_state(job.status.state)
+            meta      = self._job_meta.get(job_id, {})
+            jobs.append({
+                "job_id":     job_id,
+                "native_id":  job.native_id,
+                "state":      state_str,
+                "exit_code":  job.status.exit_code,
+                "executable": meta.get('executable'),
+                "arguments":  meta.get('arguments', []),
+                "executor":   meta.get('executor'),
+                "queue_name": meta.get('queue_name'),
+                "account":    meta.get('account'),
+                "node_count": meta.get('node_count'),
+            })
+        return {"jobs": jobs}
 
     async def cancel_job(self, job_id: str) -> Dict[str, Any]:
         '''
@@ -297,23 +370,46 @@ class PSIJClient(PluginClient):
         self._raise(resp, f"psij submit {job_spec.get('executable','?')!r} on {executor!r}")
         return resp.json()
 
-    def get_job_status(self, job_id: str) -> Dict[str, Any]:
+    def get_job_status(self, job_id: str,
+                       stdout_offset: int = 0,
+                       stderr_offset: int = 0) -> Dict[str, Any]:
         """
         Get the status of a job.
 
         Args:
-            job_id: The job ID to query.
+            job_id:        The job ID to query.
+            stdout_offset: Byte offset for stdout (0 = full).
+            stderr_offset: Byte offset for stderr (0 = full).
 
         Returns:
-            Job status info.
+            Job status info including metadata and stdout/stderr.
         """
         if not self.sid:
             raise RuntimeError("No active session")
 
-        url = self._url(f"status/{self.sid}/{job_id}")
+        url    = self._url(f"status/{self.sid}/{job_id}")
+        params = {}
+        if stdout_offset:
+            params['stdout_offset'] = str(stdout_offset)
+        if stderr_offset:
+            params['stderr_offset'] = str(stderr_offset)
 
-        resp = self._http.get(url)
+        resp = self._http.get(url, params=params)
         self._raise(resp, f"job status {job_id!r}")
+        return resp.json()
+
+    def list_jobs(self) -> Dict[str, Any]:
+        """
+        List all jobs in this session.
+
+        Returns:
+            dict with 'jobs' list.
+        """
+        if not self.sid:
+            raise RuntimeError("No active session")
+
+        resp = self._http.get(self._url(f"list_jobs/{self.sid}"))
+        self._raise(resp)
         return resp.json()
 
     def cancel_job(self, job_id: str) -> Dict[str, Any]:
@@ -403,6 +499,7 @@ class PluginPSIJ(Plugin):
 
         self.add_route_post('submit/{sid}', self.submit_job)
         self.add_route_get('status/{sid}/{job_id}', self.get_job_status)
+        self.add_route_get('list_jobs/{sid}', self.list_jobs)
         self.add_route_post('cancel/{sid}/{job_id}', self.cancel_job)
 
     async def submit_job(self, request: Request) -> JSONResponse:
@@ -416,9 +513,18 @@ class PluginPSIJ(Plugin):
                                  executor_name=executor)
 
     async def get_job_status(self, request: Request) -> JSONResponse:
-        sid = request.path_params['sid']
+        sid    = request.path_params['sid']
         job_id = request.path_params['job_id']
-        return await self._forward(sid, PSIJSession.get_job_status, job_id=job_id)
+        so     = int(request.query_params.get('stdout_offset', '0'))
+        se     = int(request.query_params.get('stderr_offset', '0'))
+        return await self._forward(sid, PSIJSession.get_job_status,
+                                   job_id=job_id,
+                                   stdout_offset=so,
+                                   stderr_offset=se)
+
+    async def list_jobs(self, request: Request) -> JSONResponse:
+        sid = request.path_params['sid']
+        return await self._forward(sid, PSIJSession.list_jobs)
 
     async def cancel_job(self, request: Request) -> JSONResponse:
         sid = request.path_params['sid']
