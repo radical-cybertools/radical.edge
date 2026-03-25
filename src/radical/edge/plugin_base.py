@@ -146,6 +146,7 @@ class Plugin(object):
         self.add_route_get('list_sessions', self.list_sessions)
         self.add_route_get('health', self.health_check)
         self.add_route_get('ui_config', self.get_ui_config)
+        self._log_routes()
 
     @property
     def namespace(self) -> str:
