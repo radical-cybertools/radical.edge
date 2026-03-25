@@ -51,11 +51,10 @@ documentation after the job/task table+overlay feature landed.
 ## Priority 3 — Documentation
 
 ### 3.1 Outdated / broken docs
-- [ ] `docs/source/plugin_development.rst`: references `PluginBase`,
-  `SessionBase` which don't exist — rewrite to match actual `Plugin`,
-  `PluginSession` classes
-- [ ] `examples/example_rose.py`: imports `RoseClient` which doesn't exist —
-  either delete or update to match current plugin names
+- [x] `docs/source/plugin_development.rst`: rewritten to document actual
+  `Plugin`, `PluginSession`, `PluginClient` classes with accurate examples
+- [x] `examples/example_rose.py`: deleted (imported non-existent rose plugin)
+- **commit**: `b21e5d9`
 
 ### 3.2 Missing documentation
 - [ ] **REST API reference**: document all plugin endpoints with method, path,
