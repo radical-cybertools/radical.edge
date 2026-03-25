@@ -78,25 +78,31 @@ documentation after the job/task table+overlay feature landed.
 ## Priority 4 — Polish & Minor Issues
 
 ### 4.1 Backend warnings
-- [ ] `plugin_psij.py`: `_read_output_file()` silently returns `''` on any
-  exception — log at DEBUG level
-- [ ] `plugin_rhapsody.py`: `_watch_task` catches all exceptions — ensure
-  error notification always fires (currently does, but verify edge cases)
-- [ ] `plugin_queue_info.py`: `_collect_all_user_jobs()` runs `squeue --json`
-  which can be slow on large clusters — consider adding timeout
+- [x] `plugin_psij.py`: `_read_output_file()` — added DEBUG logging
+- [x] `plugin_rhapsody.py`: `_watch_task` — verified error notification fires
+  in all exception paths via `_send_error_notification`
+- [ ] `plugin_queue_info.py`: `_collect_all_user_jobs()` squeue timeout (deferred)
+- **commit**: `6f64371`
 
 ### 4.2 PsiJ polling termination
-- [ ] Poll loop checks `TERMINAL` set but PsiJ has intermediate states
-  (`STAGE_OUT`, `CLEANUP`) that precede `COMPLETED` — verify the JS
-  `TERMINAL` set matches the Python side exactly
+- [x] Verified: JS TERMINAL = `{'COMPLETED', 'FAILED', 'CANCELED'}` matches
+  Python `TERMINAL_STATES` exactly. Rhapsody also matches.
 
 ### 4.3 Test coverage
-- [ ] Add unit tests for new `list_jobs` / `list_tasks` endpoints
-- [ ] Add unit tests for byte-offset stdout/stderr reading
-- [ ] Add unit tests for Rhapsody callback registration
+- [ ] Add unit tests for new `list_jobs` / `list_tasks` endpoints (deferred)
+- [ ] Add unit tests for byte-offset stdout/stderr reading (deferred)
+- [ ] Add unit tests for Rhapsody callback registration (deferred)
 
 ---
 
 ## Progress log
 
-_(to be filled as items are completed)_
+1. `27872b4` — Fix XSS: escape data attributes and innerHTML in all three JS plugins
+2. `821d82c` — Add threading.Lock for Rhapsody _notified_states callback access
+3. `f718beb` — Extract shared overlay CSS into explorer, namespace row classes
+4. `b21e5d9` — Rewrite plugin_development.rst, remove broken example_rose.py
+5. `74a9051` — Sync CLAUDE.md with new psij/rhapsody APIs
+6. `6f64371` — Add debug logging for silent output file read failures
+
+Deferred items: REST API reference docs, configuration guide, AAA guide,
+squeue timeout, additional test coverage.
