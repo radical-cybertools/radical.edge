@@ -150,15 +150,16 @@ class PSIJSession(PluginSession):
             # Register status callback BEFORE submit so no transitions are missed
             notify = self._notify
             job_id = job.id
-            last_state = [None]  # Use list to allow mutation in closure
+            last_state = None
 
             def _on_status(j, status):
+                nonlocal last_state
                 state_str = _normalize_state(status.state)
 
                 # Skip if state hasn't changed
-                if state_str == last_state[0]:
+                if state_str == last_state:
                     return
-                last_state[0] = state_str
+                last_state = state_str
 
                 is_terminal = state_str in TERMINAL_STATES
 
