@@ -9,6 +9,13 @@ export const name = 'rhapsody';
 // Buffer for notifications that arrive before task entries are created
 const pendingNotifications = {};  // uid -> { data, timestamp }
 
+// Module-level task tracking: uid -> {uid, executable, arguments, state, ...}
+let rhTasks = {};
+let activePoller = null;
+
+const TERMINAL = new Set(['DONE', 'FAILED', 'CANCELED', 'COMPLETED']);
+const CANCELLABLE_NOT = new Set(['DONE', 'FAILED', 'CANCELED', 'COMPLETED']);
+
 export function template() {
   return `
     <div class="page-header">
@@ -29,96 +36,43 @@ export function template() {
     </div>
     <div class="card rh-tasks-card">
       <div class="card-title">📊 Task Monitor</div>
-      <div class="monitor-area rh-output">No tasks submitted yet.</div>
+      <div class="rh-table-area"><p style="color:var(--muted)">No tasks submitted yet.</p></div>
     </div>
   `;
 }
 
 export function css() {
   return `
-    /* Monitor area - shared with psij */
-    .monitor-area {
-      background: var(--bg);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 4px 8px;
-      font-family: 'JetBrains Mono', monospace;
-      font-size: .8rem;
-      max-height: 400px;
-      overflow-y: auto;
-      color: var(--text-dim);
-      min-height: 24px;
+    .rh-table-area table { width: 100%; }
+    .task-row { cursor: pointer; transition: background 0.15s; }
+    .task-row:hover { background: var(--hover); }
+    .job-detail-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 8px 16px;
     }
-    .monitor-area .ok { color: var(--accent2); }
-    .monitor-area .err { color: var(--danger); }
-    .monitor-area .info { color: var(--accent); }
-
-    /* Task entries in monitor */
-    .task-entry {
-      margin: 0;
-      padding: 0;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+    .job-detail-item { display: flex; flex-direction: column; }
+    .job-detail-item .label {
+      font-size: 0.75rem; color: var(--muted); text-transform: uppercase;
     }
-    .task-entry:last-child { border-bottom: none; }
-    .task-entry > summary {
-      display: list-item;
-      list-style-position: outside;
-      margin-left: 18px;
-      cursor: pointer;
-      padding: 4px 0;
-      user-select: none;
-      font-size: 0.85em;
-      outline: none;
+    .job-detail-item .value { font-weight: 500; }
+    .job-output-section { margin-top: 12px; }
+    .job-output-section h4 {
+      margin: 0 0 4px 0; font-size: 0.85rem; color: var(--muted);
+      text-transform: uppercase;
     }
-    .task-entry > summary > .task-summary-content {
-      display: inline-flex;
-      align-items: center;
-      vertical-align: top;
-      width: 100%;
-      margin-left: -4px;
+    .job-output-section pre {
+      background: rgba(0,0,0,0.3); border: 1px solid var(--border);
+      border-radius: 4px; padding: 8px; margin: 0 0 8px 0;
+      max-height: 300px; overflow-y: auto; white-space: pre-wrap;
+      font-size: 0.8rem; font-family: 'JetBrains Mono', monospace;
     }
-    .task-entry > .task-log {
-      margin: 0 0 4px 18px;
-      padding: 4px 0 4px 10px;
-      border-left: 2px solid var(--border);
-      font-size: 0.82em;
-      line-height: 1.2;
-    }
-    .task-entry > .task-log pre {
-      margin: 0;
-      padding: 0;
-      white-space: pre-wrap;
-      background: transparent;
-      border: none;
-      font-family: 'JetBrains Mono', monospace;
-    }
-
-    /* Cancel button */
-    .task-cancel-btn {
-      background: transparent;
-      border: none;
-      color: var(--muted);
-      cursor: pointer;
-      font-size: 0.9em;
-      padding: 2px 6px;
-      margin-left: auto;
-      border-radius: 4px;
-      transition: color 0.2s, background 0.2s;
-      flex-shrink: 0;
-    }
-    .task-cancel-btn:hover {
-      color: var(--danger);
-      background: rgba(255, 77, 109, 0.15);
-    }
-    .task-cancel-btn:disabled {
-      opacity: 0.3;
-      cursor: not-allowed;
-    }
+    .job-output-section pre.out-stream { color: var(--accent2); }
+    .job-output-section pre.err-stream { color: var(--danger); }
   `;
 }
 
 export function init(page, api) {
-  // Bind submit button
   const submitBtn = page.querySelector('[data-action="submit"]');
   if (submitBtn) {
     submitBtn.addEventListener('click', () => submitTask(page, api));
@@ -128,36 +82,253 @@ export function init(page, api) {
 export function onNotification(data, page, api) {
   if (data.topic !== 'task_status') return;
 
-  const uid = data.data?.uid || '';
+  const uid   = data.data?.uid || '';
   const state = data.data?.state || '?';
 
-  // Try to apply the notification; if task entry doesn't exist yet, buffer it
-  const applied = applyNotification(page, api.edgeName, uid, state, data.data);
-  if (!applied && uid) {
+  // Update module-level tracking
+  if (rhTasks[uid]) {
+    Object.assign(rhTasks[uid], data.data);
+  }
+
+  // Update table row
+  const updated = updateTaskRow(page, uid, state, data.data);
+
+  // Buffer if task entry doesn't exist yet
+  if (!updated && uid) {
     pendingNotifications[uid] = { data: data.data, state, timestamp: Date.now() };
   }
 }
 
-// Notification config for the core explorer
 export const notificationConfig = {
   topic: 'task_status',
   idField: 'uid'
 };
 
 // ─────────────────────────────────────────────────────────────
-//  Internal functions
+//  Task table rendering
+// ─────────────────────────────────────────────────────────────
+
+function ensureTable(page) {
+  const area = page.querySelector('.rh-table-area');
+  if (!area) return null;
+
+  let table = area.querySelector('table');
+  if (!table) {
+    area.innerHTML = `<table>
+      <thead><tr>
+        <th>UID</th><th>Executable</th><th>Backend</th>
+        <th>State</th><th></th>
+      </tr></thead><tbody></tbody></table>`;
+    table = area.querySelector('table');
+  }
+  return table;
+}
+
+function addTaskRow(page, api, task) {
+  const table = ensureTable(page);
+  if (!table) return;
+
+  const tbody = table.querySelector('tbody');
+  const tr = document.createElement('tr');
+  tr.className = 'task-row';
+  tr.dataset.uid = task.uid;
+
+  const st = task.state || 'SUBMITTED';
+  const badge = stateBadge(st);
+  const shortExec = (task.executable || '?').split('/').pop();
+  const canCancel = !CANCELLABLE_NOT.has(st);
+
+  tr.innerHTML = `
+    <td><strong>${(task.uid || '').slice(0, 16)}…</strong></td>
+    <td><code>${escHtml(shortExec)}</code></td>
+    <td>${escHtml(task.backend || 'concurrent')}</td>
+    <td><span class="badge ${badge}">${st}</span></td>
+    <td>${canCancel ? `<button class="btn btn-danger btn-sm rh-cancel-btn" data-uid="${task.uid}" title="Cancel">✕</button>` : ''}</td>
+  `;
+
+  // Row click → detail overlay
+  tr.addEventListener('click', (e) => {
+    if (e.target.closest('.rh-cancel-btn')) return;
+    openTaskDetail(api, task.uid);
+  });
+
+  // Cancel button
+  const cancelBtn = tr.querySelector('.rh-cancel-btn');
+  if (cancelBtn) {
+    cancelBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      cancelBtn.disabled = true;
+      cancelBtn.textContent = '…';
+      try {
+        const sid = await api.getSession('rhapsody');
+        await api.fetch(`cancel/${sid}/${task.uid}`, { method: 'POST' });
+        api.flash(`Task ${task.uid.slice(0, 12)}… canceled`);
+      } catch (err) {
+        api.flash('Cancel failed: ' + err.message, false);
+        cancelBtn.disabled = false;
+        cancelBtn.textContent = '✕';
+      }
+    });
+  }
+
+  tbody.insertBefore(tr, tbody.firstChild);
+}
+
+function updateTaskRow(page, uid, state, data) {
+  const row = page.querySelector(`.task-row[data-uid="${uid}"]`);
+  if (!row) return false;
+
+  const badge = row.querySelector('.badge');
+  if (badge) {
+    badge.textContent = state;
+    badge.className = `badge ${stateBadge(state)}`;
+  }
+
+  if (TERMINAL.has(state.toUpperCase())) {
+    const cancelBtn = row.querySelector('.rh-cancel-btn');
+    if (cancelBtn) cancelBtn.remove();
+  }
+
+  return true;
+}
+
+// ─────────────────────────────────────────────────────────────
+//  Task detail overlay with polling
+// ─────────────────────────────────────────────────────────────
+
+async function openTaskDetail(api, uid) {
+  stopPoller();
+
+  const sid = await api.getSession('rhapsody');
+
+  let task;
+  try {
+    task = await api.fetch(`task/${sid}/${uid}`);
+  } catch (e) {
+    api.flash('Error loading task details: ' + e.message, false);
+    return;
+  }
+
+  // Update module-level cache
+  if (rhTasks[uid]) Object.assign(rhTasks[uid], task);
+
+  renderDetailOverlay(api, task);
+
+  // Poll for updates if non-terminal
+  const stateUpper = (task.state || '').toUpperCase();
+  if (!TERMINAL.has(stateUpper)) {
+    activePoller = setInterval(async () => {
+      const overlay = document.getElementById('jobs-overlay');
+      if (!overlay || !overlay.classList.contains('visible')) {
+        stopPoller();
+        return;
+      }
+
+      try {
+        const upd = await api.fetch(`task/${sid}/${uid}`);
+
+        // Update state badge
+        const stateEl = document.getElementById('rh-detail-state');
+        if (stateEl) {
+          stateEl.className = `badge ${stateBadge(upd.state || '')}`;
+          stateEl.textContent = upd.state || '?';
+        }
+
+        // Update exit code
+        const rc = upd.exit_code ?? upd.retval;
+        if (rc != null) {
+          const rcEl = document.getElementById('rh-detail-rc');
+          if (rcEl) rcEl.textContent = rc;
+        }
+
+        // Update stdout/stderr (replace, not append — Rhapsody returns full content)
+        if (upd.stdout) {
+          const outEl = document.getElementById('rh-detail-stdout');
+          if (outEl) outEl.textContent = upd.stdout;
+        }
+        if (upd.stderr) {
+          const errEl = document.getElementById('rh-detail-stderr');
+          if (errEl) errEl.textContent = upd.stderr;
+        }
+        if (upd.exception) {
+          const excEl = document.getElementById('rh-detail-exception');
+          if (excEl) {
+            excEl.textContent = upd.exception;
+            excEl.parentElement.style.display = '';
+          }
+        }
+
+        if (TERMINAL.has((upd.state || '').toUpperCase())) {
+          stopPoller();
+          if (rhTasks[uid]) Object.assign(rhTasks[uid], upd);
+        }
+      } catch (e) {
+        // Silently ignore poll errors
+      }
+    }, 3000);
+  }
+}
+
+function stopPoller() {
+  if (activePoller) {
+    clearInterval(activePoller);
+    activePoller = null;
+  }
+}
+
+function renderDetailOverlay(api, task) {
+  const st = task.state || '-';
+  const badge = stateBadge(st);
+  const argsStr = Array.isArray(task.arguments) ? task.arguments.join(' ') : (task.arguments || '-');
+
+  const fields = [
+    ['UID',        task.uid || '-'],
+    ['State',      `<span id="rh-detail-state" class="badge ${badge}">${st}</span>`],
+    ['Exit Code',  `<span id="rh-detail-rc">${task.exit_code ?? task.retval ?? '-'}</span>`],
+    ['Executable', task.executable || '-'],
+    ['Arguments',  `<code>${escHtml(argsStr)}</code>`],
+    ['Backend',    task.backend || '-'],
+  ];
+
+  let body = '<div class="job-detail-grid">';
+  for (const [label, value] of fields) {
+    body += `<div class="job-detail-item">
+      <span class="label">${label}</span>
+      <span class="value">${value}</span>
+    </div>`;
+  }
+  body += '</div>';
+
+  // stdout / stderr / exception sections
+  const hasException = task.exception;
+  body += `
+    <div class="job-output-section">
+      <h4>stdout</h4>
+      <pre id="rh-detail-stdout" class="out-stream">${escHtml(task.stdout || '')}</pre>
+    </div>
+    <div class="job-output-section">
+      <h4>stderr</h4>
+      <pre id="rh-detail-stderr" class="err-stream">${escHtml(task.stderr || '')}</pre>
+    </div>
+    <div class="job-output-section" style="${hasException ? '' : 'display:none'}">
+      <h4>exception</h4>
+      <pre id="rh-detail-exception" class="err-stream">${escHtml(task.exception || '')}</pre>
+    </div>
+  `;
+
+  const title = `🎼 Task Details: ${(task.uid || '').slice(0, 16)}…`;
+  api.showOverlay(title, body);
+}
+
+// ─────────────────────────────────────────────────────────────
+//  Submit
 // ─────────────────────────────────────────────────────────────
 
 async function submitTask(page, api) {
-  const output = page.querySelector('.rh-output');
-
   const exec = page.querySelector('.rh-exec').value.trim();
   const args = page.querySelector('.rh-args').value.trim().split(/\s+/).filter(Boolean);
   const backendsRaw = page.querySelector('.rh-backends').value.trim();
   const backends = backendsRaw ? backendsRaw.split(',').map(s => s.trim()).filter(Boolean) : null;
-
-  // Clear placeholder
-  if (output.textContent === 'No tasks submitted yet.') output.innerHTML = '';
 
   try {
     const regBody = backends ? { backends } : {};
@@ -177,99 +348,41 @@ async function submitTask(page, api) {
     for (const uid of uids) {
       api.registerTask('rhapsody', uid, `${exec} ${args.join(' ')}`);
 
-      const taskEntry = document.createElement('details');
-      taskEntry.className = 'task-entry';
-      taskEntry.id = `rh-task-${api.edgeName}-${uid}`;
-      taskEntry.innerHTML = `
-        <summary>
-          <span class="task-summary-content">
-            <strong style="margin-right:6px;">🎼 ${uid.slice(0, 12)}…</strong>
-            <span class="rh-task-state badge badge-orange" style="font-size:.65rem;padding:1px 4px;">PENDING</span>
-            <code style="font-size:0.8em;color:var(--muted);margin-left:8px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${exec} ${args.join(' ')}</code>
-            <button class="task-cancel-btn" title="Cancel task">✕</button>
-          </span>
-        </summary>
-        <div class="task-log rh-task-log"><div style="color:var(--muted);font-style:italic;">Waiting…</div></div>`;
+      const taskData = {
+        uid:        uid,
+        executable: exec,
+        arguments:  args,
+        backend:    backends ? backends[0] : 'concurrent',
+        state:      'SUBMITTED',
+      };
+      rhTasks[uid] = taskData;
 
-      // Bind cancel button
-      taskEntry.querySelector('.task-cancel-btn').addEventListener('click', (e) => {
-        e.stopPropagation();
-        cancelTask(page, api, uid, e.target);
-      });
+      addTaskRow(page, api, taskData);
 
-      output.appendChild(taskEntry);
-      output.scrollTop = output.scrollHeight;
-
-      // Check for pending notifications that arrived before the task entry was created
+      // Check for pending notifications
       if (pendingNotifications[uid]) {
         const pending = pendingNotifications[uid];
-        applyNotification(page, api.edgeName, uid, pending.state, pending.data);
+        updateTaskRow(page, uid, pending.state, pending.data);
+        if (rhTasks[uid]) Object.assign(rhTasks[uid], pending.data);
         delete pendingNotifications[uid];
       }
     }
 
   } catch (e) {
-    output.innerHTML += `<span class="err">Submit error: ${escHtml(e.message)}</span>\n`;
     api.flash('Rhapsody error: ' + e.message, false);
   }
 }
 
-async function cancelTask(page, api, uid, btn) {
-  btn.disabled = true;
+// ─────────────────────────────────────────────────────────────
+//  Utility functions
+// ─────────────────────────────────────────────────────────────
 
-  try {
-    const sid = await api.getSession('rhapsody');
-    await api.fetch(`cancel/${sid}/${uid}`, { method: 'POST' });
-    api.flash(`Task ${uid.slice(0, 12)}… canceled`);
-
-    // Update the state badge
-    const entry = document.getElementById(`rh-task-${api.edgeName}-${uid}`);
-    if (entry) {
-      const badge = entry.querySelector('.rh-task-state');
-      if (badge) {
-        badge.textContent = 'CANCELED';
-        badge.className = 'rh-task-state badge badge-red';
-      }
-    }
-  } catch (e) {
-    api.flash('Cancel failed: ' + e.message, false);
-    btn.disabled = false;
-  }
-}
-
-function applyNotification(page, edgeName, uid, state, data) {
-  const entryId = `rh-task-${edgeName}-${uid}`;
-  const entry = document.getElementById(entryId);
-  if (!entry) return false;
-
-  const stateEl = entry.querySelector('.rh-task-state');
-  const logEl = entry.querySelector('.rh-task-log');
-  if (!stateEl || !logEl) return false;
-
-  const ts = new Date().toLocaleTimeString();
-  const stateUpper = (state || '').toUpperCase();
-  const isOk = ['DONE', 'COMPLETED'].some(s => stateUpper.includes(s));
-  const isRunning = stateUpper.includes('RUNNING') || stateUpper.includes('ACTIVE');
-  const isFailed = ['FAILED', 'ERROR', 'CANCELED'].some(s => stateUpper.includes(s));
-
-  stateEl.className = `rh-task-state badge ${isOk ? 'badge-green' : isRunning ? 'badge-blue' : isFailed ? 'badge-red' : 'badge-orange'}`;
-  stateEl.textContent = state;
-
-  // Disable cancel button on terminal states
-  const isTerminal = isOk || isFailed;
-  const cancelBtn = entry.querySelector('.task-cancel-btn');
-  if (cancelBtn && isTerminal) {
-    cancelBtn.disabled = true;
-  }
-
-  const rc = data.exit_code ?? data.retval ?? '?';
-  let logHtml = `<span style="color:var(--muted);font-size:0.9em;">[${ts}] <b>${state}</b> rc:${rc}</span>`;
-  if (data.stdout) logHtml += `<pre class="ok">out: ${escHtml(data.stdout).trim()}</pre>`;
-  if (data.stderr) logHtml += `<pre class="err">err: ${escHtml(data.stderr).trim()}</pre>`;
-  if (data.exception) logHtml += `<pre class="err">exc: ${escHtml(data.exception).trim()}</pre>`;
-  logEl.innerHTML = logHtml;
-
-  return true;
+function stateBadge(state) {
+  const s = (state || '').toUpperCase();
+  if (['DONE', 'COMPLETED'].includes(s)) return 'badge-green';
+  if (['RUNNING', 'ACTIVE'].includes(s)) return 'badge-blue';
+  if (['FAILED', 'ERROR', 'CANCELED'].includes(s)) return 'badge-red';
+  return 'badge-orange';
 }
 
 function escHtml(s) {
