@@ -31,10 +31,10 @@ shutdown_event = asyncio.Event()
 async def lifespan(app: FastAPI):
     """Lifespan context manager for startup/shutdown."""
     shutdown_event.clear()
-    print("[Bridge] Started")
+    log.info("[Bridge] Started")
     yield
     # Shutdown
-    print("[Bridge] Shutting down...")
+    log.info("[Bridge] Shutting down...")
     shutdown_event.set()
     # Wake up all SSE clients
     for q in list(clients_sse):
@@ -49,7 +49,7 @@ async def lifespan(app: FastAPI):
         except Exception:
             pass
     edges.clear()
-    print("[Bridge] Shutdown complete")
+    log.info("[Bridge] Shutdown complete")
 
 
 app = FastAPI(
@@ -171,7 +171,7 @@ async def broadcast_topology_to_edges():
             if ws.client_state == WebSocketState.CONNECTED:
                 await ws.send_text(msg)
         except Exception as e:
-            print(f"[Bridge] Failed to send topology to {edge_name}: {e}")
+            log.warning("[Bridge] Failed to send topology to %s: %s", edge_name, e)
 
 
 async def _send_to_edge(edge_name: str, message: dict):
@@ -233,11 +233,11 @@ async def register(ws: WebSocket):
                 frame_edge_name = data.get("edge_name")
 
                 if not frame_edge_name:
-                    print("[Bridge] Registration missing edge_name")
+                    log.warning("[Bridge] Registration missing edge_name")
                     continue
 
                 if frame_edge_name in edges:
-                    print(f"[Bridge] Edge '{frame_edge_name}' already connected.")
+                    log.warning("[Bridge] Edge '%s' already connected.", frame_edge_name)
                     await ws.send_text(json.dumps({
                         "type": "error",
                         "message": f"Edge '{frame_edge_name}' already used"
@@ -246,7 +246,7 @@ async def register(ws: WebSocket):
 
                 edge_name = frame_edge_name
                 edges[edge_name] = ws
-                print(f"[Bridge] Edge '{edge_name}' connected")
+                log.info("[Bridge] Edge '%s' connected", edge_name)
                 endpoints["edges"][edge_name] = {
                     "endpoint": data.get("endpoint", {}),
                     "plugins": {},
@@ -261,7 +261,7 @@ async def register(ws: WebSocket):
                     endpoints["edges"][edge_name]["plugins"][pname] = pdata
 
                 plugin_names = list(endpoints["edges"][edge_name]["plugins"].keys())
-                print(f"[Bridge] Edge '{edge_name}' registered  plugins={plugin_names}")
+                log.info("[Bridge] Edge '%s' registered  plugins=%s", edge_name, plugin_names)
 
                 await broadcast_event("topology", endpoints)
                 await broadcast_topology_to_edges()
@@ -290,18 +290,18 @@ async def register(ws: WebSocket):
 
             else:
                 # ignore unknown frames
-                print(f"[Bridge] Unknown message type received: {data}")
+                log.debug("[Bridge] Unknown message type received: %s", data)
 
 
     except WebSocketDisconnect:
         pass
 
     except Exception as e:
-        print(f"[Bridge] Edge connection error: {e}")
+        log.exception("[Bridge] Edge connection error: %s", e)
 
     finally:
 
-        print(f"[Bridge] Edge disconnected: {edge_name}")
+        log.info("[Bridge] Edge disconnected: %s", edge_name)
         if ping_task:
             ping_task.cancel()
 
@@ -310,7 +310,7 @@ async def register(ws: WebSocket):
             # (Prevent rejected duplicates from killing the valid session)
             if edges.get(edge_name) == ws:
                 if edge_name in endpoints["edges"]:
-                    print(f"[Bridge] Unregistering edge: {edge_name}")
+                    log.info("[Bridge] Unregistering edge: %s", edge_name)
                     del endpoints["edges"][edge_name]
                     await broadcast_event("topology", endpoints)
                     await broadcast_topology_to_edges()
@@ -318,7 +318,7 @@ async def register(ws: WebSocket):
                 if edge_name in edges:
                     del edges[edge_name]
             else:
-                print(f"[Bridge] Disconnected duplicate/inactive session for: {edge_name}")
+                log.info("[Bridge] Disconnected duplicate/inactive session for: %s", edge_name)
 
         # Fail in-flight requests for this edge only
         if edge_name:
@@ -766,21 +766,19 @@ def validate_ssl_config(certfile: str, keyfile: str) -> None:
     """Validate SSL certificate and key files. Exit on error."""
 
     if not certfile:
-        print("[Bridge] ERROR: SSL certificate required.")
-        print("         Set RADICAL_BRIDGE_CERT environment variable.")
+        log.error("[Bridge] SSL certificate required. Set RADICAL_BRIDGE_CERT.")
         exit(1)
 
     if not keyfile:
-        print("[Bridge] ERROR: SSL key required.")
-        print("         Set RADICAL_BRIDGE_KEY environment variable.")
+        log.error("[Bridge] SSL key required. Set RADICAL_BRIDGE_KEY.")
         exit(1)
 
     if not os.path.exists(certfile):
-        print(f"[Bridge] ERROR: Certificate file not found: {certfile}")
+        log.error("[Bridge] Certificate file not found: %s", certfile)
         exit(1)
 
     if not os.path.exists(keyfile):
-        print(f"[Bridge] ERROR: Key file not found: {keyfile}")
+        log.error("[Bridge] Key file not found: %s", keyfile)
         exit(1)
 
     # Verify certificate and key are valid and match
@@ -788,13 +786,13 @@ def validate_ssl_config(certfile: str, keyfile: str) -> None:
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.load_cert_chain(certfile, keyfile)
     except ssl.SSLError as e:
-        print(f"[Bridge] ERROR: Invalid SSL certificate/key: {e}")
+        log.error("[Bridge] Invalid SSL certificate/key: %s", e)
         exit(1)
     except Exception as e:
-        print(f"[Bridge] ERROR: Cannot load SSL certificate/key: {e}")
+        log.error("[Bridge] Cannot load SSL certificate/key: %s", e)
         exit(1)
 
-    print(f"[Bridge] SSL certificate validated: {certfile}")
+    log.info("[Bridge] SSL certificate validated: %s", certfile)
 
 
 if __name__ == "__main__":
@@ -833,7 +831,7 @@ if __name__ == "__main__":
 
     endpoints["bridge"]["url"] = bridge_url
 
-    print(f"[Bridge] URL: {bridge_url}")
+    log.info("[Bridge] URL: %s", bridge_url)
 
     uvicorn.run(app,
                 host=host,
