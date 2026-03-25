@@ -543,8 +543,6 @@ async function startWorkflow(page, api, btn) {
 }
 
 async function stopWorkflow(page, api, btn) {
-  if (!confirm('Stop the running workflow?')) return;
-
   btn.disabled = true;
   try {
     const sid = await getSession(api);

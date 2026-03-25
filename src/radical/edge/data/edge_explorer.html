@@ -2544,7 +2544,6 @@
     }
 
     async function cancelEdgeJob(jobId) {
-      if (!confirm(`Cancel edge job "${jobId}"?`)) return;
       try {
         await apiFetch(`/edge/job/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' });
         flash(`Edge job "${jobId}" cancelled`);
