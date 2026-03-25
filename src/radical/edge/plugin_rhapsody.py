@@ -317,8 +317,7 @@ class RhapsodyClient(PluginClient):
         Returns:
             list[dict]: Submitted task info (uid, state).
         """
-        if not self.sid:
-            raise RuntimeError("No active session")
+        self._require_session()
 
         url = self._url(f"submit/{self.sid}")
         resp = self._http.post(url, json={"tasks": task_dicts})
@@ -338,8 +337,7 @@ class RhapsodyClient(PluginClient):
         Returns:
             list[dict]: Completed task dicts.
         """
-        if not self.sid:
-            raise RuntimeError("No active session")
+        self._require_session()
 
         url = self._url(f"wait/{self.sid}")
         payload: dict = {"uids": uids}
@@ -351,8 +349,7 @@ class RhapsodyClient(PluginClient):
 
     def list_tasks(self) -> dict:
         """List all tasks in this session."""
-        if not self.sid:
-            raise RuntimeError("No active session")
+        self._require_session()
 
         resp = self._http.get(self._url(f"list_tasks/{self.sid}"))
         self._raise(resp)
@@ -362,8 +359,7 @@ class RhapsodyClient(PluginClient):
         """
         Retrieve info for a single task.
         """
-        if not self.sid:
-            raise RuntimeError("No active session")
+        self._require_session()
 
         url = self._url(f"task/{self.sid}/{uid}")
         resp = self._http.get(url)
@@ -374,8 +370,7 @@ class RhapsodyClient(PluginClient):
         """
         Cancel a task.
         """
-        if not self.sid:
-            raise RuntimeError("No active session")
+        self._require_session()
 
         url = self._url(f"cancel/{self.sid}/{uid}")
         resp = self._http.post(url)
@@ -386,8 +381,7 @@ class RhapsodyClient(PluginClient):
         """
         Request session statistics.
         """
-        if not self.sid:
-            raise RuntimeError("No active session")
+        self._require_session()
 
         url = self._url(f"statistics/{self.sid}")
         resp = self._http.get(url)

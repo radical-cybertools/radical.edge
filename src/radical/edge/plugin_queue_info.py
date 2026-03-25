@@ -145,8 +145,7 @@ class QueueInfoClient(PluginClient):
         Returns:
             dict: Queue information filtered by user access.
         """
-        if not self.sid:
-            raise RuntimeError("No active session")
+        self._require_session()
 
         url = self._url(f"get_info/{self.sid}")
         params = {"force": str(force).lower()}
@@ -170,8 +169,7 @@ class QueueInfoClient(PluginClient):
         Returns:
             dict: Job listing filtered by user.
         """
-        if not self.sid:
-            raise RuntimeError("No active session")
+        self._require_session()
 
         url = self._url(f"list_jobs/{self.sid}/{queue}")
         params = {"force": str(force).lower()}
@@ -192,8 +190,7 @@ class QueueInfoClient(PluginClient):
         Returns:
             dict: Job listing.
         """
-        if not self.sid:
-            raise RuntimeError("No active session")
+        self._require_session()
 
         url = self._url(f"list_all_jobs/{self.sid}")
         params = {"force": str(force).lower()}
@@ -205,8 +202,7 @@ class QueueInfoClient(PluginClient):
 
     def cancel_job(self, job_id: str) -> dict:
         """Cancel a job by ID."""
-        if not self.sid:
-            raise RuntimeError("No active session")
+        self._require_session()
         resp = self._http.post(self._url(f"cancel/{self.sid}/{job_id}"))
         self._raise(resp, f"cancel job {job_id!r}")
         return resp.json()
@@ -215,8 +211,7 @@ class QueueInfoClient(PluginClient):
         """
         List allocations/projects.
         """
-        if not self.sid:
-            raise RuntimeError("No active session")
+        self._require_session()
 
         url = self._url(f"list_allocations/{self.sid}")
         params = {"force": str(force).lower()}

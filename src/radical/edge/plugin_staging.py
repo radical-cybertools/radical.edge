@@ -226,8 +226,7 @@ class StagingClient(PluginClient):
             FileExistsError: If remote target file already exists and overwrite is False
             RuntimeError: If no active session
         """
-        if not self.sid:
-            raise RuntimeError("No active session")
+        self._require_session()
 
         # Validate local source exists
         if not os.path.exists(src):
@@ -272,8 +271,7 @@ class StagingClient(PluginClient):
             FileExistsError: If local target file already exists (client-side)
             RuntimeError: If no active session
         """
-        if not self.sid:
-            raise RuntimeError("No active session")
+        self._require_session()
 
         # Check local target doesn't exist
         if os.path.exists(tgt):
@@ -322,8 +320,7 @@ class StagingClient(PluginClient):
             NotADirectoryError: If path is not a directory
             RuntimeError: If no active session
         """
-        if not self.sid:
-            raise RuntimeError("No active session")
+        self._require_session()
 
         url = self._url(f"list/{self.sid}")
         resp = self._http.post(url, json={"path": path})

@@ -360,8 +360,7 @@ class PSIJClient(PluginClient):
         Returns:
              dict: Job submission result (job_id, native_id).
         """
-        if not self.sid:
-            raise RuntimeError("No active session")
+        self._require_session()
 
         url = self._url(f"submit/{self.sid}")
         payload = {"job_spec": job_spec, "executor": executor}
@@ -384,8 +383,7 @@ class PSIJClient(PluginClient):
         Returns:
             Job status info including metadata and stdout/stderr.
         """
-        if not self.sid:
-            raise RuntimeError("No active session")
+        self._require_session()
 
         url    = self._url(f"status/{self.sid}/{job_id}")
         params = {}
@@ -405,8 +403,7 @@ class PSIJClient(PluginClient):
         Returns:
             dict with 'jobs' list.
         """
-        if not self.sid:
-            raise RuntimeError("No active session")
+        self._require_session()
 
         resp = self._http.get(self._url(f"list_jobs/{self.sid}"))
         self._raise(resp)
@@ -422,8 +419,7 @@ class PSIJClient(PluginClient):
         Returns:
             Cancellation result.
         """
-        if not self.sid:
-            raise RuntimeError("No active session")
+        self._require_session()
 
         url = self._url(f"cancel/{self.sid}/{job_id}")
 

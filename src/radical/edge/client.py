@@ -466,6 +466,11 @@ class PluginClient:
         """Return the current session ID."""
         return self._sid
 
+    def _require_session(self) -> None:
+        """Raise RuntimeError if no session is active."""
+        if not self._sid:
+            raise RuntimeError("No active session")
+
     def _url(self, path: str) -> str:
         """Construct full URL for a path."""
         return f"{self._base_url}/{path.lstrip('/')}"

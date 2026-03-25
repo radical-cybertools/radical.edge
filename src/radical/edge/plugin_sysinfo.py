@@ -513,8 +513,7 @@ class SysInfoClient(PluginClient):
         """
         Return current system metrics.
         """
-        if not self.sid:
-            raise RuntimeError("No active session")
+        self._require_session()
 
         url = self._url(f"metrics/{self.sid}")
         resp = self._http.get(url)
