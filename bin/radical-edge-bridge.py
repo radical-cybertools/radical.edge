@@ -24,14 +24,13 @@ from starlette.websockets    import WebSocketState
 log = logging.getLogger("radical.edge.bridge")
 
 # Global shutdown event for graceful termination
-shutdown_event: asyncio.Event = None
+shutdown_event = asyncio.Event()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan context manager for startup/shutdown."""
-    global shutdown_event
-    shutdown_event = asyncio.Event()
+    shutdown_event.clear()
     print("[Bridge] Started")
     yield
     # Shutdown
@@ -192,7 +191,7 @@ async def register(ws: WebSocket):
     # Heartbeat
     async def pinger():
         elapsed = 0
-        while not (shutdown_event and shutdown_event.is_set()):
+        while not (shutdown_event.is_set()):
             try:
                 await asyncio.sleep(1.0)
                 elapsed += 1
@@ -214,7 +213,7 @@ async def register(ws: WebSocket):
         # start the ping task - it will run as long as the endpoint is connected
         ping_task = asyncio.create_task(pinger())
 
-        while not (shutdown_event and shutdown_event.is_set()):
+        while not (shutdown_event.is_set()):
             try:
                 msg = await asyncio.wait_for(ws.receive_text(), timeout=1.0)
             except asyncio.TimeoutError:
@@ -358,7 +357,7 @@ async def sse_events(request: Request):
 
     async def event_generator():
         try:
-            while not (shutdown_event and shutdown_event.is_set()):
+            while not (shutdown_event.is_set()):
                 # Check if client disconnected
                 if await request.is_disconnected():
                     break
