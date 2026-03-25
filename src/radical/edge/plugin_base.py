@@ -137,7 +137,6 @@ class Plugin(object):
 
         self._sessions: Dict[str, PluginSession] = {}
         self._session_last_access: Dict[str, float] = {}  # Track last access time
-        self._id_lock: asyncio.Lock = asyncio.Lock()
         self._main_loop: Optional[asyncio.AbstractEventLoop] = None
 
         # Built-in session management routes
@@ -218,9 +217,7 @@ class Plugin(object):
 
     async def register_session(self, request: Request) -> JSONResponse:
         """Register a new session and return its unique session ID."""
-        async with self._id_lock:
-            sid = f"session.{uuid.uuid4().hex[:8]}"
-
+        sid = f"session.{uuid.uuid4().hex[:8]}"
         self._sessions[sid] = self._create_session(sid)
         self._session_last_access[sid] = time.time()
         log.info("[%s] Registered session %s", self.instance_name, sid)

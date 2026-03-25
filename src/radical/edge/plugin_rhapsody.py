@@ -414,9 +414,7 @@ class PluginRhapsody(Plugin):
 
         backend_names = data.get('backends')
 
-        async with self._id_lock:
-            sid = f"session.{_uuid.uuid4().hex[:8]}"
-
+        sid = f"session.{_uuid.uuid4().hex[:8]}"
 
         session = self._create_session(sid, backend_names=backend_names)
         if hasattr(session, 'initialize'):
