@@ -522,7 +522,8 @@ class XGFabricSession(PluginSession):
 
     async def _execute_workflow(self):
         """Main workflow execution logic."""
-        assert self._current_config is not None
+        if not self._current_config:
+            raise RuntimeError("No active workflow configuration")
         cfg = self._current_config
 
         rc = self._current_resource_config
@@ -653,14 +654,16 @@ class XGFabricSession(PluginSession):
 
     async def _is_edge_online(self, cluster: Dict) -> bool:
         """Check if cluster's child edge is online."""
-        assert self._bc is not None
+        if not self._bc:
+            raise RuntimeError("No active bridge connection")
         edge_name = cluster.get('child_edge_name') or cluster['edge_name']
         edges = await asyncio.to_thread(self._bc.list_edges)
         return edge_name in edges
 
     def _get_plugin(self, cluster: Dict, plugin_name: str) -> Any:
         """Get plugin client for a cluster."""
-        assert self._bc is not None
+        if not self._bc:
+            raise RuntimeError("No active bridge connection")
         edge_name = cluster.get('child_edge_name') or cluster['edge_name']
         ec = self._bc.get_edge_client(edge_name)
         return ec.get_plugin(plugin_name)
@@ -683,7 +686,8 @@ class XGFabricSession(PluginSession):
 
     async def _acquire_sensor_data(self, workspace: Path) -> Path:
         """Fetch sensor data from CSPOT (or generate mock data for testing)."""
-        assert self._current_config is not None
+        if not self._current_config:
+            raise RuntimeError("No active workflow configuration")
         cfg = self._current_config
         output_dir = workspace / "data"
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -828,7 +832,8 @@ class XGFabricSession(PluginSession):
 
     async def _submit_pilot(self, cluster: Dict, bridge_url: str) -> str:
         """Submit pilot job to spawn child edge."""
-        assert self._bc is not None
+        if not self._bc:
+            raise RuntimeError("No active bridge connection")
         ec = self._bc.get_edge_client(cluster['edge_name'])
         psij: Any = await asyncio.to_thread(ec.get_plugin, 'psij')
 
@@ -868,7 +873,8 @@ class XGFabricSession(PluginSession):
         if not sim_results:
             return
 
-        assert self._current_config is not None
+        if not self._current_config:
+            raise RuntimeError("No active workflow configuration")
         source_staging = await asyncio.to_thread(self._get_plugin, source, 'staging')
         dest_staging   = await asyncio.to_thread(self._get_plugin, dest,   'staging')
 
@@ -904,7 +910,8 @@ class XGFabricSession(PluginSession):
         aborted and we return early so the caller can migrate.
         """
         cfg = self._current_config
-        assert cfg is not None
+        if not cfg:
+            raise RuntimeError("No active workflow configuration")
         params = self._generate_sim_params(sensor_csv, cfg.num_simulations)
 
         workflow_path  = await self._resolve_path(cluster['edge_name'], cluster['workflow_path'])
@@ -1036,7 +1043,8 @@ class XGFabricSession(PluginSession):
     async def _run_training(self, cluster: Dict, sim_results: List[str]):
         """Run ML training on cluster."""
         cfg = self._current_config
-        assert cfg is not None
+        if not cfg:
+            raise RuntimeError("No active workflow configuration")
         workflow_path = await self._resolve_path(cluster['edge_name'], cluster['workflow_path'])
         sensor_dir = f"{workflow_path}/data"
         sim_dir = f"{workflow_path}/simulations"
@@ -1073,7 +1081,8 @@ class XGFabricSession(PluginSession):
 
     async def _run_evaluation(self, cluster: Dict):
         """Run evaluation metrics computation."""
-        assert self._current_config is not None
+        if not self._current_config:
+            raise RuntimeError("No active workflow configuration")
         cfg = self._current_config
 
         workflow_path = await self._resolve_path(cluster['edge_name'], cluster['workflow_path'])
@@ -1119,8 +1128,10 @@ class XGFabricSession(PluginSession):
             try:
                 # Find the cluster config
                 cfg = self._current_config
-                assert cfg is not None
-                assert self._bc is not None
+                if not cfg:
+                    raise RuntimeError("No active workflow configuration")
+                if not self._bc:
+                    raise RuntimeError("No active bridge connection")
                 all_clusters = (self._state.immediate_clusters
                                + self._state.allocate_clusters)
                 for c in all_clusters:
@@ -1285,7 +1296,8 @@ class PluginXGFabric(Plugin):
         session = super()._create_session(sid,
                       workdir=self._workdir, edge_name=edge_name,
                       bridge_url=bridge_url, bridge_cert=bridge_cert)
-        assert isinstance(session, XGFabricSession)
+        if not isinstance(session, XGFabricSession):
+            raise RuntimeError(f"Expected XGFabricSession, got {type(session).__name__}")
 
         # Seed session with current topology so get_status() classifies edges correctly
         if self._connected_edges:
