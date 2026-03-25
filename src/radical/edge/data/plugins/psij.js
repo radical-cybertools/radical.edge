@@ -9,6 +9,13 @@ export const name = 'psij';
 // Per-edge child counters for generating unique edge names
 const edgeCounters = {};
 
+// Module-level job tracking: jobId -> {job_id, executable, arguments, state, ...}
+let psijJobs = {};
+let activePoller = null;   // interval ID for detail overlay polling
+
+const TERMINAL = new Set(['COMPLETED', 'FAILED', 'CANCELED']);
+const CANCELLABLE = new Set(['NEW', 'QUEUED', 'ACTIVE', 'STAGE_IN', 'PENDING']);
+
 export function template() {
   return `
     <div class="page-header">
@@ -47,91 +54,39 @@ export function template() {
     </div>
     <div class="card psij-jobs-card">
       <div class="card-title">📊 Job Monitor</div>
-      <div class="monitor-area psij-output">No jobs submitted yet.</div>
+      <div class="psij-table-area"><p style="color:var(--muted)">No jobs submitted yet.</p></div>
     </div>
   `;
 }
 
 export function css() {
   return `
-    /* Monitor area - shared with rhapsody */
-    .monitor-area {
-      background: var(--bg);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 4px 8px;
-      font-family: 'JetBrains Mono', monospace;
-      font-size: .8rem;
-      max-height: 400px;
-      overflow-y: auto;
-      color: var(--text-dim);
-      min-height: 24px;
+    .psij-table-area table { width: 100%; }
+    .job-row { cursor: pointer; transition: background 0.15s; }
+    .job-row:hover { background: var(--hover); }
+    .job-detail-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 8px 16px;
     }
-    .monitor-area .ok { color: var(--accent2); }
-    .monitor-area .err { color: var(--danger); }
-    .monitor-area .info { color: var(--accent); }
-
-    /* Task entries in job monitor */
-    .task-entry {
-      margin: 0;
-      padding: 0;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+    .job-detail-item { display: flex; flex-direction: column; }
+    .job-detail-item .label {
+      font-size: 0.75rem; color: var(--muted); text-transform: uppercase;
     }
-    .task-entry:last-child { border-bottom: none; }
-    .task-entry > summary {
-      display: list-item;
-      list-style-position: outside;
-      margin-left: 18px;
-      cursor: pointer;
-      padding: 4px 0;
-      user-select: none;
-      font-size: 0.85em;
-      outline: none;
+    .job-detail-item .value { font-weight: 500; }
+    .job-output-section { margin-top: 12px; }
+    .job-output-section h4 {
+      margin: 0 0 4px 0; font-size: 0.85rem; color: var(--muted);
+      text-transform: uppercase;
     }
-    .task-entry > summary > .task-summary-content {
-      display: inline-flex;
-      align-items: center;
-      vertical-align: top;
-      width: 100%;
-      margin-left: -4px;
+    .job-output-section pre {
+      background: rgba(0,0,0,0.3); border: 1px solid var(--border);
+      border-radius: 4px; padding: 8px; margin: 0 0 8px 0;
+      max-height: 300px; overflow-y: auto; white-space: pre-wrap;
+      font-size: 0.8rem; font-family: 'JetBrains Mono', monospace;
     }
-    .task-entry > .task-log {
-      margin: 0 0 4px 18px;
-      padding: 4px 0 4px 10px;
-      border-left: 2px solid var(--border);
-      font-size: 0.82em;
-      line-height: 1.2;
-    }
-    .task-entry > .task-log pre {
-      margin: 0;
-      padding: 0;
-      white-space: pre-wrap;
-      background: transparent;
-      border: none;
-      font-family: 'JetBrains Mono', monospace;
-    }
-
-    /* Cancel button */
-    .task-cancel-btn {
-      background: transparent;
-      border: none;
-      color: var(--muted);
-      cursor: pointer;
-      font-size: 0.9em;
-      padding: 2px 6px;
-      margin-left: auto;
-      border-radius: 4px;
-      transition: color 0.2s, background 0.2s;
-      flex-shrink: 0;
-    }
-    .task-cancel-btn:hover {
-      color: var(--danger);
-      background: rgba(255, 77, 109, 0.15);
-    }
-    .task-cancel-btn:disabled {
-      opacity: 0.3;
-      cursor: not-allowed;
-    }
+    .job-output-section pre.out-stream { color: var(--accent2); }
+    .job-output-section pre.err-stream { color: var(--danger); }
   `;
 }
 
@@ -162,7 +117,6 @@ export function init(page, api) {
 }
 
 export function onShow(page, api) {
-  // Refresh queue/account dropdowns from latest cache each time the page is shown
   const qd = api.getQueueData();
   if (qd) replaceQueueAccountDropdowns(page, qd);
 }
@@ -173,10 +127,18 @@ export function onNotification(data, page, api) {
   const jobId = data.data?.job_id || '';
   const state = data.data?.state || '?';
 
-  applyNotification(page, api.edgeName, jobId, state, data.data);
+  // Update module-level tracking
+  if (psijJobs[jobId]) {
+    psijJobs[jobId].state     = state;
+    psijJobs[jobId].exit_code = data.data?.exit_code;
+    if (data.data?.stdout) psijJobs[jobId].stdout = data.data.stdout;
+    if (data.data?.stderr) psijJobs[jobId].stderr = data.data.stderr;
+  }
+
+  // Update table row
+  updateJobRow(page, jobId, state, data.data);
 }
 
-// Notification config for the core explorer
 export const notificationConfig = {
   topic: 'job_status',
   idField: 'job_id'
@@ -195,7 +157,6 @@ function getNextEdgeChildName(edgeName) {
 function replaceQueueAccountDropdowns(page, queueData) {
   const { queues = [], allocations = [] } = queueData;
 
-  // Replace queue text input with a <select> populated from partitions
   const queueInput = page.querySelector('.p-queue');
   if (queueInput && queueInput.tagName === 'INPUT') {
     const sel = document.createElement('select');
@@ -216,7 +177,6 @@ function replaceQueueAccountDropdowns(page, queueData) {
     queueInput.parentNode.replaceChild(sel, queueInput);
   }
 
-  // Replace account text input with a <select> populated from allocations
   const accountInput = page.querySelector('.p-account');
   if (accountInput && accountInput.tagName === 'INPUT') {
     const sel      = document.createElement('select');
@@ -249,9 +209,237 @@ function addAttributeRow(page) {
   container.appendChild(row);
 }
 
-async function submitJob(page, api) {
-  const output = page.querySelector('.psij-output');
+// ─────────────────────────────────────────────────────────────
+//  Job table rendering
+// ─────────────────────────────────────────────────────────────
 
+function ensureTable(page) {
+  const area = page.querySelector('.psij-table-area');
+  if (!area) return null;
+
+  let table = area.querySelector('table');
+  if (!table) {
+    area.innerHTML = `<table>
+      <thead><tr>
+        <th>Job ID</th><th>Executable</th><th>Executor</th>
+        <th>State</th><th></th>
+      </tr></thead><tbody></tbody></table>`;
+    table = area.querySelector('table');
+  }
+  return table;
+}
+
+function addJobRow(page, api, job) {
+  const table = ensureTable(page);
+  if (!table) return;
+
+  const tbody = table.querySelector('tbody');
+  const tr = document.createElement('tr');
+  tr.className = 'job-row';
+  tr.dataset.jobId = job.job_id;
+
+  const st = job.state || 'NEW';
+  const badge = stateBadge(st);
+  const shortExec = (job.executable || '?').split('/').pop();
+  const canCancel = CANCELLABLE.has(st) || !TERMINAL.has(st);
+
+  tr.innerHTML = `
+    <td><strong>${job.job_id.slice(0, 12)}…</strong></td>
+    <td><code>${escHtml(shortExec)}</code></td>
+    <td>${escHtml(job.executor || 'local')}</td>
+    <td><span class="badge ${badge}">${st}</span></td>
+    <td>${canCancel ? `<button class="btn btn-danger btn-sm psij-cancel-btn" data-job-id="${job.job_id}" title="Cancel">✕</button>` : ''}</td>
+  `;
+
+  // Row click → detail overlay
+  tr.addEventListener('click', (e) => {
+    if (e.target.closest('.psij-cancel-btn')) return;
+    openJobDetail(api, job.job_id);
+  });
+
+  // Cancel button
+  const cancelBtn = tr.querySelector('.psij-cancel-btn');
+  if (cancelBtn) {
+    cancelBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      cancelBtn.disabled = true;
+      cancelBtn.textContent = '…';
+      try {
+        const sid = await api.getSession('psij');
+        await api.fetch(`cancel/${sid}/${job.job_id}`, { method: 'POST' });
+        api.flash(`Job ${job.job_id.slice(0, 8)}… canceled`);
+      } catch (err) {
+        api.flash('Cancel failed: ' + err.message, false);
+        cancelBtn.disabled = false;
+        cancelBtn.textContent = '✕';
+      }
+    });
+  }
+
+  tbody.insertBefore(tr, tbody.firstChild);
+}
+
+function updateJobRow(page, jobId, state, data) {
+  const row = page.querySelector(`.job-row[data-job-id="${jobId}"]`);
+  if (!row) return;
+
+  const badge = row.querySelector('.badge');
+  if (badge) {
+    badge.textContent = state;
+    badge.className = `badge ${stateBadge(state)}`;
+  }
+
+  if (TERMINAL.has(state)) {
+    const cancelBtn = row.querySelector('.psij-cancel-btn');
+    if (cancelBtn) cancelBtn.remove();
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+//  Job detail overlay with streaming
+// ─────────────────────────────────────────────────────────────
+
+async function openJobDetail(api, jobId) {
+  // Stop any existing poller
+  stopPoller();
+
+  const sid = await api.getSession('psij');
+
+  // Initial full fetch (offset=0)
+  let status;
+  try {
+    status = await api.fetch(`status/${sid}/${jobId}`);
+  } catch (e) {
+    api.flash('Error loading job details: ' + e.message, false);
+    return;
+  }
+
+  // Update module-level cache
+  if (psijJobs[jobId]) Object.assign(psijJobs[jobId], status);
+
+  // Render overlay
+  renderDetailOverlay(api, status);
+
+  // Start polling if non-terminal
+  if (!TERMINAL.has(status.state)) {
+    let stdoutOff = status.stdout_offset || 0;
+    let stderrOff = status.stderr_offset || 0;
+
+    activePoller = setInterval(async () => {
+      // Stop if overlay closed
+      const overlay = document.getElementById('jobs-overlay');
+      if (!overlay || !overlay.classList.contains('visible')) {
+        stopPoller();
+        return;
+      }
+
+      try {
+        const upd = await api.fetch(
+          `status/${sid}/${jobId}?stdout_offset=${stdoutOff}&stderr_offset=${stderrOff}`
+        );
+
+        // Update state badge in overlay
+        const stateEl = document.getElementById('psij-detail-state');
+        if (stateEl) {
+          stateEl.className = `badge ${stateBadge(upd.state)}`;
+          stateEl.textContent = upd.state;
+        }
+
+        // Append new stdout
+        if (upd.stdout) {
+          const outEl = document.getElementById('psij-detail-stdout');
+          if (outEl) outEl.textContent += upd.stdout;
+        }
+        stdoutOff = upd.stdout_offset || stdoutOff;
+
+        // Append new stderr
+        if (upd.stderr) {
+          const errEl = document.getElementById('psij-detail-stderr');
+          if (errEl) errEl.textContent += upd.stderr;
+        }
+        stderrOff = upd.stderr_offset || stderrOff;
+
+        // Update exit code
+        if (upd.exit_code != null) {
+          const rcEl = document.getElementById('psij-detail-rc');
+          if (rcEl) rcEl.textContent = upd.exit_code;
+        }
+
+        // Stop polling on terminal
+        if (TERMINAL.has(upd.state)) {
+          stopPoller();
+
+          // Also update the table row
+          if (psijJobs[jobId]) {
+            psijJobs[jobId].state = upd.state;
+            psijJobs[jobId].exit_code = upd.exit_code;
+          }
+        }
+      } catch (e) {
+        // Silently ignore poll errors
+      }
+    }, 3000);
+  }
+}
+
+function stopPoller() {
+  if (activePoller) {
+    clearInterval(activePoller);
+    activePoller = null;
+  }
+}
+
+function renderDetailOverlay(api, job) {
+  const st = job.state || '-';
+  const badge = stateBadge(st);
+  const argsStr = Array.isArray(job.arguments) ? job.arguments.join(' ') : (job.arguments || '-');
+
+  const fields = [
+    ['Job ID',    job.job_id || '-'],
+    ['Native ID', job.native_id || '-'],
+    ['State',     `<span id="psij-detail-state" class="badge ${badge}">${st}</span>`],
+    ['Exit Code', `<span id="psij-detail-rc">${job.exit_code ?? '-'}</span>`],
+    ['Executable', job.executable || '-'],
+    ['Arguments', `<code>${escHtml(argsStr)}</code>`],
+    ['Executor',  job.executor || '-'],
+    ['Queue',     job.queue_name || '-'],
+    ['Account',   job.account || '-'],
+    ['Nodes',     job.node_count || '-'],
+    ['Duration',  job.duration ? `${job.duration}s` : '-'],
+    ['Directory', job.directory || '-'],
+    ['Message',   job.message || '-'],
+  ];
+
+  let body = '<div class="job-detail-grid">';
+  for (const [label, value] of fields) {
+    body += `<div class="job-detail-item">
+      <span class="label">${label}</span>
+      <span class="value">${value}</span>
+    </div>`;
+  }
+  body += '</div>';
+
+  // stdout / stderr sections
+  body += `
+    <div class="job-output-section">
+      <h4>stdout</h4>
+      <pre id="psij-detail-stdout" class="out-stream">${escHtml(job.stdout || '')}</pre>
+    </div>
+    <div class="job-output-section">
+      <h4>stderr</h4>
+      <pre id="psij-detail-stderr" class="err-stream">${escHtml(job.stderr || '')}</pre>
+    </div>
+  `;
+
+  const title = `🚀 Job Details: ${(job.job_id || '').slice(0, 12)}…`;
+  api.showOverlay(title, body);
+}
+
+// ─────────────────────────────────────────────────────────────
+//  Submit
+// ─────────────────────────────────────────────────────────────
+
+async function submitJob(page, api) {
   const exec = page.querySelector('.p-exec').value.trim();
   const args = page.querySelector('.p-args').value.trim().split(/\s+/).filter(Boolean);
   const executor = page.querySelector('.p-executor').value;
@@ -277,9 +465,6 @@ async function submitJob(page, api) {
     }
   });
 
-  // Clear placeholder
-  if (output.textContent === 'No jobs submitted yet.') output.innerHTML = '';
-
   try {
     const sid = await api.getSession('psij');
 
@@ -292,100 +477,47 @@ async function submitJob(page, api) {
     api.flash(`Job submitted: ${jobId}`);
     api.registerTask('psij', jobId, `${exec} ${args.join(' ')}`);
 
-    // Create a per-job expandable entry
-    const jobEntry = document.createElement('details');
-    jobEntry.className = 'task-entry';
-    jobEntry.id = `psij-job-${api.edgeName}-${jobId}`;
-    jobEntry.innerHTML = `
-      <summary>
-        <span class="task-summary-content">
-          <strong style="margin-right:6px;">🚀 ${jobId.slice(0, 8)}…</strong>
-          <span class="psij-job-state badge badge-orange" style="font-size:.65rem;padding:1px 4px;">PENDING</span>
-          <code style="font-size:0.8em;color:var(--muted);margin-left:8px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${exec} ${args.join(' ')}</code>
-          <button class="task-cancel-btn" title="Cancel job">✕</button>
-        </span>
-      </summary>
-      <div class="task-log psij-job-log"><div style="color:var(--muted);font-style:italic;">Waiting…</div></div>`;
+    // Track in module state
+    const jobData = {
+      job_id:     jobId,
+      native_id:  res.native_id,
+      executable: exec,
+      arguments:  args,
+      executor:   executor,
+      state:      'NEW',
+      queue_name: queue || null,
+      account:    account || null,
+      node_count: nodeCount || null,
+      duration:   duration || null,
+    };
+    psijJobs[jobId] = jobData;
 
-    // Bind cancel button
-    jobEntry.querySelector('.task-cancel-btn').addEventListener('click', (e) => {
-      e.stopPropagation();
-      cancelJob(page, api, jobId, e.target);
-    });
-
-    output.appendChild(jobEntry);
-    output.scrollTop = output.scrollHeight;
+    // Add row to table
+    addJobRow(page, api, jobData);
 
     // Check for pending notifications
     api.processPendingNotification('psij', jobId);
 
-    // Update only --name for the NEXT submission, keep user edits
+    // Update only --name for the NEXT submission
     const argsInput = page.querySelector('.p-args');
     const nextName  = getNextEdgeChildName(api.edgeName);
     argsInput.value = argsInput.value.replace(/--name\s+\S+/, `--name ${nextName}`);
 
   } catch (e) {
-    output.innerHTML += `<span class="err">Submit error: ${api.escHtml(e.message)}</span>\n`;
     api.flash('PsiJ error: ' + e.message, false);
   }
 }
 
-async function cancelJob(page, api, jobId, btn) {
-  btn.disabled = true;
+// ─────────────────────────────────────────────────────────────
+//  Utility functions
+// ─────────────────────────────────────────────────────────────
 
-  try {
-    const sid = await api.getSession('psij');
-    await api.fetch(`cancel/${sid}/${jobId}`, { method: 'POST' });
-    api.flash(`Job ${jobId.slice(0, 8)}… canceled`);
-
-    // Update the state badge
-    const entry = document.getElementById(`psij-job-${api.edgeName}-${jobId}`);
-    if (entry) {
-      const badge = entry.querySelector('.psij-job-state');
-      if (badge) {
-        badge.textContent = 'CANCELED';
-        badge.className = 'psij-job-state badge badge-red';
-      }
-    }
-  } catch (e) {
-    api.flash('Cancel failed: ' + e.message, false);
-    btn.disabled = false;
-  }
-}
-
-function applyNotification(page, edgeName, jobId, state, data) {
-  const entryId = `psij-job-${edgeName}-${jobId}`;
-  const entry = document.getElementById(entryId);
-  if (!entry) return false;
-
-  const stateEl = entry.querySelector('.psij-job-state');
-  const logEl = entry.querySelector('.psij-job-log');
-  if (!stateEl || !logEl) return false;
-
-  const ts = new Date().toLocaleTimeString();
-  const stateUpper = (state || '').toUpperCase();
-  const isOk = ['DONE', 'COMPLETED'].some(s => stateUpper.includes(s));
-  const isRunning = stateUpper.includes('RUNNING') || stateUpper.includes('ACTIVE');
-  const isFailed = ['FAILED', 'ERROR', 'CANCELED'].some(s => stateUpper.includes(s));
-
-  stateEl.className = `psij-job-state badge ${isOk ? 'badge-green' : isRunning ? 'badge-blue' : isFailed ? 'badge-red' : 'badge-orange'}`;
-  stateEl.textContent = state;
-
-  // Disable cancel button on terminal states
-  const isTerminal = isOk || isFailed;
-  const cancelBtn = entry.querySelector('.task-cancel-btn');
-  if (cancelBtn && isTerminal) {
-    cancelBtn.disabled = true;
-  }
-
-  const rc = data.exit_code ?? data.retval ?? '?';
-  let logHtml = `<span style="color:var(--muted);font-size:0.9em;">[${ts}] <b>${state}</b> rc:${rc}</span>`;
-  if (data.stdout) logHtml += `<pre class="ok">out: ${escHtml(data.stdout).trim()}</pre>`;
-  if (data.stderr) logHtml += `<pre class="err">err: ${escHtml(data.stderr).trim()}</pre>`;
-  if (data.exception) logHtml += `<pre class="err">exc: ${escHtml(data.exception).trim()}</pre>`;
-  logEl.innerHTML = logHtml;
-
-  return true;
+function stateBadge(state) {
+  const s = (state || '').toUpperCase();
+  if (['COMPLETED'].includes(s))               return 'badge-green';
+  if (['ACTIVE', 'STAGE_OUT', 'CLEANUP'].includes(s)) return 'badge-blue';
+  if (['FAILED', 'CANCELED'].includes(s))      return 'badge-red';
+  return 'badge-orange';
 }
 
 function escHtml(s) {
