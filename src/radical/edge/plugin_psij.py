@@ -112,7 +112,7 @@ class PSIJSession(PluginSession):
                 last_state[0] = state_str
 
                 # Check if this is a terminal state
-                is_terminal = state_str in ('COMPLETED', 'FAILED', 'CANCELED')
+                is_terminal = state_str in TERMINAL_STATES
 
                 stdout_content = ""
                 stderr_content = ""
