@@ -166,16 +166,6 @@ def test_unregister_unknown_session():
     assert exc_info.value.status_code == 404
 
 
-def test_echo():
-    _, plugin, client = _make_plugin()
-    sid = _register(client, plugin)
-
-    resp = client.get(f"{plugin.namespace}/echo/{sid}?q=ping")
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data['echo'] == 'ping'
-
-
 def test_list_sessions():
     _, plugin, client = _make_plugin()
     sid1 = _register(client, plugin)

@@ -98,23 +98,6 @@ class PluginSession:
         self._active = False
         return {}
 
-    async def request_echo(self, q: str = "hello") -> Dict[str, Any]:
-        """
-        Echo service for testing.
-
-        Args:
-            q: The string to echo. Defaults to "hello".
-
-        Returns:
-            A dictionary containing the session ID ('sid') and the
-            echoed string ('echo').
-
-        Raises:
-            RuntimeError: If the session is closed.
-        """
-        self._check_active()
-        return {"sid": self._sid, "echo": q}
-
     def _check_active(self) -> None:
         """
         Check if the session is active.

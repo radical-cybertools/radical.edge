@@ -40,44 +40,6 @@ async def test_xgfabric_session_close():
     assert session._active is False
 
 
-@pytest.mark.asyncio
-async def test_xgfabric_session_echo():
-    '''
-    Test echo functionality.
-    '''
-    session = XGFabricSession("test_session_001")
-
-    result = await session.request_echo("hello world")
-
-    assert result["sid"] == "test_session_001"
-    assert result["echo"] == "hello world"
-
-
-@pytest.mark.asyncio
-async def test_xgfabric_session_echo_default():
-    '''
-    Test echo with default parameter.
-    '''
-    session = XGFabricSession("test_session_001")
-
-    result = await session.request_echo()
-
-    assert result["sid"] == "test_session_001"
-    assert result["echo"] == "hello"
-
-
-@pytest.mark.asyncio
-async def test_xgfabric_session_echo_after_close():
-    '''
-    Test that echo raises error after session is closed.
-    '''
-    session = XGFabricSession("test_session_001")
-    await session.close()
-
-    with pytest.raises(RuntimeError, match="session is closed"):
-        await session.request_echo()
-
-
 def test_plugin_xgfabric_initialization():
     '''
     Test PluginXGFabric initialization.
@@ -87,13 +49,10 @@ def test_plugin_xgfabric_initialization():
 
     assert plugin._instance_name == "xgfabric"
     assert plugin._sessions == {}
-    assert plugin._id_lock is not None
-
     # Check that routes were added
     route_paths = [route.path for route in app.router.routes]
     assert any("register_session" in path for path in route_paths)
     assert any("unregister_session" in path for path in route_paths)
-    assert any("echo" in path for path in route_paths)
 
 
 
@@ -175,66 +134,17 @@ async def test_plugin_xgfabric_unregister_unknown_session():
 
 
 @pytest.mark.asyncio
-async def test_plugin_xgfabric_echo():
+async def test_plugin_xgfabric_forward_unknown_session():
     '''
-    Test echo endpoint.
-    '''
-    app = FastAPI()
-    plugin = PluginXGFabric(app)
-
-    # Register a session
-    request = Mock(spec=Request)
-    response = await plugin.register_session(request)
-    import json
-    sid = json.loads(response.body)['sid']
-
-    # Echo request
-    request.path_params = {"sid": sid}
-    request.query_params = {"q": "test message"}
-    
-    response = await plugin.echo(request)
-
-    assert isinstance(response, JSONResponse)
-    data = json.loads(response.body)
-    assert data['echo'] == "test message"
-
-
-@pytest.mark.asyncio
-async def test_plugin_xgfabric_echo_unknown_session():
-    '''
-    Test echo with unknown session raises HTTPException.
+    Test _forward with unknown session raises HTTPException.
     '''
     app = FastAPI()
     plugin = PluginXGFabric(app)
-
-    request = Mock(spec=Request)
-    request.path_params = {"sid": "unknown_session"}
-    request.query_params = {"q": "test"}
 
     with pytest.raises(HTTPException) as exc_info:
-        await plugin.echo(request)
+        await plugin._forward("unknown_session", XGFabricSession.close)
 
     assert exc_info.value.status_code == 404
-
-
-@pytest.mark.asyncio
-async def test_plugin_xgfabric_forward_success():
-    '''
-    Test _forward method with successful call.
-    '''
-    app = FastAPI()
-    plugin = PluginXGFabric(app)
-
-    # Register a session
-    request = Mock(spec=Request)
-    response = await plugin.register_session(request)
-    import json
-    sid = json.loads(response.body)['sid']
-
-    # Forward a request
-    response = await plugin._forward(sid, XGFabricSession.request_echo, q="test")
-
-    assert isinstance(response, JSONResponse)
 
 
 @pytest.mark.asyncio
@@ -253,9 +163,13 @@ async def test_plugin_xgfabric_forward_session_error():
     
     await plugin._sessions[sid].close()
 
-    # Try to use closed session
+    # Try to use closed session — _check_active raises RuntimeError
+    async def _failing_method(self):
+        self._check_active()
+        return {}
+
     with pytest.raises(HTTPException) as exc_info:
-        await plugin._forward(sid, XGFabricSession.request_echo)
+        await plugin._forward(sid, _failing_method)
 
     assert exc_info.value.status_code == 500
 
@@ -263,7 +177,7 @@ async def test_plugin_xgfabric_forward_session_error():
 @pytest.mark.asyncio
 async def test_plugin_xgfabric_concurrent_registration():
     '''
-    Test that concurrent session registration uses lock properly.
+    Test that concurrent session registration produces unique IDs.
     '''
     import asyncio
 

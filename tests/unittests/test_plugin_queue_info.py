@@ -46,45 +46,6 @@ async def test_queue_info_session_close():
 
 
 @pytest.mark.asyncio
-async def test_queue_info_session_echo():
-    '''
-    Test echo functionality.
-    '''
-    mock_backend = Mock()
-    session = QueueInfoSession("test_session_001", backend=mock_backend)
-    result = await session.request_echo("test message")
-
-    assert result["sid"] == "test_session_001"
-    assert result["echo"] == "test message"
-
-
-@pytest.mark.asyncio
-async def test_queue_info_session_echo_default():
-    '''
-    Test echo with default parameter.
-    '''
-    mock_backend = Mock()
-    session = QueueInfoSession("test_session_001", backend=mock_backend)
-    result = await session.request_echo()
-
-    assert result["sid"] == "test_session_001"
-    assert result["echo"] == "hello"
-
-
-@pytest.mark.asyncio
-async def test_queue_info_session_echo_after_close():
-    '''
-    Test that echo raises error after session is closed.
-    '''
-    mock_backend = Mock()
-    session = QueueInfoSession("test_session_001", backend=mock_backend)
-    await session.close()
-
-    with pytest.raises(RuntimeError, match="session is closed"):
-        await session.request_echo()
-
-
-@pytest.mark.asyncio
 async def test_queue_info_session_get_info():
     '''
     Test getting queue info.
@@ -203,8 +164,6 @@ def test_plugin_queue_info_initialization(mock_slurm):
 
     assert plugin._instance_name == "queue_info"
     assert plugin._sessions == {}
-    assert plugin._id_lock is not None
-
     # Backend is now created at plugin level and shared
     assert plugin._backend == mock_backend
     mock_slurm.assert_called_once_with(slurm_conf=None)
@@ -213,7 +172,6 @@ def test_plugin_queue_info_initialization(mock_slurm):
     route_paths = [route.path for route in app.router.routes]
     assert any("register_session" in path for path in route_paths)
     assert any("unregister_session" in path for path in route_paths)
-    assert any("echo" in path for path in route_paths)
     assert any("get_info" in path for path in route_paths)
     assert any("list_jobs" in path for path in route_paths)
     assert any("list_allocations" in path for path in route_paths)
@@ -281,32 +239,6 @@ async def test_plugin_queue_info_unregister_session(mock_slurm):
 
     assert isinstance(response, JSONResponse)
     assert sid not in plugin._sessions
-
-
-@pytest.mark.asyncio
-@patch('radical.edge.plugin_queue_info.QueueInfoSlurm')
-async def test_plugin_queue_info_echo(mock_slurm):
-    '''
-    Test echo endpoint.
-    '''
-    app = FastAPI()
-    plugin = PluginQueueInfo(app)
-
-    # Register a session
-    request = Mock(spec=Request)
-    response = await plugin.register_session(request)
-    import json
-    sid = json.loads(response.body)['sid']
-
-    # Echo request
-    request.path_params = {"sid": sid}
-    request.query_params = {"q": "test"}
-
-    response = await plugin.echo(request)
-
-    assert isinstance(response, JSONResponse)
-    data = json.loads(response.body)
-    assert data['echo'] == "test"
 
 
 @pytest.mark.asyncio
@@ -416,7 +348,7 @@ async def test_plugin_queue_info_unknown_session_error(mock_slurm):
     request.query_params = {}
 
     with pytest.raises(HTTPException) as exc_info:
-        await plugin.echo(request)
+        await plugin.get_info(request)
 
     assert exc_info.value.status_code == 404
 

@@ -179,14 +179,6 @@ async def test_plugin_session_management():
     assert sid in plugin._sessions
     assert isinstance(plugin._sessions[sid], PluginSession)
 
-    # Test echo
-    request.path_params = {"sid": sid}
-    request.query_params = {"q": "ping"}
-    response = await plugin.echo(request)
-    data = json.loads(response.body)
-    assert data['echo'] == "ping"
-    assert data['sid'] == sid
-
     # Test unregister
     request.path_params = {"sid": sid}
     await plugin.unregister_session(request)
@@ -258,18 +250,15 @@ async def test_plugin_session_ttl_expiration():
     data = json.loads(response.body)
     sid = data['sid']
 
-    # Session should work immediately
-    request.path_params = {"sid": sid}
-    request.query_params = {"q": "test"}
-    response = await plugin.echo(request)
-    assert response.status_code == 200
+    # Session should be accessible immediately
+    assert sid in plugin._sessions
 
     # Wait for TTL to expire
     time.sleep(1.5)
 
-    # Session should be expired now
+    # Session should be expired now — any forwarded call returns 410
     with pytest.raises(HTTPException) as exc_info:
-        await plugin._forward(sid, PluginSession.request_echo, q="test")
+        await plugin._forward(sid, PluginSession.close)
     assert exc_info.value.status_code == 410  # Gone
 
 

@@ -142,7 +142,6 @@ class Plugin(object):
         # Built-in session management routes
         self.add_route_post('register_session', self.register_session)
         self.add_route_post('unregister_session/{sid}', self.unregister_session)
-        self.add_route_get('echo/{sid}', self.echo)
         self.add_route_get('version', self.get_version)
         self.add_route_get('list_sessions', self.list_sessions)
         self.add_route_get('health', self.health_check)
@@ -235,13 +234,6 @@ class Plugin(object):
         await inst.close()
         log.info("[%s] Unregistered session %s", self.instance_name, sid)
         return JSONResponse({"ok": True})
-
-    async def echo(self, request: Request) -> JSONResponse:
-        """Echo service for testing/debugging."""
-        sid = request.path_params['sid']
-        q = request.query_params.get('q', 'hello')
-        # We use PluginSession.request_echo as the base implementation
-        return await self._forward(sid, PluginSession.request_echo, q=q)
 
     async def get_version(self, request: Request) -> JSONResponse:
         """Return the plugin version."""
