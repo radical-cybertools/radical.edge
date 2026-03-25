@@ -184,8 +184,6 @@ class PluginLucid(Plugin):
         self.add_route_post('task_submit/{sid}', self.task_submit)
         self.add_route_get('task_wait/{sid}/{tid}', self.task_wait)
 
-        self._log_routes()
-
     async def pilot_submit(self, request: Request) -> JSONResponse:
         """
         Submit a pilot to the specified LucidSession instance.

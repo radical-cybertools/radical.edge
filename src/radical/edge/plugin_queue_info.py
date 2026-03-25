@@ -251,8 +251,6 @@ class PluginQueueInfo(Plugin):
         self.add_route_get('list_allocations/{sid}', self.list_allocations)
         self.add_route_post('cancel/{sid}/{job_id}', self.cancel_job)
 
-        self._log_routes()
-
     def _create_session(self, sid: str, **kwargs):
         """
         Override to pass shared backend to each session.

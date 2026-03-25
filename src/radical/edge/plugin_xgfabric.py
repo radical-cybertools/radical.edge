@@ -1260,8 +1260,6 @@ class PluginXGFabric(Plugin):
         self.add_route_post('start/{sid}', self.start_workflow)
         self.add_route_post('stop/{sid}', self.stop_workflow)
 
-        self._log_routes()
-
     def _create_session(self, sid: str, **_) -> XGFabricSession:
         """Create session with workdir, edge name, and bridge connection info."""
         edge_name = getattr(self._app.state, 'edge_name', 'local')

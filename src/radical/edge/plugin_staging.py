@@ -350,8 +350,6 @@ class PluginStaging(Plugin):
         self.add_route_post('get/{sid}', self.get_endpoint)
         self.add_route_post('list/{sid}', self.list_endpoint)
 
-        self._log_routes()
-
     async def put_endpoint(self, request: Request) -> JSONResponse:
         """
         Upload a file to the edge filesystem.

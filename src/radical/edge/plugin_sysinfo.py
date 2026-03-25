@@ -565,8 +565,6 @@ class PluginSysInfo(Plugin):
         self.add_route_get('homedir',        self.homedir_endpoint)
         self.add_route_get('metrics/{sid}',  self.get_metrics_endpoint)
 
-        self._log_routes()
-
     def _create_session(self, sid: str, **kwargs) -> SysInfoSession:
         """
         Custom session creation to pass the provider.
