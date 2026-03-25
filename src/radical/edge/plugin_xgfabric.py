@@ -12,6 +12,7 @@ The plugin runs on a local edge and communicates with remote edges
 
 import asyncio
 import csv
+import dataclasses
 import json
 import logging
 import os
@@ -54,7 +55,7 @@ class ResourceConfig:
 
 def dict_to_resource_config(d: Dict) -> 'ResourceConfig':
     """Convert dict to ResourceConfig, ignoring unknown fields."""
-    import dataclasses
+
     valid = {f.name for f in dataclasses.fields(ResourceConfig)}
     return ResourceConfig(**{k: v for k, v in d.items() if k in valid})
 
@@ -97,7 +98,7 @@ def config_to_dict(cfg: WorkflowConfig) -> Dict:
 
 def dict_to_config(d: Dict) -> WorkflowConfig:
     """Convert dict to WorkflowConfig, filtering unknown fields."""
-    import dataclasses
+
 
     # Get valid field names from the dataclass
     valid_fields = {f.name for f in dataclasses.fields(WorkflowConfig)}
@@ -199,7 +200,7 @@ class XGFabricSession(PluginSession):
         if edge_name not in self._homedir_cache:
             url = f"{self._bridge_url.rstrip('/')}/{edge_name}/sysinfo/homedir"
             try:
-                import httpx
+    
                 verify: Any = self._bridge_cert if self._bridge_cert else False
                 resp = await asyncio.to_thread(
                     lambda: httpx.get(url, verify=verify, timeout=5))
@@ -342,7 +343,7 @@ class XGFabricSession(PluginSession):
             return False
         url = self._bridge_url.rstrip('/') + f'/{edge_name}/queue_info/is_enabled'
         try:
-            import httpx
+
             verify: Any = self._bridge_cert if self._bridge_cert else False
             resp = await asyncio.to_thread(
                 lambda: httpx.get(url, verify=verify, timeout=5))
@@ -397,7 +398,7 @@ class XGFabricSession(PluginSession):
             return [], []
 
         try:
-            import httpx
+
             verify: Any = self._bridge_cert if self._bridge_cert else False
             resp = await asyncio.to_thread(
                 lambda: httpx.post(f"{self._bridge_url.rstrip('/')}/edge/list",
@@ -695,9 +696,8 @@ class XGFabricSession(PluginSession):
 
         if cfg.mock_sensor_data:
             log.info("[XGFabric] _acquire_sensor_data: mock mode — writing synthetic CSV")
-            import csv as _csv
             with open(output_file, 'w', newline='') as f:
-                writer = _csv.DictWriter(f, fieldnames=['dt', 'windspeed', 'windavg', 'winddir'])
+                writer = csv.DictWriter(f, fieldnames=['dt', 'windspeed', 'windavg', 'winddir'])
                 writer.writeheader()
                 for i in range(max(cfg.num_simulations, 8)):
                     writer.writerow({'dt': f'2024-01-01T{i:02d}:00:00+00:00',
@@ -1020,7 +1020,7 @@ class XGFabricSession(PluginSession):
 
     def _generate_sim_params(self, sensor_csv: Path, num_sims: int) -> List:
         """Generate simulation parameters from sensor data."""
-        import csv
+
         wind_speeds = []
         with open(sensor_csv, 'r') as f:
             reader = csv.DictReader(f)

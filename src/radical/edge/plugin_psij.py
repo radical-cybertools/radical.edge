@@ -5,6 +5,7 @@ PSIJ Plugin for Radical Edge.
 import asyncio
 import logging
 import os
+import tempfile
 
 from datetime import timedelta
 from typing import Any, Dict
@@ -77,7 +78,6 @@ class PSIJSession(PluginSession):
                 spec.attributes.custom_attributes = dict(
                     job_spec_dict['custom_attributes'])
 
-            import tempfile
             job = psij.Job(spec)
 
             out_path = os.path.join(tempfile.gettempdir(), f"psij_job_{job.id}.out")

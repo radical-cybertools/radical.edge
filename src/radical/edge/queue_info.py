@@ -1,4 +1,5 @@
 
+import getpass
 import os
 import re
 import json
@@ -98,7 +99,7 @@ class QueueInfo(ABC):
         This lazily fills the cache so later queries are faster.
         """
         def _prefetch():
-            import getpass
+
             user = getpass.getuser()
             try:
                 # Prefetch queue info for current user
@@ -151,7 +152,7 @@ class QueueInfo(ABC):
             dict: {"queues": {<partition_name>: {...}, ...}}
         """
         if user is None:
-            import getpass
+
             user = getpass.getuser()
         elif user == '*':
             user = None
@@ -175,7 +176,7 @@ class QueueInfo(ABC):
             dict: {"jobs": [<job_dict>, ...]}
         """
         if user is None:
-            import getpass
+
             user = getpass.getuser()
         elif user == '*':
             user = None
@@ -191,7 +192,7 @@ class QueueInfo(ABC):
         rows, pass user='*'.
         """
         if user is None:
-            import getpass
+
             user = getpass.getuser()
         elif user == '*':
             user = None

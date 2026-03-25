@@ -6,13 +6,13 @@ __license__   = 'MIT'
 
 
 
+import asyncio
 import shutil
+import subprocess
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from starlette.requests import Request
 from starlette.responses import JSONResponse
-
-import asyncio
 
 from .plugin_session_base import PluginSession
 from .plugin_base import Plugin
@@ -87,11 +87,9 @@ class QueueInfoSession(PluginSession):
     async def cancel_job(self, job_id: str) -> dict:
         """Cancel a job via scancel."""
         self._check_active()
-        import subprocess
         result = subprocess.run(['scancel', str(job_id)],
                                 capture_output=True, text=True, timeout=10)
         if result.returncode != 0:
-            from fastapi import HTTPException
             raise HTTPException(status_code=500,
                                 detail=f"scancel failed: {result.stderr.strip()}")
         return {'job_id': job_id, 'status': 'canceled'}
@@ -268,7 +266,6 @@ class PluginQueueInfo(Plugin):
         """Return False if SLURM is not present or doesn't support --json."""
         if not shutil.which('sinfo'):
             return False
-        import subprocess
         result = subprocess.run(['sinfo', '--json'], capture_output=True, timeout=5)
         return result.returncode == 0
 
