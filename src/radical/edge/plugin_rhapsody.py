@@ -7,6 +7,7 @@ and monitor compute / AI tasks on edge nodes.
 
 import asyncio
 import logging
+import threading
 
 from fastapi import FastAPI, HTTPException, Request
 from starlette.responses import JSONResponse
@@ -69,6 +70,7 @@ class RhapsodySession(PluginSession):
 
         # Register state-change callbacks for intermediate notifications
         self._notified_states: dict[str, str] = {}
+        self._notified_lock = threading.Lock()
         for b in backends:
             if hasattr(b, 'register_callback'):
                 orig = getattr(b, '_callback_func', None)
@@ -81,15 +83,19 @@ class RhapsodySession(PluginSession):
                 b.register_callback(_on_state)
 
     def _on_task_state_change(self, task, state):
-        """Fire notification on intermediate state changes (e.g. RUNNING)."""
+        """Fire notification on intermediate state changes (e.g. RUNNING).
+
+        Called from backend threads — uses lock for _notified_states access.
+        """
         uid = self._get_attr(task, 'uid')
         uid_str = str(uid) if uid else '?'
         state_str = str(state)
 
-        # Skip if we already notified this state
-        if self._notified_states.get(uid_str) == state_str:
-            return
-        self._notified_states[uid_str] = state_str
+        with self._notified_lock:
+            # Skip if we already notified this state
+            if self._notified_states.get(uid_str) == state_str:
+                return
+            self._notified_states[uid_str] = state_str
 
         # Only fire for non-terminal states; terminal is handled by _watch_task
         if state_str.upper() in TERMINAL_STATES:

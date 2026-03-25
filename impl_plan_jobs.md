@@ -10,22 +10,23 @@ documentation after the job/task table+overlay feature landed.
 ## Priority 1 — Security & Correctness
 
 ### 1.1 XSS in JS plugin data attributes
-- [ ] `psij.js`: escape `job.job_id` in `data-jobid="${job.job_id}"` (user-controlled via PSI/J)
-- [ ] `rhapsody.js`: escape `task.uid` in `data-uid="${task.uid}"`
-- [ ] `queue_info.js`: escape `job.job_id` in `data-jobid="${job.job_id}"`
-- [ ] Audit all `innerHTML` assignments for unescaped interpolations; use `escHtml()` consistently
+- [x] `psij.js`: escape `job.job_id` in `data-jobid="${job.job_id}"` (user-controlled via PSI/J)
+- [x] `rhapsody.js`: escape `task.uid` in `data-uid="${task.uid}"`
+- [x] `queue_info.js`: escape `job.job_id` in `data-jobid="${job.job_id}"`
+- [x] Audit all `innerHTML` assignments for unescaped interpolations; use `escHtml()` consistently
+- **commit**: `27872b4`
 
 ### 1.2 SSL verification disabled
-- [ ] `edge_service.py`: `verify=False` in loopback HTTP calls to `localhost`
-  — acceptable for localhost loopback but add a comment explaining why
+- [x] N/A — `verify=False` only used as fallback when no cert is configured
+  (client.py, plugin_xgfabric.py); by-design for dev mode
 
 ### 1.3 Race conditions in backend
-- [ ] `plugin_psij.py`: `_job_meta` and `_jobs` dicts accessed from async + sync
-  contexts without locking — audit and add guards where needed
-- [ ] `plugin_rhapsody.py`: `_notified_states` dict written from backend callback
-  thread and read from async context — needs `threading.Lock`
-- [ ] `edge_service.py`: `_main_loop` caches plugin routes at startup; plugins
-  registered later won't be found — document limitation or defer route collection
+- [x] `plugin_psij.py`: `_job_meta` and `_jobs` — all access is from async
+  event loop (no thread callbacks); `list()` copy used in poll loop — safe
+- [x] `plugin_rhapsody.py`: `_notified_states` dict written from backend callback
+  thread and read from async context — added `threading.Lock`
+- [x] Route caching: review agent finding was inaccurate, no such caching exists
+- **commit**: `(next)`
 
 ---
 
