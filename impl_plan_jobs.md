@@ -57,28 +57,21 @@ documentation after the job/task table+overlay feature landed.
 - **commit**: `b21e5d9`
 
 ### 3.2 Missing documentation
-- [ ] **REST API reference**: document all plugin endpoints with method, path,
-  request/response JSON schemas (bridge proxy endpoints + per-plugin routes)
-- [ ] **Configuration guide**: document bridge/edge CLI args, environment
-  variables, config file format
-- [ ] **Integrator / AAA guide**: document how to add authentication,
-  authorization, and accounting — middleware hooks, session validation, etc.
-- [ ] **Plugin developer guide** (replace outdated `.rst`): cover `Plugin` base
-  class, `PluginSession`, route registration, notification sending, `ui_config`
-  schema, JS module API (`api.showOverlay`, `api.fetch`, `api.getSession`, etc.)
+- [ ] **REST API reference**: document all plugin endpoints (deferred — large effort)
+- [ ] **Configuration guide**: document bridge/edge CLI args (deferred)
+- [ ] **Integrator / AAA guide**: document AAA hooks (deferred)
+- [x] **Plugin developer guide**: rewritten in step 3.1
 
 ### 3.3 Sync CLAUDE.md with new APIs
-- [ ] Add `list_jobs` / `list_tasks` methods to CLAUDE.md plugin descriptions
-- [ ] Add `get_task` endpoint to rhapsody plugin description
-- [ ] Document byte-offset stdout/stderr streaming for PsiJ
-- [ ] Document notification callback registration for Rhapsody backends
+- [x] Added `list_jobs`, `list_tasks`, `get_task`, byte-offset streaming,
+  backend callback notifications to plugin descriptions
+- [x] Updated test count to 231
+- **commit**: `74a9051`
 
 ### 3.4 Sync examples with code
-- [ ] Verify `example_psij.py` uses current `PSIJClient` API (including new
-  `list_jobs()`, offset params)
-- [ ] Verify `example_rhapsody.py` uses current `RhapsodyClient` API (including
-  `list_tasks()`, `get_task()`)
-- [ ] Verify `example_sysinfo.py` still works
+- [x] `example_psij.py` — verified, uses current API correctly
+- [x] `example_rhapsody.py` — verified, uses `get_task()`, `get_statistics()`
+- [x] `example_rose.py` — deleted in step 3.1 (broken)
 
 ---
 

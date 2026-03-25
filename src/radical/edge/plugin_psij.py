@@ -53,8 +53,8 @@ def _read_output_file(job, attr: str, offset: int = 0) -> str:
                 if offset > 0:
                     f.seek(offset)
                 return f.read()
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug("Failed to read %s for job: %s", attr, e)
     return ""
 
 
