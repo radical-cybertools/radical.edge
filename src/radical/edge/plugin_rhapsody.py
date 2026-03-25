@@ -5,6 +5,7 @@ Exposes the RHAPSODY Session/Task API so that remote clients can submit
 and monitor compute / AI tasks on edge nodes.
 '''
 
+import asyncio
 import logging
 
 from fastapi import FastAPI, HTTPException, Request
@@ -15,6 +16,8 @@ from .plugin_base import Plugin
 from .client import PluginClient
 
 log = logging.getLogger("radical.edge")
+
+TERMINAL_STATES = {'DONE', 'FAILED', 'CANCELED', 'COMPLETED'}
 
 # Guard rhapsody import — it is an optional dependency
 try:
@@ -64,6 +67,40 @@ class RhapsodySession(PluginSession):
 
         self._rh_session = rh.Session(backends=backends, uid=self._sid)
 
+        # Register state-change callbacks for intermediate notifications
+        self._notified_states: dict[str, str] = {}
+        for b in backends:
+            if hasattr(b, 'register_callback'):
+                orig = getattr(b, '_callback_func', None)
+
+                def _on_state(task, state, _orig=orig):
+                    self._on_task_state_change(task, state)
+                    if _orig:
+                        _orig(task, state)
+
+                b.register_callback(_on_state)
+
+    def _on_task_state_change(self, task, state):
+        """Fire notification on intermediate state changes (e.g. RUNNING)."""
+        uid = self._get_attr(task, 'uid')
+        uid_str = str(uid) if uid else '?'
+        state_str = str(state)
+
+        # Skip if we already notified this state
+        if self._notified_states.get(uid_str) == state_str:
+            return
+        self._notified_states[uid_str] = state_str
+
+        # Only fire for non-terminal states; terminal is handled by _watch_task
+        if state_str.upper() in TERMINAL_STATES:
+            return
+
+        if self._notify:
+            self._notify("task_status", {
+                "uid":   uid_str,
+                "state": state_str,
+            })
+
     async def submit_tasks(self, task_dicts: list[dict]) -> list[dict]:
         """
         Submit a list of tasks.
@@ -89,7 +126,6 @@ class RhapsodySession(PluginSession):
 
         # Start one background watcher per task so each notifies independently
         if self._notify:
-            import asyncio
             for t in tasks:
                 asyncio.ensure_future(self._watch_task(t))
 
@@ -184,6 +220,14 @@ class RhapsodySession(PluginSession):
             d['exception'] = str(d['exception'])
 
         return d
+
+    async def list_tasks(self) -> dict:
+        """Return all tasks in this session with current state."""
+        self._check_active()
+        tasks = []
+        for uid, task in self._tasks.items():
+            tasks.append(self._sanitize_task(task))
+        return {"tasks": tasks}
 
     async def get_task(self, uid: str) -> dict:
         """
@@ -299,6 +343,15 @@ class RhapsodyClient(PluginClient):
         self._raise(resp, f"wait {len(uids)} task(s)")
         return resp.json()
 
+    def list_tasks(self) -> dict:
+        """List all tasks in this session."""
+        if not self.sid:
+            raise RuntimeError("No active session")
+
+        resp = self._http.get(self._url(f"list_tasks/{self.sid}"))
+        self._raise(resp)
+        return resp.json()
+
     def get_task(self, uid: str) -> dict:
         """
         Retrieve info for a single task.
@@ -396,6 +449,7 @@ class PluginRhapsody(Plugin):
 
         self.add_route_post('submit/{sid}', self.submit_tasks)
         self.add_route_post('wait/{sid}', self.wait_tasks)
+        self.add_route_get('list_tasks/{sid}', self.list_tasks)
         self.add_route_get('task/{sid}/{uid}', self.get_task)
         self.add_route_post('cancel/{sid}/{uid}', self.cancel_task)
         self.add_route_get('statistics/{sid}', self.get_statistics)
@@ -439,6 +493,10 @@ class PluginRhapsody(Plugin):
         timeout = data.get('timeout')
         return await self._forward(sid, RhapsodySession.wait_tasks,
                                    uids=uids, timeout=timeout)
+
+    async def list_tasks(self, request: Request) -> JSONResponse:
+        sid = request.path_params['sid']
+        return await self._forward(sid, RhapsodySession.list_tasks)
 
     async def get_task(self, request: Request) -> JSONResponse:
         sid = request.path_params['sid']
