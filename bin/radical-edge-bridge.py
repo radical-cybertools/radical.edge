@@ -134,7 +134,7 @@ async def general_exception_handler(request: Request, exc: Exception) -> JSONRes
 
 
 edges: Dict[str, WebSocket] = {}
-pending: Dict[str, asyncio.Future] = dict()
+pending: Dict[str, tuple] = dict()  # req_id -> (future, edge_name)
 pending_lock: asyncio.Lock = asyncio.Lock()
 
 # {"bridge": {...},
@@ -268,12 +268,13 @@ async def register(ws: WebSocket):
 
             elif data.get("type") == "response":
                 req_id = data["req_id"]
-                # print(f"[Bridge] Response received {req_id}")
                 async with pending_lock:
-                    fut = pending.pop(req_id, None)
+                    entry = pending.pop(req_id, None)
 
-                if fut and not fut.done():
-                    fut.set_result(data)
+                if entry:
+                    fut = entry[0]
+                    if not fut.done():
+                        fut.set_result(data)
 
             else:
                 # ignore unknown frames
@@ -307,12 +308,16 @@ async def register(ws: WebSocket):
             else:
                 print(f"[Bridge] Disconnected duplicate/inactive session for: {edge_name}")
 
-        # Fail any in-flight requests
-        async with pending_lock:
-            for _, fut in list(pending.items()):
-                if not fut.done():
-                    fut.set_exception(HTTPException(503, "Edge disconnected"))
-            pending.clear()
+        # Fail in-flight requests for this edge only
+        if edge_name:
+            async with pending_lock:
+                failed = [rid for rid, (fut, ename) in pending.items()
+                          if ename == edge_name]
+                for rid in failed:
+                    fut, _ = pending.pop(rid)
+                    if not fut.done():
+                        fut.set_exception(
+                            HTTPException(503, "Edge disconnected"))
 
 
 def _strip_headers(request: Request) -> dict:
@@ -703,7 +708,7 @@ async def proxy(full_path: str, request: Request):
 
     fut = asyncio.get_event_loop().create_future()
     async with pending_lock:
-        pending[req_id] = fut
+        pending[req_id] = (fut, edge_name)
 
     try:
         await _send_to_edge(edge_name, message)
