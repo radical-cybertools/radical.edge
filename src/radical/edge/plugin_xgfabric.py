@@ -250,7 +250,7 @@ class XGFabricSession(PluginSession):
                         'modified': datetime.fromtimestamp(f.stat().st_mtime).isoformat()
                     })
             except Exception as e:
-                log.warning(f"Failed to read config {f}: {e}")
+                log.warning("Failed to read config %s: %s", f, e)
         return sorted(configs, key=lambda x: x['name'])
 
     async def load_config(self, name: str) -> Dict:
@@ -513,7 +513,7 @@ class XGFabricSession(PluginSession):
             self._notify_state()
 
         except Exception as e:
-            log.exception(f"Workflow failed: {e}")
+            log.exception("Workflow failed: %s", e)
             self._state.status = 'failed'
             self._state.error = str(e)
             self._state.end_time = datetime.now(timezone.utc).isoformat()
@@ -1139,10 +1139,10 @@ class XGFabricSession(PluginSession):
                         ec   = self._bc.get_edge_client(c['edge_name'])
                         psij = await asyncio.to_thread(ec.get_plugin, 'psij')
                         await asyncio.to_thread(psij.cancel_job, pilot_id)
-                        log.info(f"Cancelled pilot job {pilot_id}")
+                        log.info("Cancelled pilot job %s", pilot_id)
                         break
             except Exception as e:
-                log.warning(f"Failed to cancel pilot {pilot_id}: {e}")
+                log.warning("Failed to cancel pilot %s: %s", pilot_id, e)
 
     async def close(self) -> dict:
         """Close the session."""
