@@ -200,7 +200,6 @@ class XGFabricSession(PluginSession):
         if edge_name not in self._homedir_cache:
             url = f"{self._bridge_url.rstrip('/')}/{edge_name}/sysinfo/homedir"
             try:
-    
                 verify: Any = self._bridge_cert if self._bridge_cert else False
                 resp = await asyncio.to_thread(
                     lambda: httpx.get(url, verify=verify, timeout=5))
@@ -1132,8 +1131,8 @@ class XGFabricSession(PluginSession):
                     raise RuntimeError("No active workflow configuration")
                 if not self._bc:
                     raise RuntimeError("No active bridge connection")
-                all_clusters = (self._state.immediate_clusters
-                               + self._state.allocate_clusters)
+                all_clusters = (self._state.immediate_clusters +
+                                self._state.allocate_clusters)
                 for c in all_clusters:
                     if c.get('name') == cluster_name:
                         ec   = self._bc.get_edge_client(c['edge_name'])

@@ -108,6 +108,7 @@ def _raise(resp, context: str = '') -> None:
         if detail:  parts.append(detail)
         raise RuntimeError(' — '.join(parts))
 
+
 # Disable SSL warnings for localhost/self-signed certs primarily used in dev
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
