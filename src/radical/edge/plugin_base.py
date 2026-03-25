@@ -333,20 +333,9 @@ class Plugin(object):
         Raises:
             HTTPException: If session not found or method fails.
         """
-        # Check for expired session and clean up if needed
+        # Clean up any expired sessions (including this one if expired)
         if self.session_ttl > 0:
-            last_access = self._session_last_access.get(sid)
-            if last_access and (time.time() - last_access) > self.session_ttl:
-                # Session expired - clean it up
-                expired_session = self._sessions.pop(sid, None)
-                self._session_last_access.pop(sid, None)
-                if expired_session:
-                    try:
-                        await expired_session.close()
-                    except Exception:
-                        pass
-                log.info("[%s] Session %s expired due to TTL", self.instance_name, sid)
-                raise HTTPException(status_code=410, detail=f"session expired: {sid}")
+            await self._cleanup_expired_sessions()
 
         session = self._sessions.get(sid)
         if not session:
