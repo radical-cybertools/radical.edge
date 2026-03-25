@@ -382,17 +382,8 @@ class EdgeClient:
         ``register_session()`` call (e.g. ``backends=['local']``).
         """
 
-        # 1. Discover plugin namespace from Bridge
-        resp = self.http.post("/edge/list")
-        _raise(resp)
-        data = resp.json().get('data', {})
-        edges = data.get('edges', {})
-        edge_data = edges.get(self._edge_id)
-
-        if not edge_data:
-            raise RuntimeError(f"Edge '{self._edge_id}' not found")
-
-        plugins = edge_data.get('plugins', {})
+        # 1. Discover plugin namespace from Bridge (reuse list_plugins)
+        plugins = self.list_plugins()
         plugin_info = plugins.get(plugin_name)
         if not plugin_info:
             raise RuntimeError(f"Plugin '{plugin_name}' unknown on '{self._edge_id}'")
