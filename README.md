@@ -153,3 +153,52 @@ The interactive Edge Explorer interface (`src/radical/edge/data/edge_explorer.ht
 - Supports real-time updates via Server-Sent Events (SSE) from the `/events` endpoint.
 - Allows launching new edge services on remote resources via SSH and PSI/J job submission.
 - Provides bridge and edge termination controls.
+
+## Configuration
+
+### Environment Variables
+
+| Variable               | Description                                              | Default         |
+|------------------------|----------------------------------------------------------|-----------------|
+| `RADICAL_BRIDGE_URL`   | Bridge URL used by edge services and Python clients      | *(required)*    |
+| `RADICAL_BRIDGE_CERT`  | Path to CA certificate for SSL verification              | *(none — HTTP)* |
+| `RADICAL_BRIDGE_KEY`   | Path to private key (bridge startup only, HTTPS mode)    | *(none — HTTP)* |
+
+### Edge Service CLI Args
+
+```
+radical-edge-service.py [options]
+  --name NAME    Edge name (shown in Explorer and /edge/list)
+  --url  URL     Bridge WebSocket URL (e.g. wss://bridge:8000)
+  -p PLUGINS     Comma-separated list of plugin names to load
+  --cert CERT    CA certificate path for SSL
+```
+
+### Bridge Startup
+
+The bridge listens on `0.0.0.0:8000` by default. To change host/port, subclass `Bridge` or edit `bin/radical-edge-bridge.py` and pass `host=` / `port=` to `uvicorn.run()`.
+
+### Log Level
+
+Set the standard Python logging level via environment or launcher:
+
+```sh
+RADICAL_LOG_LVL=DEBUG ./bin/radical-edge-bridge.py
+```
+
+Or in code: `logging.getLogger("radical.edge").setLevel(logging.DEBUG)`.
+
+
+## Troubleshooting
+
+**Edge connects but no plugins appear in the Explorer**
+: The plugin failed to import. Check the edge service log for `ImportError` or missing dependencies. Plugins with missing optional dependencies (e.g. PsiJ not installed) are silently skipped.
+
+**Notifications not arriving (job/task table stops updating)**
+: The SSE connection dropped. Refresh the page to reconnect. The Explorer reconnects automatically on topology changes but not on SSE stream errors.
+
+**Job stuck in SUBMITTED state indefinitely**
+: The PsiJ executor may be misconfigured. Check the edge log for PsiJ errors. For SLURM, verify the account and queue names are valid with `sinfo` and `sacctmgr`.
+
+**SSL verification error when connecting**
+: Set `RADICAL_BRIDGE_CERT` to the path of the CA certificate (the `.pem` file generated during setup). Without it, Python clients default to `verify=False` (dev mode only).
