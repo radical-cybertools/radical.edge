@@ -1152,8 +1152,8 @@ class XGFabricSession(PluginSession):
         if self._bc:
             try:
                 self._bc.close()
-            except Exception:
-                pass
+            except Exception as e:
+                log.exception("[XGFabric] Error closing bridge client: %s", e)
         return await super().close()
 
 
