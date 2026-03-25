@@ -294,10 +294,197 @@ render forms, monitors, and notification subscriptions automatically:
         }
 
 Alternatively, plugins can provide a custom JS module by setting
-``ui_module`` to the path of a ``.js`` file.  See the existing plugins
-(``psij.js``, ``rhapsody.js``, ``queue_info.js``) for examples of the
-JS module API (``template()``, ``css()``, ``init(page, api)``,
-``onNotification(data, page, api)``).
+``ui_module`` to the path of a ``.js`` file.  See the next section for
+the complete JS Module API reference.
+
+JS Plugin Module API
+====================
+
+When ``ui_module`` is set to a ``.js`` file path, the Explorer loads and runs
+the module. The module must be an ES module (``type="module"``) and may export
+the following functions and constants:
+
+Required Exports
+----------------
+
+.. code-block:: javascript
+
+    // Unique plugin name — used for routing and session lookup
+    export const name = 'myplugin';
+
+    // Return the HTML for the plugin page (called once per edge)
+    export function template() { return '<div>...</div>'; }
+
+    // Return plugin-scoped CSS (injected into a <style> tag)
+    export function css() { return '.my-class { ... }'; }
+
+    // Called when the plugin page is mounted; bind event listeners here
+    export function init(page, api) { ... }
+
+Optional Exports
+----------------
+
+.. code-block:: javascript
+
+    // Called when the plugin's tab is shown (page already mounted)
+    export function onShow(page, api) { ... }
+
+    // Called when an SSE notification arrives matching notificationConfig
+    export function onNotification(data, page, api) { ... }
+
+    // Declare which SSE topic this plugin subscribes to
+    export const notificationConfig = {
+        topic:   'job_status',   // SSE topic to subscribe to
+        idField: 'job_id',       // Field in data.data used as entity ID
+    };
+
+The ``api`` Object
+------------------
+
+The ``api`` object is passed to ``init()``, ``onShow()``, and
+``onNotification()``. It exposes:
+
+**Session management**
+
+``api.getSession(pluginName)``
+    Returns a Promise resolving to the active session ID for the named plugin,
+    creating one if needed.
+
+**HTTP**
+
+``api.fetch(path, options)``
+    Fetch relative to the current plugin namespace on the bridge.
+    Returns parsed JSON. Throws on HTTP errors.
+
+``api.fetchRaw(path, options)``
+    Same as ``fetch`` but returns the raw ``Response`` object.
+    Used when you need headers or streaming (e.g. file download).
+
+**UI helpers**
+
+``api.flash(message, ok=true)``
+    Show a transient status message. ``ok=false`` styles it as an error.
+
+``api.escHtml(s)``
+    HTML-escape a string for safe ``innerHTML`` insertion.
+
+``api.showOverlay(title, bodyHtml)``
+    Open the shared full-screen overlay with the given title and HTML body.
+
+**Task tracking**
+
+``api.registerTask(plugin, id, label)``
+    Register a task ID in the global task list (shown in the taskbar).
+
+**Queue data cache**
+
+``api.getQueueData()``
+    Return cached queue/allocation data for this edge (populated by
+    the ``queue_info`` plugin on load), or ``undefined`` if not available.
+
+``api.setQueueData(data)``
+    Store queue data for this edge (called by ``queue_info``).
+
+**Edge info (read-only properties)**
+
+``api.edgeName``
+    The name of the current edge (e.g. ``"hpc1"``).
+
+``api.pluginName``
+    The plugin module name.
+
+``api.bridgeUrl``
+    Full URL of the bridge (e.g. ``"https://bridge:8000"``).
+
+``api.getPluginNames()``
+    Returns an array of all plugin names registered on this edge.
+
+**Edge management**
+
+``api.disconnectEdge(event)``
+    Initiate graceful disconnection of this edge. Pass the click event
+    to prevent default and stop propagation.
+
+Notifications
+-------------
+
+SSE notifications are delivered to ``onNotification(data, page, api)`` only
+if the module exports a matching ``notificationConfig``::
+
+    export const notificationConfig = {
+        topic:   'job_status',  // Must match the server-side notify() topic
+        idField: 'job_id',      // Field in notification data used as entity key
+    };
+
+The ``data`` argument passed to ``onNotification`` has this shape::
+
+    {
+        topic: 'job_status',
+        data:  { job_id: '...', state: 'RUNNING', ... }
+    }
+
+**Buffering pattern**: Notifications may arrive before the entity row exists
+in the DOM (e.g. a status update arrives before ``submit`` returns). Buffer
+them in a module-level dict keyed by entity ID, then drain the buffer after
+adding the row:
+
+.. code-block:: javascript
+
+    const pending = {};  // id -> notification data
+
+    export function onNotification(data, page, api) {
+        const id = data.data?.job_id;
+        const row = page.querySelector(`[data-job-id="${CSS.escape(id)}"]`);
+        if (row) {
+            updateRow(page, id, data.data.state);
+        } else if (id) {
+            pending[id] = data.data;  // buffer for later
+        }
+    }
+
+    // After creating the row:
+    if (pending[id]) {
+        updateRow(page, id, pending[id].state);
+        delete pending[id];
+    }
+
+See ``psij.js`` and ``rhapsody.js`` for complete examples of this pattern.
+
+Session Lifecycle
+=================
+
+Sessions are created on the first ``api.getSession()`` call and persist until:
+
+- The browser tab is closed or navigated away
+- The edge disconnects (all sessions are lost; the edge has no persistence)
+- The session TTL expires (default 1 hour of inactivity)
+- The client calls ``unregister_session/{sid}``
+
+When ``close()`` is called on a ``PluginSession``:
+
+- The session should release all resources (threads, backend connections, file handles)
+- Any background polling or watchers must be cancelled
+- The base ``super().close()`` sets the session status to inactive
+
+Sessions are **not persisted** across edge restarts. Clients must re-register
+after an edge reconnects.
+
+Async / Sync Guidelines
+=======================
+
+All plugin route handlers **must** be ``async def``.  Blocking operations
+(file I/O, subprocess calls, network requests) must be offloaded to a thread
+pool using ``asyncio.to_thread``::
+
+    async def my_handler(self, param: str) -> dict:
+        # Blocking call — run in thread to avoid blocking the event loop
+        result = await asyncio.to_thread(subprocess.check_output, ['cmd', param])
+        return {'output': result.decode()}
+
+Callbacks from external libraries (e.g. PsiJ status callbacks, Rhapsody
+backend callbacks) run in background threads, not the event loop.  Use
+``self._notify(topic, data)`` from those callbacks — it is thread-safe and
+schedules the SSE send on the main event loop automatically.
 
 Testing Your Plugin
 ===================
