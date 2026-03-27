@@ -189,7 +189,8 @@ Queue Info Plugin
 
 Namespace: ``queue_info``
 
-``is_enabled`` is session-less and returns immediately without requiring a session.
+``is_enabled`` and ``job_allocation`` are session-less and return immediately
+without requiring a session.
 
 .. list-table::
    :header-rows: 1
@@ -201,6 +202,9 @@ Namespace: ``queue_info``
    * - ``GET``
      - ``is_enabled``
      - Returns ``{"available": true/false}`` — whether SLURM is present
+   * - ``GET``
+     - ``job_allocation``
+     - Returns current job allocation of the **edge** process (see below)
    * - ``GET``
      - ``get_info/{sid}``
      - Partition and allocation info
@@ -216,6 +220,22 @@ Namespace: ``queue_info``
    * - ``POST``
      - ``cancel/{sid}/{job_id}``
      - Cancel a queued or running job
+
+``job_allocation`` response::
+
+    # Edge running on a login node (no SLURM job):
+    {"allocation": null}
+
+    # Edge running inside a SLURM job allocation:
+    {"allocation": {"n_nodes": 4, "runtime": 3600}}
+
+    # Edge running inside a SLURM job with unlimited walltime:
+    {"allocation": {"n_nodes": 4, "runtime": null}}
+
+``n_nodes`` is the number of nodes in the allocation; ``runtime`` is the
+walltime limit in seconds (``null`` for UNLIMITED).  A 500 response is
+returned if ``SLURM_JOB_ID`` is set but allocation details cannot be
+determined (missing env vars, ``squeue`` failure or timeout).
 
 
 Sysinfo Plugin

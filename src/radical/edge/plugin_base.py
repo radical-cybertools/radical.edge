@@ -334,9 +334,14 @@ class Plugin(object):
         Raises:
             HTTPException: If session not found or method fails.
         """
-        # Clean up any expired sessions (including this one if expired)
         if self.session_ttl > 0:
+            # Detect expiry of THIS session before the general cleanup removes it
+            last        = self._session_last_access.get(sid)
+            sid_expired = (last is not None and
+                           (time.time() - last) > self.session_ttl)
             await self._cleanup_expired_sessions()
+            if sid_expired:
+                raise HTTPException(status_code=410, detail=f"session expired: {sid}")
 
         session = self._sessions.get(sid)
         if not session:

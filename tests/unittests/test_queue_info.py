@@ -12,6 +12,7 @@ from unittest.mock import patch, Mock, MagicMock
 from radical.edge.queue_info import (QueueInfo, QueueInfoSlurm,
                                      _unwrap, _parse_gpus,
                                      _UNAVAIL_STATES)
+from radical.edge.plugin_queue_info import _parse_slurm_time, PluginQueueInfo
 
 FIXTURES = os.path.join(os.path.dirname(__file__), '..', 'fixtures', 'slurm')
 
@@ -560,6 +561,149 @@ class TestParsableParser:
         result = QueueInfoSlurm._parse_assocs_parsable('')
         assert result == []
 
+
+
+# ---- _parse_slurm_time tests ------------------------------------------------
+
+class TestParseSlurmTime:
+
+    def test_hms(self):
+        assert _parse_slurm_time('01:00:00') == 3600
+
+    def test_hms_no_leading_zero(self):
+        assert _parse_slurm_time('2:30:00') == 9000
+
+    def test_ms(self):
+        assert _parse_slurm_time('30:00') == 1800
+
+    def test_days(self):
+        assert _parse_slurm_time('1-00:00:00') == 86400
+
+    def test_days_plus_time(self):
+        assert _parse_slurm_time('2-06:00:00') == 2 * 86400 + 6 * 3600
+
+    def test_unlimited(self):
+        assert _parse_slurm_time('UNLIMITED') is None
+
+    def test_unlimited_lowercase(self):
+        assert _parse_slurm_time('unlimited') is None
+
+    def test_infinite(self):
+        assert _parse_slurm_time('INFINITE') is None
+
+    def test_not_set(self):
+        assert _parse_slurm_time('NOT_SET') is None
+
+    def test_empty(self):
+        assert _parse_slurm_time('') is None
+
+    def test_whitespace_stripped(self):
+        assert _parse_slurm_time('  01:00:00  ') == 3600
+
+    def test_invalid_raises(self):
+        with pytest.raises(RuntimeError):
+            _parse_slurm_time('garbage')
+
+    def test_invalid_day_raises(self):
+        with pytest.raises(RuntimeError):
+            _parse_slurm_time('X-01:00:00')
+
+
+# ---- get_job_allocation tests -----------------------------------------------
+
+class TestGetJobAllocation:
+    """Tests for PluginQueueInfo.get_job_allocation().
+
+    We test the plain method directly — no FastAPI app needed.
+    """
+
+    def _make_plugin(self):
+        """Construct a PluginQueueInfo without starting prefetch."""
+        with patch('radical.edge.plugin_queue_info.QueueInfoSlurm') as MockBackend, \
+             patch('radical.edge.plugin_queue_info.PluginQueueInfo.is_enabled',
+                   return_value=True):
+            MockBackend.return_value.start_prefetch = Mock()
+            from fastapi import FastAPI
+            app    = FastAPI()
+            plugin = PluginQueueInfo.__new__(PluginQueueInfo)
+            plugin._backend = MockBackend()
+            return plugin
+
+    def test_no_job_id_returns_none(self):
+        plugin = self._make_plugin()
+        env    = {k: v for k, v in os.environ.items()
+                  if k not in ('SLURM_JOB_ID', 'SLURM_NNODES', 'SLURM_JOB_NUM_NODES')}
+        with patch.dict(os.environ, env, clear=True):
+            assert plugin.get_job_allocation() is None
+
+    def test_in_job_returns_dict(self):
+        plugin = self._make_plugin()
+        env    = {'SLURM_JOB_ID': '12345', 'SLURM_NNODES': '4'}
+        with patch.dict(os.environ, env, clear=True), \
+             patch('subprocess.run',
+                   return_value=Mock(returncode=0, stdout='01:00:00\n',
+                                     stderr='')):
+            result = plugin.get_job_allocation()
+
+        assert result == {'n_nodes': 4, 'runtime': 3600}
+
+    def test_in_job_fallback_env_var(self):
+        """SLURM_JOB_NUM_NODES used when SLURM_NNODES absent."""
+        plugin = self._make_plugin()
+        env    = {'SLURM_JOB_ID': '12345', 'SLURM_JOB_NUM_NODES': '8'}
+        with patch.dict(os.environ, env, clear=True), \
+             patch('subprocess.run',
+                   return_value=Mock(returncode=0, stdout='02:00:00\n',
+                                     stderr='')):
+            result = plugin.get_job_allocation()
+
+        assert result == {'n_nodes': 8, 'runtime': 7200}
+
+    def test_unlimited_runtime(self):
+        plugin = self._make_plugin()
+        env    = {'SLURM_JOB_ID': '12345', 'SLURM_NNODES': '2'}
+        with patch.dict(os.environ, env, clear=True), \
+             patch('subprocess.run',
+                   return_value=Mock(returncode=0, stdout='UNLIMITED\n',
+                                     stderr='')):
+            result = plugin.get_job_allocation()
+
+        assert result == {'n_nodes': 2, 'runtime': None}
+
+    def test_missing_nnodes_raises(self):
+        plugin = self._make_plugin()
+        env    = {'SLURM_JOB_ID': '12345'}
+        with patch.dict(os.environ, env, clear=True):
+            with pytest.raises(RuntimeError, match='SLURM_NNODES'):
+                plugin.get_job_allocation()
+
+    def test_squeue_failure_raises(self):
+        plugin = self._make_plugin()
+        env    = {'SLURM_JOB_ID': '12345', 'SLURM_NNODES': '4'}
+        with patch.dict(os.environ, env, clear=True), \
+             patch('subprocess.run',
+                   return_value=Mock(returncode=1, stdout='',
+                                     stderr='invalid job id')):
+            with pytest.raises(RuntimeError, match='squeue failed'):
+                plugin.get_job_allocation()
+
+    def test_squeue_oserror_raises(self):
+        plugin = self._make_plugin()
+        env    = {'SLURM_JOB_ID': '12345', 'SLURM_NNODES': '4'}
+        with patch.dict(os.environ, env, clear=True), \
+             patch('subprocess.run', side_effect=OSError('squeue not found')):
+            with pytest.raises(RuntimeError, match='Cannot query runtime'):
+                plugin.get_job_allocation()
+
+    def test_squeue_timeout_raises(self):
+        import subprocess as _sp
+        plugin = self._make_plugin()
+        env    = {'SLURM_JOB_ID': '12345', 'SLURM_NNODES': '4'}
+        with patch.dict(os.environ, env, clear=True), \
+             patch('subprocess.run',
+                   side_effect=_sp.TimeoutExpired(['squeue'], timeout=10)):
+            with pytest.raises(RuntimeError, match='Cannot query runtime'):
+                plugin.get_job_allocation()
 
 
 if __name__ == '__main__':

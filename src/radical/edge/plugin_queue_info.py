@@ -7,6 +7,7 @@ __license__   = 'MIT'
 
 
 import asyncio
+import os
 import shutil
 import subprocess
 
@@ -18,6 +19,44 @@ from .plugin_session_base import PluginSession
 from .plugin_base import Plugin
 from .client import PluginClient
 from .queue_info import QueueInfoSlurm
+
+
+def _parse_slurm_time(s: str) -> 'int | None':
+    """Parse a SLURM time string to seconds.
+
+    Accepted formats:
+      ``MM:SS``, ``HH:MM:SS``, ``D-HH:MM:SS``
+
+    Returns:
+        int: Total seconds, or ``None`` for UNLIMITED/INFINITE time limits.
+
+    Raises:
+        RuntimeError: If the string cannot be parsed.
+    """
+    s = s.strip().upper()
+    if s in ('UNLIMITED', 'INFINITE', 'NOT_SET', 'N/A', ''):
+        return None
+
+    days = 0
+    if '-' in s:
+        day_part, s = s.split('-', 1)
+        try:
+            days = int(day_part)
+        except ValueError:
+            raise RuntimeError(f"Cannot parse SLURM time: {s!r}")
+
+    parts = s.split(':')
+    try:
+        if   len(parts) == 3:
+            h, m, sec = int(parts[0]), int(parts[1]), int(parts[2])
+        elif len(parts) == 2:
+            h, m, sec = 0, int(parts[0]), int(parts[1])
+        else:
+            raise RuntimeError(f"Cannot parse SLURM time: {s!r}")
+    except ValueError:
+        raise RuntimeError(f"Cannot parse SLURM time: {s!r}")
+
+    return days * 86400 + h * 3600 + m * 60 + sec
 
 
 class QueueInfoSession(PluginSession):
@@ -221,6 +260,26 @@ class QueueInfoClient(PluginClient):
         self._raise(resp)
         return resp.json()
 
+    def job_allocation(self) -> 'dict | None':
+        """Return edge job allocation info, or None if not inside a SLURM job.
+
+        No session is required.  The information reflects the environment of
+        the **edge** process, not the client.
+
+        Returns:
+            None: Edge is running on a login node (no ``SLURM_JOB_ID``).
+            dict: ``{"n_nodes": int, "runtime": int | None}`` — number of
+                allocated nodes and walltime limit in seconds (``None`` for
+                UNLIMITED).
+
+        Raises:
+            RuntimeError: Edge has ``SLURM_JOB_ID`` set but cannot determine
+                allocation details.
+        """
+        resp = self._http.get(self._url('job_allocation'))
+        self._raise(resp, 'job_allocation')
+        return resp.json().get('allocation')
+
 
 class PluginQueueInfo(Plugin):
     """
@@ -277,7 +336,8 @@ class PluginQueueInfo(Plugin):
         self._backend.start_prefetch()
 
         # Register QueueInfo-specific routes
-        self.add_route_get('is_enabled', self.is_enabled_endpoint)
+        self.add_route_get('is_enabled',     self.is_enabled_endpoint)
+        self.add_route_get('job_allocation', self.job_allocation_endpoint)
         self.add_route_get('get_info/{sid}', self.get_info)
         self.add_route_get('list_jobs/{sid}/{queue}', self.list_jobs)
         self.add_route_get('list_all_jobs/{sid}', self.list_all_jobs)
@@ -307,6 +367,63 @@ class PluginQueueInfo(Plugin):
     async def is_enabled_endpoint(self, request: Request) -> JSONResponse:
         """Session-less endpoint: returns {"available": bool} for remote callers."""
         return JSONResponse({'available': self.is_enabled()})
+
+    def get_job_allocation(self) -> 'dict | None':
+        """Return edge job allocation info, or None if not inside a SLURM job.
+
+        Checks SLURM environment variables to determine whether the edge process
+        is running inside a batch job allocation.  If it is, queries ``squeue``
+        for the walltime limit.
+
+        Returns:
+            None: If the edge is running on a login node (no ``SLURM_JOB_ID``).
+            dict: ``{"n_nodes": int, "runtime": int | None}`` where ``n_nodes``
+                is the number of allocated nodes and ``runtime`` is the walltime
+                limit in seconds (``None`` for UNLIMITED).
+
+        Raises:
+            RuntimeError: If ``SLURM_JOB_ID`` is set but node count or runtime
+                cannot be determined (missing env var, squeue failure, timeout).
+        """
+        job_id = os.environ.get('SLURM_JOB_ID')
+        if not job_id:
+            return None
+
+        n_nodes = (os.environ.get('SLURM_NNODES') or
+                   os.environ.get('SLURM_JOB_NUM_NODES'))
+        if not n_nodes:
+            raise RuntimeError(
+                f"SLURM_JOB_ID={job_id!r} is set but SLURM_NNODES is unavailable")
+
+        try:
+            result = subprocess.run(
+                ['squeue', '--job', job_id, '--noheader', '--format=%l'],
+                capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise RuntimeError(
+                f"Cannot query runtime for job {job_id}: {exc}") from exc
+
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"squeue failed for job {job_id}: {result.stderr.strip()}")
+
+        runtime = _parse_slurm_time(result.stdout.strip())
+        return {'n_nodes': int(n_nodes), 'runtime': runtime}
+
+    async def job_allocation_endpoint(self, request: Request) -> JSONResponse:
+        """Session-less endpoint: returns current edge job allocation info.
+
+        Response::
+
+            {"allocation": null}                              # login node
+            {"allocation": {"n_nodes": 4, "runtime": 3600}}  # inside a job
+            {"allocation": {"n_nodes": 4, "runtime": null}}  # unlimited walltime
+        """
+        try:
+            alloc = await asyncio.to_thread(self.get_job_allocation)
+            return JSONResponse({'allocation': alloc})
+        except RuntimeError as exc:
+            raise HTTPException(status_code=500, detail=str(exc))
 
     async def get_info(self, request: Request) -> JSONResponse:
         """Return queue/partition information."""
