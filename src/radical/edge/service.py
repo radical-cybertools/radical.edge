@@ -372,7 +372,8 @@ class EdgeService:
                 if _exit_code is not None:
                     # SSH already exited — stderr is available
                     try:
-                        _raw = (self._tunnel_proc.stderr or b'').read()
+                        _pipe = self._tunnel_proc.stderr
+                        _raw  = _pipe.read() if _pipe else b''
                         _ssh_stderr = _raw.decode('utf-8', errors='replace')
                     except Exception:
                         pass

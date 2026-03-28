@@ -35,7 +35,7 @@ def _dbg(msg):
 log = logging.getLogger("radical.edge")
 
 # Default poll interval for job status updates (in seconds)
-PSIJ_POLL_INTERVAL = 10.0
+PSIJ_POLL_INTERVAL = 5.0
 
 # Terminal states that don't need further polling
 TERMINAL_STATES = {'COMPLETED', 'FAILED', 'CANCELED'}
