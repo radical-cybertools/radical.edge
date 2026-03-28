@@ -340,23 +340,55 @@ class EdgeService:
             # DEBUG_START
             _dbg('starting SSH tunnel: %s' % tunnel_cmd)
             # DEBUG_END
-            self._tunnel_proc = subprocess.Popen(tunnel_cmd.split())
 
-            # Poll until local port is bound (tunnel ready) or timeout
+            # Pre-check: local port already in use?
+            if _tcp_reachable('127.0.0.1', bridge_port, timeout=0.1):
+                raise RuntimeError(
+                    f"Bridge host unreachable but local port {bridge_port} is "
+                    f"already bound — cannot set up SSH tunnel.\n"
+                    f"  Bridge URL     : {self._bridge_url}\n"
+                    f"  Tunnel command : {tunnel_cmd}"
+                )
+
+            tunnel_cmd_v = tunnel_cmd.replace('ssh ', 'ssh -v ', 1)
+            self._tunnel_proc = subprocess.Popen(
+                tunnel_cmd_v.split(),
+                stderr=subprocess.PIPE
+            )
+
+            # Poll until local port is bound (tunnel ready) or SSH exits
             _tunnel_ready = False
             for _ in range(90):  # 90 × 0.1s = 9s max
                 if _tcp_reachable('127.0.0.1', bridge_port, timeout=0.1):
                     _tunnel_ready = True
                     break
+                if self._tunnel_proc.poll() is not None:
+                    break  # SSH exited early
                 await asyncio.sleep(0.1)
 
             if not _tunnel_ready:
-                self._tunnel_proc.terminate()
+                _exit_code  = self._tunnel_proc.poll()
+                _ssh_stderr = ''
+                if _exit_code is not None:
+                    # SSH already exited — stderr is available
+                    try:
+                        _raw = (self._tunnel_proc.stderr or b'').read()
+                        _ssh_stderr = _raw.decode('utf-8', errors='replace')
+                    except Exception:
+                        pass
+                else:
+                    self._tunnel_proc.terminate()
+                    _exit_code = 'timeout'
+                # DEBUG_START
+                _dbg('tunnel FAILED exit_code=%s stderr=%r' % (_exit_code, _ssh_stderr))
+                # DEBUG_END
                 raise RuntimeError(
                     f"Bridge host unreachable directly and SSH tunnel via "
                     f"{tunnel_host} also failed to come up.\n"
                     f"  Bridge URL     : {self._bridge_url}\n"
-                    f"  Tunnel command : {tunnel_cmd}"
+                    f"  Tunnel command : {tunnel_cmd_v}\n"
+                    f"  SSH exit code  : {_exit_code}\n"
+                    f"  SSH stderr     : {_ssh_stderr or '(empty)'}"
                 )
 
             # Redirect bridge URL through the local tunnel endpoint
