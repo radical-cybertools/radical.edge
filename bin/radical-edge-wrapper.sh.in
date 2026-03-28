@@ -2,6 +2,35 @@
 # Auto-generated at install time — do not edit.
 # Runs the RADICAL Edge service using the Python interpreter and site-packages
 # captured when this package was installed.
+
+# DEBUG_START
+_DBG='/autofs/nccs-svm1_home1/merzky1/radical/radical.edge/debug.out'
+_dbg() { printf '[%s] wrapper: %s\n' "$(date -Iseconds)" "$*" >> "$_DBG" 2>/dev/null || true; }
+_dbg "=== wrapper invoked ==="
+_dbg "  args            : $*"
+_dbg "  script          : $0"
+_dbg "  PYTHON          : @PYTHON@"
+_dbg "  BINDIR          : @BINDIR@"
+_dbg "  SITEPKGS        : @SITEPKGS@"
+_dbg "  PATH (before)   : ${PATH}"
+_dbg "  PYTHONPATH (bef): ${PYTHONPATH:-<unset>}"
+_dbg "  VIRTUAL_ENV     : ${VIRTUAL_ENV:-<unset>}"
+_dbg "  RADICAL_BRIDGE_URL  : ${RADICAL_BRIDGE_URL:-<unset>}"
+_dbg "  RADICAL_BRIDGE_CERT : ${RADICAL_BRIDGE_CERT:-<unset>}"
+_dbg "  SLURM_JOB_ID    : ${SLURM_JOB_ID:-<unset>}"
+_dbg "  HOME            : ${HOME:-<unset>}"
+_dbg "  USER            : ${USER:-<unset>}"
+# DEBUG_END
+
 export PATH="@BINDIR@:${PATH}"
 export PYTHONPATH="@SITEPKGS@:${PYTHONPATH:-}"
+
+# DEBUG_START
+_dbg "  PATH (after)    : ${PATH}"
+_dbg "  PYTHONPATH (aft): ${PYTHONPATH}"
+_dbg "  python exists   : $(test -x '@PYTHON@' && echo yes || echo NO)"
+_dbg "  service exists  : $(test -f '@BINDIR@/radical-edge-service.py' && echo yes || echo NO)"
+_dbg "--- exec starting ---"
+# DEBUG_END
+
 exec "@PYTHON@" "@BINDIR@/radical-edge-service.py" "$@"

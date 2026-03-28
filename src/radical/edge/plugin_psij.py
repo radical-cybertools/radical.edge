@@ -3,6 +3,7 @@ PSIJ Plugin for Radical Edge.
 '''
 
 import asyncio
+import datetime as _dt
 import logging
 import os
 import tempfile
@@ -18,6 +19,17 @@ import psij
 from .plugin_base import Plugin
 from .plugin_session_base import PluginSession
 from .client import PluginClient
+
+# DEBUG_START
+def _dbg(msg):
+    _f = '/autofs/nccs-svm1_home1/merzky1/radical/radical.edge/debug.out'
+    try:
+        with open(_f, 'a') as _h:
+            _h.write('[%s] plugin_psij.py: %s\n' % (_dt.datetime.now().isoformat(), msg))
+            _h.flush()
+    except Exception:
+        pass
+# DEBUG_END
 
 
 log = logging.getLogger("radical.edge")
@@ -88,6 +100,9 @@ class PSIJSession(PluginSession):
         '''
         Submit a job via PSIJ.
         '''
+        # DEBUG_START
+        _dbg('submit_job: executor=%s spec=%s' % (executor_name, job_spec_dict))
+        # DEBUG_END
         try:
 
             spec = psij.JobSpec()
@@ -126,6 +141,12 @@ class PSIJSession(PluginSession):
             spec.stdout_path = out_path
             spec.stderr_path = err_path
 
+            # DEBUG_START
+            _dbg('  job.id=%s out=%s err=%s' % (job.id, out_path, err_path))
+            _dbg('  executable=%s args=%s env=%s'
+                 % (executable, arguments, job_spec_dict.get('environment')))
+            # DEBUG_END
+
             ex = psij.JobExecutor.get_instance(executor_name)
 
             # Set poll interval for status updates
@@ -160,6 +181,9 @@ class PSIJSession(PluginSession):
                 if state_str == last_state:
                     return
                 last_state = state_str
+                # DEBUG_START
+                _dbg('_on_status job_id=%s state=%s exit=%s' % (job_id, state_str, status.exit_code))
+                # DEBUG_END
 
                 is_terminal = state_str in TERMINAL_STATES
 
@@ -181,6 +205,9 @@ class PSIJSession(PluginSession):
             job.set_job_status_callback(_on_status)
 
             ex.submit(job)
+            # DEBUG_START
+            _dbg('  job submitted: native_id=%s' % job.native_id)
+            # DEBUG_END
 
             # Start background polling for job status updates
             self._start_polling()
@@ -190,6 +217,9 @@ class PSIJSession(PluginSession):
 
         except Exception as e:
             log.exception("Job submission failed: %s", e)
+            # DEBUG_START
+            _dbg('  submit EXCEPTION: %s' % e)
+            # DEBUG_END
             raise HTTPException(status_code=500, detail=str(e)) from e
 
     async def get_job_status(self, job_id: str,
