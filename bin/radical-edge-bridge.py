@@ -803,7 +803,7 @@ def validate_ssl_config(certfile: str, keyfile: str) -> None:
     log.info("[Bridge] SSL certificate validated: %s", certfile)
 
 
-if __name__ == "__main__":
+def main():
 
     import uvicorn
 
@@ -865,4 +865,8 @@ if __name__ == "__main__":
                 ssl_keyfile=ssl_keyfile,
                 log_level="info",
                 timeout_graceful_shutdown=3)  # Force exit after 3 seconds
+
+
+if __name__ == "__main__":
+    main()
 

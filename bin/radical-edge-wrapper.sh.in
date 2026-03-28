@@ -1,0 +1,7 @@
+#!/bin/sh
+# Auto-generated at install time — do not edit.
+# Runs the RADICAL Edge service using the Python interpreter and site-packages
+# captured when this package was installed.
+export PATH="@BINDIR@:${PATH}"
+export PYTHONPATH="@SITEPKGS@:${PYTHONPATH:-}"
+exec "@PYTHON@" "@BINDIR@/radical-edge-service.py" "$@"
