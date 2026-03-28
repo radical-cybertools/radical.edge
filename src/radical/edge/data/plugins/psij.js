@@ -251,7 +251,7 @@ function addJobRow(page, api, job) {
     <td><span class="badge ${badge}">${st}</span></td>
     <td><code>${escHtml(shortExec)}</code></td>
     <td>${escHtml(job.executor || 'local')}</td>
-    <td>${canCancel ? `<button class="btn btn-danger btn-sm psij-cancel-btn" title="Cancel">✕</button>` : ''}</td>
+    <td>${canCancel ? `<button class="task-cancel-btn psij-cancel-btn" title="Cancel">✕</button>` : ''}</td>
   `;
 
   // Row click → detail overlay

@@ -472,18 +472,19 @@
     }
 
     .task-cancel-btn {
-      background: transparent;
+      background: linear-gradient(135deg, #dc2626, var(--danger));
+      color: #fff;
       border: none;
-      color: var(--muted);
+      border-radius: 4px;
       cursor: pointer;
-      padding: 0 4px;
-      font-size: 12px;
-      opacity: 0.5;
-      transition: opacity 0.15s, color 0.15s;
+      padding: 3px 8px;
+      font-size: 0.75rem;
+      line-height: 1.4;
+      opacity: 0.85;
+      transition: opacity 0.15s;
     }
     .task-cancel-btn:hover {
       opacity: 1;
-      color: var(--danger);
     }
 
     .icon {
@@ -963,15 +964,7 @@
       font-size: 1rem;
     }
     .overlay-close {
-      background: none;
-      border: none;
-      font-size: 1.3rem;
-      cursor: pointer;
-      color: var(--muted);
-      padding: 4px 8px;
-    }
-    .overlay-close:hover {
-      color: var(--danger);
+      font-size: 1rem;
     }
     .overlay-body {
       padding: 16px;
@@ -1151,7 +1144,7 @@
     <div class="overlay-content">
       <div class="overlay-header">
         <h3 id="jobs-overlay-title">📄 Jobs</h3>
-        <button class="overlay-close" onclick="hideJobsOverlay()">✕</button>
+        <button class="task-cancel-btn overlay-close" onclick="hideJobsOverlay()">✕</button>
       </div>
       <div class="overlay-body" id="jobs-overlay-body">
         <!-- Job list will be inserted here -->
@@ -2561,7 +2554,7 @@
             <td style="padding:4px 8px;">${escHtml(job.edge_name)}</td>
             <td style="padding:4px 8px;">${escHtml(job.resource)}</td>
             <td style="padding:4px 8px;">${escHtml(job.state)}</td>
-            <td style="padding:4px 8px;"><button class="btn btn-danger btn-sm" onclick="cancelEdgeJob('${escHtml(job.job_id)}')">[x]</button></td>
+            <td style="padding:4px 8px;"><button class="task-cancel-btn" onclick="cancelEdgeJob('${escHtml(job.job_id)}')">✕</button></td>
           </tr>`;
         }
         html += '</table>';

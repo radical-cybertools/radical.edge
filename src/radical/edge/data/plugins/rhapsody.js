@@ -125,7 +125,7 @@ function addTaskRow(page, api, task) {
     <td><span class="badge ${badge}">${st}</span></td>
     <td><code>${escHtml(shortExec)}</code></td>
     <td>${escHtml(task.backend || 'concurrent')}</td>
-    <td>${canCancel ? `<button class="btn btn-danger btn-sm rh-cancel-btn" title="Cancel">✕</button>` : ''}</td>
+    <td>${canCancel ? `<button class="task-cancel-btn rh-cancel-btn" title="Cancel">✕</button>` : ''}</td>
   `;
 
   // Row click → detail overlay
