@@ -2179,11 +2179,20 @@
         return html;
       }
 
+      // Preserve open/closed state of all <details> before re-render
+      const detailsState = new Map();
+      el.querySelectorAll('details[id]').forEach(d => detailsState.set(d.id, d.open));
+
       let html = '';
       for (const ename of topLevel) {
         html += renderEdgeSidebar(ename);
       }
       el.innerHTML = html;
+
+      // Restore state for known entries; brand-new entries keep their rendered default
+      el.querySelectorAll('details[id]').forEach(d => {
+        if (detailsState.has(d.id)) d.open = detailsState.get(d.id);
+      });
     }
 
     function showTaskEntry(edgeName, pluginName, tid) {
