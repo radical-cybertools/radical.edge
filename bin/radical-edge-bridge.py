@@ -32,8 +32,12 @@ shutdown_event = asyncio.Event()
 async def lifespan(app: FastAPI):
     """Lifespan context manager for startup/shutdown."""
     shutdown_event.clear()
-    logging.getLogger("uvicorn.error").info("[Bridge] URL: %s",
-                                            endpoints["bridge"].get("url", "unknown"))
+
+    async def _print_url():
+        await asyncio.sleep(0.2)  # let uvicorn print its own startup line first
+        print(f"[Bridge] URL: {endpoints['bridge'].get('url', 'unknown')}", flush=True)
+
+    asyncio.ensure_future(_print_url())
     yield
     # Shutdown
     log.info("[Bridge] Shutting down...")
