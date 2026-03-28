@@ -834,7 +834,25 @@ if __name__ == "__main__":
     validate_ssl_config(ssl_certfile, ssl_keyfile)
 
     # Construct bridge URL based on config
-    advertise_host = socket.gethostname() if host == "0.0.0.0" else host
+    def _get_outbound_ip():
+        """Return the IP this host uses for outbound internet connections."""
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(('1.1.1.1', 80))
+            ip = s.getsockname()[0]
+            s.close()
+            return ip
+        except Exception:
+            return None
+
+    if host == "0.0.0.0":
+        fqdn = socket.getfqdn()
+        if fqdn and fqdn not in ('localhost', 'localhost.localdomain') and '.' in fqdn:
+            advertise_host = fqdn
+        else:
+            advertise_host = _get_outbound_ip() or socket.gethostname()
+    else:
+        advertise_host = host
     bridge_url = f"https://{advertise_host}:{port}/register"
 
     endpoints["bridge"]["url"] = bridge_url
