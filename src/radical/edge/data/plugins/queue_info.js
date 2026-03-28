@@ -94,13 +94,14 @@ async function loadJobAllocation(page, api) {
     const jobName   = escHtml(alloc.job_name   || '-');
     const nodelist  = escHtml(alloc.nodelist   || '-');
     const cpus      = alloc.cpus_per_node != null ? String(alloc.cpus_per_node) : '-';
+    const gpus      = alloc.gpus_per_node != null ? String(alloc.gpus_per_node) : '-';
 
     area.innerHTML = `
       <div class="card">
         <div class="card-title">🖥️ Edge Node Allocation</div>
         <table>
           <thead><tr>
-            <th>Job ID</th><th>Partition</th><th>Nodes</th><th>CPUs/Node</th>
+            <th>Job ID</th><th>Partition</th><th>Nodes</th><th>CPUs/Node</th><th>GPUs/Node</th>
             <th>Walltime</th><th>Account</th><th>Job Name</th><th>Node List</th>
           </tr></thead>
           <tbody><tr>
@@ -108,6 +109,7 @@ async function loadJobAllocation(page, api) {
             <td>${partition}</td>
             <td>${escHtml(String(alloc.n_nodes))}</td>
             <td>${escHtml(cpus)}</td>
+            <td>${escHtml(gpus)}</td>
             <td>${escHtml(runtime)}</td>
             <td>${account}</td>
             <td>${jobName}</td>

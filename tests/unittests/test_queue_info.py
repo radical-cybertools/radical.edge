@@ -677,6 +677,31 @@ class TestGetJobAllocation:
         assert result['partition']     is None
         assert result['account']       is None
         assert result['cpus_per_node'] is None
+        assert result['gpus_per_node'] is None
+
+    def test_gpus_per_node_plain(self):
+        """SLURM_GPUS_ON_NODE plain integer."""
+        plugin = self._make_plugin()
+        env    = {'SLURM_JOB_ID': '12345', 'SLURM_NNODES': '2',
+                  'SLURM_GPUS_ON_NODE': '4'}
+        with patch.dict(os.environ, env, clear=True), \
+             patch('subprocess.run',
+                   return_value=Mock(returncode=0, stdout='01:00:00\n',
+                                     stderr='')):
+            result = plugin.get_job_allocation()
+        assert result['gpus_per_node'] == 4
+
+    def test_gpus_per_node_typed(self):
+        """SLURM_GPUS_PER_NODE with type prefix (e.g. a100:2)."""
+        plugin = self._make_plugin()
+        env    = {'SLURM_JOB_ID': '12345', 'SLURM_NNODES': '2',
+                  'SLURM_GPUS_PER_NODE': 'a100:2'}
+        with patch.dict(os.environ, env, clear=True), \
+             patch('subprocess.run',
+                   return_value=Mock(returncode=0, stdout='01:00:00\n',
+                                     stderr='')):
+            result = plugin.get_job_allocation()
+        assert result['gpus_per_node'] == 2
 
     def test_in_job_fallback_env_var(self):
         """SLURM_JOB_NUM_NODES used when SLURM_NNODES absent."""

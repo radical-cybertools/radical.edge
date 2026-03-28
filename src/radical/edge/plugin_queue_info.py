@@ -18,7 +18,7 @@ from starlette.responses import JSONResponse
 from .plugin_session_base import PluginSession
 from .plugin_base import Plugin
 from .client import PluginClient
-from .queue_info import QueueInfoSlurm
+from .queue_info import QueueInfoSlurm, _parse_gpus
 
 
 def _parse_slurm_time(s: str) -> 'int | None':
@@ -416,12 +416,31 @@ class PluginQueueInfo(Plugin):
             except ValueError:
                 return None
 
+        # GPUs per node: prefer the per-node count on this specific node,
+        # fall back to the per-node request string (may be "4" or "a100:4").
+        # SLURM_GPUS_ON_NODE is a plain int; SLURM_GPUS_PER_NODE uses GRES format.
+        gpus_raw = (os.environ.get('SLURM_GPUS_ON_NODE') or
+                    os.environ.get('SLURM_GPUS_PER_NODE'))
+        if gpus_raw:
+            try:
+                # Plain integer (SLURM_GPUS_ON_NODE or bare SLURM_GPUS_PER_NODE)
+                gpus_per_node = int(gpus_raw)
+            except ValueError:
+                # "type:count" format from SLURM_GPUS_PER_NODE (e.g. "a100:2")
+                try:
+                    gpus_per_node = int(gpus_raw.split(':')[-1]) or None
+                except ValueError:
+                    gpus_per_node = None
+        else:
+            gpus_per_node = None
+
         return {
             'job_id'       : job_id,
             'partition'    : os.environ.get('SLURM_JOB_PARTITION'),
             'n_nodes'      : int(n_nodes),
             'nodelist'     : os.environ.get('SLURM_JOB_NODELIST'),
             'cpus_per_node': _intenv('SLURM_CPUS_ON_NODE'),
+            'gpus_per_node': gpus_per_node if gpus_per_node else None,
             'account'      : os.environ.get('SLURM_JOB_ACCOUNT'),
             'job_name'     : os.environ.get('SLURM_JOB_NAME'),
             'runtime'      : runtime,
