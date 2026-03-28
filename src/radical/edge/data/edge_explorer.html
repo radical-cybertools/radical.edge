@@ -2596,10 +2596,6 @@
       event.stopPropagation();
       const btn = event.target;
 
-      if (!confirm(`Disconnect edge "${edgeName}"?\n\nThis will terminate the edge service.`)) {
-        return;
-      }
-
       btn.disabled = true;
       try {
         await apiFetch(`/edge/disconnect/${encodeURIComponent(edgeName)}`, { method: 'POST' });
