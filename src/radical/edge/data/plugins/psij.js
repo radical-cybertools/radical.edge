@@ -120,7 +120,7 @@ export function init(page, api) {
   }
 
   // Pre-populate RADICAL_BRIDGE_CERT from the edge's environment
-  api.fetchRaw(`${api.edgeName}/psij/env`)
+  api.fetchRaw(`/${api.edgeName}/psij/env`)
     .then(env => {
       if (env && env.RADICAL_BRIDGE_CERT) {
         addEnvRow(page, 'RADICAL_BRIDGE_CERT', env.RADICAL_BRIDGE_CERT);
