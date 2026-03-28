@@ -2154,9 +2154,8 @@
               for (const [tid, tinfo] of Object.entries(tasks)) {
                 const short = tid.length > 10 ? tid.slice(0, 8) + '…' : tid;
                 const badge = taskStateBadge(tinfo.state);
-                const domId = pname === 'psij' ? `psij-job-${ename}-${tid}` : `rh-task-${ename}-${tid}`;
                 html += `<li class="tree-item" style="padding-left:12px; font-size:0.8rem; opacity:0.9;"
-                         onclick="showTaskEntry('${ename}','${pname}','${domId}')">
+                         onclick="showTaskEntry('${ename}','${pname}','${tid}')">
                        ${badge} <code style="font-size:0.75rem;">${short}</code>
                      </li>`;
               }
@@ -2187,20 +2186,17 @@
       el.innerHTML = html;
     }
 
-    function showTaskEntry(edgeName, pluginName, domId) {
+    function showTaskEntry(edgeName, pluginName, tid) {
       showPluginPage(edgeName, pluginName);
       setTimeout(() => {
-        const el = document.getElementById(domId);
-        if (el) {
-          // Toggle open/close
-          el.open = !el.open;
-          // Brief highlight without scrolling (keep left hierarchy stable)
-          if (el.open) {
-            el.style.outline = '2px solid var(--accent)';
-            setTimeout(() => el.style.outline = '', 1500);
-          }
+        let row;
+        if (pluginName === 'psij') {
+          row = document.querySelector(`.psij-job-row[data-job-id="${CSS.escape(tid)}"]`);
+        } else {
+          row = document.querySelector(`.rh-task-row[data-uid="${CSS.escape(tid)}"]`);
         }
-      }, 100);
+        if (row) row.click();
+      }, 150);
     }
 
     function pluginIcon(p, edgeName) {

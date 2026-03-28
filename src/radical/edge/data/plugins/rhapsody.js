@@ -47,8 +47,8 @@ export function template() {
 export function css() {
   return `
     .rh-table-area table { width: 100%; }
-    .rh-rh-task-row { cursor: pointer; transition: background 0.15s; }
-    .rh-rh-task-row:hover { background: var(--hover); }
+    .rh-task-row { cursor: pointer; transition: background 0.15s; }
+    .rh-task-row:hover { background: var(--hover); }
   `;
 }
 
@@ -98,8 +98,8 @@ function ensureTable(page) {
   if (!table) {
     area.innerHTML = `<table>
       <thead><tr>
-        <th>UID</th><th>Executable</th><th>Backend</th>
-        <th>State</th><th></th>
+        <th>UID</th><th>State</th><th>Executable</th><th>Backend</th>
+        <th></th>
       </tr></thead><tbody></tbody></table>`;
     table = area.querySelector('table');
   }
@@ -122,9 +122,9 @@ function addTaskRow(page, api, task) {
 
   tr.innerHTML = `
     <td><strong>${escHtml((task.uid || '').slice(0, 16))}…</strong></td>
+    <td><span class="badge ${badge}">${st}</span></td>
     <td><code>${escHtml(shortExec)}</code></td>
     <td>${escHtml(task.backend || 'concurrent')}</td>
-    <td><span class="badge ${badge}">${st}</span></td>
     <td>${canCancel ? `<button class="btn btn-danger btn-sm rh-cancel-btn" title="Cancel">✕</button>` : ''}</td>
   `;
 

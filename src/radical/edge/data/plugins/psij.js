@@ -68,8 +68,8 @@ export function template() {
 export function css() {
   return `
     .psij-table-area table { width: 100%; }
-    .psij-psij-job-row { cursor: pointer; transition: background 0.15s; }
-    .psij-psij-job-row:hover { background: var(--hover); }
+    .psij-job-row { cursor: pointer; transition: background 0.15s; }
+    .psij-job-row:hover { background: var(--hover); }
   `;
 }
 
@@ -211,8 +211,8 @@ function ensureTable(page) {
   if (!table) {
     area.innerHTML = `<table>
       <thead><tr>
-        <th>Job ID</th><th>Executable</th><th>Executor</th>
-        <th>State</th><th></th>
+        <th>Job ID</th><th>State</th><th>Executable</th><th>Executor</th>
+        <th></th>
       </tr></thead><tbody></tbody></table>`;
     table = area.querySelector('table');
   }
@@ -235,9 +235,9 @@ function addJobRow(page, api, job) {
 
   tr.innerHTML = `
     <td><strong>${escHtml(job.job_id.slice(0, 12))}…</strong></td>
+    <td><span class="badge ${badge}">${st}</span></td>
     <td><code>${escHtml(shortExec)}</code></td>
     <td>${escHtml(job.executor || 'local')}</td>
-    <td><span class="badge ${badge}">${st}</span></td>
     <td>${canCancel ? `<button class="btn btn-danger btn-sm psij-cancel-btn" title="Cancel">✕</button>` : ''}</td>
   `;
 

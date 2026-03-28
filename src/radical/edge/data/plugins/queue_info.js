@@ -88,13 +88,17 @@ async function loadJobAllocation(page, api) {
       return;
     }
 
-    const runtime   = alloc.runtime != null ? formatDuration(alloc.runtime) : 'Unlimited';
-    const partition = escHtml(alloc.partition  || '-');
-    const account   = escHtml(alloc.account    || '-');
-    const jobName   = escHtml(alloc.job_name   || '-');
-    const nodelist  = escHtml(alloc.nodelist   || '-');
-    const cpus      = alloc.cpus_per_node != null ? String(alloc.cpus_per_node) : '-';
-    const gpus      = alloc.gpus_per_node != null ? String(alloc.gpus_per_node) : '-';
+    const runtime      = alloc.runtime != null ? formatDuration(alloc.runtime) : 'Unlimited';
+    const partition    = escHtml(alloc.partition  || '-');
+    const account      = escHtml(alloc.account    || '-');
+    const jobName      = escHtml(alloc.job_name   || '-');
+    const nodelistRaw  = alloc.nodelist || '-';
+    const nodelistDisp = nodelistRaw.includes(',')
+      ? nodelistRaw.slice(0, nodelistRaw.indexOf(',')) + ', …'
+      : nodelistRaw;
+    const nodelist     = escHtml(nodelistDisp);
+    const cpus         = alloc.cpus_per_node != null ? String(alloc.cpus_per_node) : '-';
+    const gpus         = alloc.gpus_per_node != null ? String(alloc.gpus_per_node) : '-';
 
     area.innerHTML = `
       <div class="card">
@@ -226,7 +230,7 @@ async function loadQueueJobs(api, sid, queue, btn) {
 
       let html = `<table>
         <thead><tr>
-          <th>Job ID</th><th>Name</th><th>User</th><th>State</th><th>Nodes</th><th>Time Used</th><th></th>
+          <th>Job ID</th><th>State</th><th>Name</th><th>User</th><th>Nodes</th><th>Time Used</th><th></th>
         </tr></thead><tbody>`;
 
       for (const j of jobs) {
@@ -239,9 +243,9 @@ async function loadQueueJobs(api, sid, queue, btn) {
           : '';
         html += `<tr class="qi-job-row" data-job-id="${eid}">
           <td><strong>${eid}</strong></td>
+          <td><span class="badge ${badge}">${escHtml(st)}</span></td>
           <td>${escHtml(j.job_name || j.name || '-')}</td>
           <td>${escHtml(j.user || j.user_name || '-')}</td>
-          <td><span class="badge ${badge}">${escHtml(st)}</span></td>
           <td>${j.nodes || j.num_nodes || '-'}</td>
           <td>${formatDuration(j.time_used)}</td>
           <td>${cancelBtn}</td>
@@ -385,7 +389,7 @@ async function loadMyJobs(content, api, sid) {
     let html = `<div class="card"><div class="card-title">👤 Jobs</div>
       <table>
         <thead><tr>
-          <th>Job ID</th><th>Name</th><th>Partition</th><th>State</th><th>Nodes</th><th>Time Used</th><th></th>
+          <th>Job ID</th><th>State</th><th>Name</th><th>Partition</th><th>Nodes</th><th>Time Used</th><th></th>
         </tr></thead><tbody>`;
 
     for (const j of jobs) {
@@ -398,9 +402,9 @@ async function loadMyJobs(content, api, sid) {
         : '';
       html += `<tr class="qi-job-row qi-my-job-row" data-job-id="${eid}">
         <td><strong>${eid}</strong></td>
+        <td><span class="badge ${badge}">${escHtml(st)}</span></td>
         <td>${escHtml(j.job_name || j.name || '-')}</td>
         <td>${escHtml(j.partition || '-')}</td>
-        <td><span class="badge ${badge}">${escHtml(st)}</span></td>
         <td>${j.nodes || j.num_nodes || '-'}</td>
         <td>${formatDuration(j.time_used)}</td>
         <td>${cancelBtn}</td>
