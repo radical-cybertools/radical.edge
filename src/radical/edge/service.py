@@ -341,15 +341,22 @@ class EdgeService:
             _dbg('starting SSH tunnel: %s' % tunnel_cmd)
             # DEBUG_END
             self._tunnel_proc = subprocess.Popen(tunnel_cmd.split())
-            await asyncio.sleep(3)  # give SSH time to establish
 
-            if not _tcp_reachable('127.0.0.1', bridge_port):
+            # Poll until local port is bound (tunnel ready) or timeout
+            _tunnel_ready = False
+            for _ in range(90):  # 90 × 0.1s = 9s max
+                if _tcp_reachable('127.0.0.1', bridge_port, timeout=0.1):
+                    _tunnel_ready = True
+                    break
+                await asyncio.sleep(0.1)
+
+            if not _tunnel_ready:
                 self._tunnel_proc.terminate()
                 raise RuntimeError(
-                    f"Bridge {bridge_host}:{bridge_port} unreachable directly and SSH "
-                    f"tunnel via {tunnel_host} also failed.\n"
-                    f"  Tunnel command : {tunnel_cmd}\n"
-                    f"  Bridge URL     : {self._bridge_url}"
+                    f"Bridge host unreachable directly and SSH tunnel via "
+                    f"{tunnel_host} also failed to come up.\n"
+                    f"  Bridge URL     : {self._bridge_url}\n"
+                    f"  Tunnel command : {tunnel_cmd}"
                 )
 
             # Redirect bridge URL through the local tunnel endpoint
