@@ -2492,10 +2492,6 @@
     async function terminateBridge(event) {
       event.stopPropagation();
 
-      if (!confirm('Terminate the bridge?\n\nConnected edges will NOT be terminated and may reconnect to another bridge.')) {
-        return;
-      }
-
       try {
         await apiFetch('/bridge/terminate', { method: 'POST' });
         flash('Bridge is terminating...');
