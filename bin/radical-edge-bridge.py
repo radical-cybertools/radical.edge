@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import signal
+import socket
 import ssl
 import uuid
 
@@ -31,7 +32,8 @@ shutdown_event = asyncio.Event()
 async def lifespan(app: FastAPI):
     """Lifespan context manager for startup/shutdown."""
     shutdown_event.clear()
-    log.info("[Bridge] Started")
+    logging.getLogger("uvicorn.error").info("[Bridge] URL: %s",
+                                            endpoints["bridge"].get("url", "unknown"))
     yield
     # Shutdown
     log.info("[Bridge] Shutting down...")
@@ -828,12 +830,10 @@ if __name__ == "__main__":
     validate_ssl_config(ssl_certfile, ssl_keyfile)
 
     # Construct bridge URL based on config
-    advertise_host = "localhost" if host == "0.0.0.0" else host
+    advertise_host = socket.gethostname() if host == "0.0.0.0" else host
     bridge_url = f"https://{advertise_host}:{port}/register"
 
     endpoints["bridge"]["url"] = bridge_url
-
-    log.info("[Bridge] URL: %s", bridge_url)
 
     uvicorn.run(app,
                 host=host,
