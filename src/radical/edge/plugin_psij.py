@@ -534,7 +534,30 @@ class PluginPSIJ(Plugin):
         """Session-less: return env vars needed by child edge processes."""
         return JSONResponse({
             'RADICAL_BRIDGE_CERT': os.environ.get('RADICAL_BRIDGE_CERT', ''),
+            'RADICAL_TUNNEL_HOST': self._get_tunnel_host(),
         })
+
+    @staticmethod
+    def _get_tunnel_host() -> str:
+        """Return a usable hostname/IP for this machine (used as SSH tunnel hop).
+
+        Mirrors the bridge URL-detection logic: prefer FQDN with a dot, fall
+        back to the outbound-interface IP, finally fall back to gethostname().
+        """
+        import socket as _socket
+        fqdn = _socket.getfqdn()
+        if fqdn and fqdn not in ('localhost', 'localhost.localdomain') \
+                and '.' in fqdn:
+            return fqdn
+        try:
+            s = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+            s.connect(('1.1.1.1', 80))
+            ip = s.getsockname()[0]
+            s.close()
+            return ip
+        except Exception:
+            pass
+        return _socket.gethostname()
 
     async def submit_job(self, request: Request) -> JSONResponse:
         sid = request.path_params['sid']
