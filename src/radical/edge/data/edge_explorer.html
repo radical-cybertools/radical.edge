@@ -473,12 +473,10 @@
 
     .task-cancel-btn {
       background: none;
-      color: #dc2626;
       border: none;
       cursor: pointer;
       padding: 0 4px;
-      font-size: 1em;
-      font-weight: 700;
+      font-size: 0.9em;
       line-height: 1;
       opacity: 0.75;
       transition: opacity 0.15s;
@@ -1035,7 +1033,7 @@
           <span onclick="showPage('bridge')" style="display:flex; align-items:center; gap:8px; flex:1; cursor:pointer;">
             <span class="icon">🌉</span> <span id="bridgeLabel">Bridge</span>
           </span>
-          <button class="task-cancel-btn" onclick="terminateBridge(event)" title="Terminate bridge">✕</button>
+          <button class="task-cancel-btn" onclick="terminateBridge(event)" title="Terminate bridge">❌</button>
         </li>
       </ul>
       <div id="edgeTree"></div>
@@ -1144,7 +1142,7 @@
     <div class="overlay-content">
       <div class="overlay-header">
         <h3 id="jobs-overlay-title">📄 Jobs</h3>
-        <button class="task-cancel-btn overlay-close" onclick="hideJobsOverlay()">✕</button>
+        <button class="task-cancel-btn overlay-close" onclick="hideJobsOverlay()">❌</button>
       </div>
       <div class="overlay-body" id="jobs-overlay-body">
         <!-- Job list will be inserted here -->
@@ -1594,9 +1592,9 @@
         // Add cancel button for psij and rhapsody
         let cancelBtn = '';
         if (pluginName === 'psij') {
-          cancelBtn = `<button class="task-cancel-btn" onclick="cancelPsijJob(event, '${edgeName}', '${taskId}')" title="Cancel job">✕</button>`;
+          cancelBtn = `<button class="task-cancel-btn" onclick="cancelPsijJob(event, '${edgeName}', '${taskId}')" title="Cancel job">❌</button>`;
         } else if (pluginName === 'rhapsody') {
-          cancelBtn = `<button class="task-cancel-btn" onclick="cancelRhapsodyTask(event, '${edgeName}', '${taskId}')" title="Cancel task">✕</button>`;
+          cancelBtn = `<button class="task-cancel-btn" onclick="cancelRhapsodyTask(event, '${edgeName}', '${taskId}')" title="Cancel task">❌</button>`;
         }
 
         const taskEntry = document.createElement('details');
@@ -2113,7 +2111,7 @@
               <span onclick="showPage('bridge'); event.stopPropagation();" style="display:inline-flex; align-items:center; gap:8px;">
                 <span class="icon">💻</span> ${ename}
               </span>
-              <button class="task-cancel-btn" onclick="disconnectEdge(event, '${ename}')" title="Disconnect edge">✕</button>
+              <button class="task-cancel-btn" onclick="disconnectEdge(event, '${ename}')" title="Disconnect edge">❌</button>
             </span>
           </summary>
           <ul class="tree" style="margin-top: 2px; padding-left: 8px; border-left: 1px dashed var(--border); margin-left: ${16 + indent}px;">`;
@@ -2554,7 +2552,7 @@
             <td style="padding:4px 8px;">${escHtml(job.edge_name)}</td>
             <td style="padding:4px 8px;">${escHtml(job.resource)}</td>
             <td style="padding:4px 8px;">${escHtml(job.state)}</td>
-            <td style="padding:4px 8px;"><button class="task-cancel-btn" onclick="cancelEdgeJob('${escHtml(job.job_id)}')">✕</button></td>
+            <td style="padding:4px 8px;"><button class="task-cancel-btn" onclick="cancelEdgeJob('${escHtml(job.job_id)}')">❌</button></td>
           </tr>`;
         }
         html += '</table>';

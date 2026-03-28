@@ -240,7 +240,7 @@ async function loadQueueJobs(api, sid, queue, btn) {
         const badge = { 'RUNNING': 'badge-green', 'PENDING': 'badge-orange', 'COMPLETED': 'badge-blue', 'FAILED': 'badge-red' }[st] || 'badge-gray';
         const eid = escHtml(jobId);
         const cancelBtn = CANCELLABLE.has(st)
-          ? `<button class="task-cancel-btn cancel-job-btn" data-job-id="${eid}" title="Cancel job ${eid}">✕</button>`
+          ? `<button class="task-cancel-btn cancel-job-btn" data-job-id="${eid}" title="Cancel job ${eid}">❌</button>`
           : '';
         html += `<tr class="qi-job-row" data-job-id="${eid}">
           <td><strong>${eid}</strong></td>
@@ -282,7 +282,7 @@ async function loadQueueJobs(api, sid, queue, btn) {
         } catch (err) {
           api.flash('Cancel failed: ' + err.message, false);
           cancelBtn.disabled = false;
-          cancelBtn.textContent = '✕';
+          cancelBtn.textContent = '❌';
         }
       });
     });
@@ -399,7 +399,7 @@ async function loadMyJobs(content, api, sid) {
       const st = j.state || j.job_state || '-';
       const badge = { 'RUNNING': 'badge-green', 'PENDING': 'badge-orange', 'COMPLETED': 'badge-blue', 'FAILED': 'badge-red' }[st] || 'badge-gray';
       const cancelBtn = CANCELLABLE.has(st)
-        ? `<button class="task-cancel-btn my-cancel-job-btn" data-job-id="${eid}" title="Cancel job ${eid}">✕</button>`
+        ? `<button class="task-cancel-btn my-cancel-job-btn" data-job-id="${eid}" title="Cancel job ${eid}">❌</button>`
         : '';
       html += `<tr class="qi-job-row qi-my-job-row" data-job-id="${eid}">
         <td><strong>${eid}</strong></td>
@@ -438,7 +438,7 @@ async function loadMyJobs(content, api, sid) {
         } catch (err) {
           api.flash('Cancel failed: ' + err.message, false);
           cancelBtn.disabled = false;
-          cancelBtn.textContent = '✕';
+          cancelBtn.textContent = '❌';
         }
       });
     });
