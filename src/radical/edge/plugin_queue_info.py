@@ -408,7 +408,24 @@ class PluginQueueInfo(Plugin):
                 f"squeue failed for job {job_id}: {result.stderr.strip()}")
 
         runtime = _parse_slurm_time(result.stdout.strip())
-        return {'n_nodes': int(n_nodes), 'runtime': runtime}
+
+        def _intenv(key: str) -> 'int | None':
+            v = os.environ.get(key)
+            try:
+                return int(v) if v else None
+            except ValueError:
+                return None
+
+        return {
+            'job_id'       : job_id,
+            'partition'    : os.environ.get('SLURM_JOB_PARTITION'),
+            'n_nodes'      : int(n_nodes),
+            'nodelist'     : os.environ.get('SLURM_JOB_NODELIST'),
+            'cpus_per_node': _intenv('SLURM_CPUS_ON_NODE'),
+            'account'      : os.environ.get('SLURM_JOB_ACCOUNT'),
+            'job_name'     : os.environ.get('SLURM_JOB_NAME'),
+            'runtime'      : runtime,
+        }
 
     async def job_allocation_endpoint(self, request: Request) -> JSONResponse:
         """Session-less endpoint: returns current edge job allocation info.

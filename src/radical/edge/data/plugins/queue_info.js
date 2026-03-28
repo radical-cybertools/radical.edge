@@ -36,26 +36,6 @@ export function css() {
       background: rgba(59, 130, 246, 0.15);
       border-left: 3px solid var(--primary);
     }
-    .qi-alloc-card {
-      margin-bottom: 8px;
-    }
-    .qi-alloc-active {
-      border-left: 3px solid var(--primary);
-    }
-    .qi-alloc-grid {
-      display: grid;
-      grid-template-columns: 120px 1fr;
-      gap: 4px 16px;
-      align-items: center;
-      margin-top: 6px;
-    }
-    .qi-alloc-label {
-      color: var(--muted);
-      font-size: 0.85em;
-    }
-    .qi-alloc-value {
-      font-weight: 500;
-    }
   `;
 }
 
@@ -101,27 +81,44 @@ async function loadJobAllocation(page, api) {
 
     if (alloc === null || alloc === undefined) {
       area.innerHTML = `
-        <div class="card qi-alloc-card">
-          <div class="card-title">🖥️ Edge Allocation</div>
-          <p style="color:var(--muted)">Running on login node — no active job allocation.</p>
+        <div class="card">
+          <div class="card-title">🖥️ Edge Node Allocation</div>
+          <p style="color:var(--muted)">Edge running on login node / head node — not inside a job allocation.</p>
         </div>`;
-    } else {
-      const runtime = alloc.runtime != null ? formatDuration(alloc.runtime) : 'Unlimited';
-      area.innerHTML = `
-        <div class="card qi-alloc-card qi-alloc-active">
-          <div class="card-title">🖥️ Edge Allocation</div>
-          <div class="qi-alloc-grid">
-            <span class="qi-alloc-label">Nodes</span>
-            <span class="qi-alloc-value">${escHtml(String(alloc.n_nodes))}</span>
-            <span class="qi-alloc-label">Walltime limit</span>
-            <span class="qi-alloc-value">${escHtml(runtime)}</span>
-          </div>
-        </div>`;
+      return;
     }
+
+    const runtime   = alloc.runtime != null ? formatDuration(alloc.runtime) : 'Unlimited';
+    const partition = escHtml(alloc.partition  || '-');
+    const account   = escHtml(alloc.account    || '-');
+    const jobName   = escHtml(alloc.job_name   || '-');
+    const nodelist  = escHtml(alloc.nodelist   || '-');
+    const cpus      = alloc.cpus_per_node != null ? String(alloc.cpus_per_node) : '-';
+
+    area.innerHTML = `
+      <div class="card">
+        <div class="card-title">🖥️ Edge Node Allocation</div>
+        <table>
+          <thead><tr>
+            <th>Job ID</th><th>Partition</th><th>Nodes</th><th>CPUs/Node</th>
+            <th>Walltime</th><th>Account</th><th>Job Name</th><th>Node List</th>
+          </tr></thead>
+          <tbody><tr>
+            <td><strong>${escHtml(alloc.job_id || '-')}</strong></td>
+            <td>${partition}</td>
+            <td>${escHtml(String(alloc.n_nodes))}</td>
+            <td>${escHtml(cpus)}</td>
+            <td>${escHtml(runtime)}</td>
+            <td>${account}</td>
+            <td>${jobName}</td>
+            <td>${nodelist}</td>
+          </tr></tbody>
+        </table>
+      </div>`;
   } catch (e) {
     area.innerHTML = `
-      <div class="card qi-alloc-card">
-        <div class="card-title">🖥️ Edge Allocation</div>
+      <div class="card">
+        <div class="card-title">🖥️ Edge Node Allocation</div>
         <p style="color:var(--danger)">Error: ${escHtml(e.message)}</p>
       </div>`;
   }

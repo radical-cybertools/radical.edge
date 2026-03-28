@@ -638,6 +638,33 @@ class TestGetJobAllocation:
 
     def test_in_job_returns_dict(self):
         plugin = self._make_plugin()
+        env    = {
+            'SLURM_JOB_ID'       : '12345',
+            'SLURM_NNODES'       : '4',
+            'SLURM_JOB_PARTITION': 'gpu',
+            'SLURM_JOB_ACCOUNT'  : 'myproject',
+            'SLURM_JOB_NAME'     : 'myjob',
+            'SLURM_JOB_NODELIST' : 'node[01-04]',
+            'SLURM_CPUS_ON_NODE' : '32',
+        }
+        with patch.dict(os.environ, env, clear=True), \
+             patch('subprocess.run',
+                   return_value=Mock(returncode=0, stdout='01:00:00\n',
+                                     stderr='')):
+            result = plugin.get_job_allocation()
+
+        assert result['job_id']        == '12345'
+        assert result['partition']     == 'gpu'
+        assert result['n_nodes']       == 4
+        assert result['nodelist']      == 'node[01-04]'
+        assert result['cpus_per_node'] == 32
+        assert result['account']       == 'myproject'
+        assert result['job_name']      == 'myjob'
+        assert result['runtime']       == 3600
+
+    def test_optional_env_vars_absent(self):
+        """Fields are None when optional SLURM env vars are not set."""
+        plugin = self._make_plugin()
         env    = {'SLURM_JOB_ID': '12345', 'SLURM_NNODES': '4'}
         with patch.dict(os.environ, env, clear=True), \
              patch('subprocess.run',
@@ -645,7 +672,11 @@ class TestGetJobAllocation:
                                      stderr='')):
             result = plugin.get_job_allocation()
 
-        assert result == {'n_nodes': 4, 'runtime': 3600}
+        assert result['job_id']        == '12345'
+        assert result['n_nodes']       == 4
+        assert result['partition']     is None
+        assert result['account']       is None
+        assert result['cpus_per_node'] is None
 
     def test_in_job_fallback_env_var(self):
         """SLURM_JOB_NUM_NODES used when SLURM_NNODES absent."""
@@ -657,7 +688,8 @@ class TestGetJobAllocation:
                                      stderr='')):
             result = plugin.get_job_allocation()
 
-        assert result == {'n_nodes': 8, 'runtime': 7200}
+        assert result['n_nodes'] == 8
+        assert result['runtime'] == 7200
 
     def test_unlimited_runtime(self):
         plugin = self._make_plugin()
@@ -668,7 +700,8 @@ class TestGetJobAllocation:
                                      stderr='')):
             result = plugin.get_job_allocation()
 
-        assert result == {'n_nodes': 2, 'runtime': None}
+        assert result['n_nodes'] == 2
+        assert result['runtime'] is None
 
     def test_missing_nnodes_raises(self):
         plugin = self._make_plugin()
