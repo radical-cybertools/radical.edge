@@ -1167,7 +1167,8 @@
     let eventSource = null;
     let sessions = {};   // key: "edgeName/pluginName" -> sid
     let edgeData = {};   // edgeName -> plugin info from /edge/list
-    let queueDataCache = {}; // edgeName -> { queues: {...}, allocations: [...] }
+    let queueDataCache      = {}; // edgeName -> { queues: {...}, allocations: [...] }
+    let jobAllocationCache  = {}; // edgeName -> allocation dict | null
 
     // Task registry: taskRegistry[edgeName][pluginName] = { id: {state, label, ...} }
     let taskRegistry = {};
@@ -1292,8 +1293,10 @@
         registerTask: (plugin, id, label) => registerTask(edgeName, plugin, id, label),
 
         // Queue data cache (shared across plugins, keyed by edgeName)
-        getQueueData: ()     => queueDataCache[edgeName],
-        setQueueData: (data) => { queueDataCache[edgeName] = data; },
+        getQueueData:      ()     => queueDataCache[edgeName],
+        setQueueData:      (data) => { queueDataCache[edgeName] = data; },
+        getJobAllocation:  ()     => jobAllocationCache[edgeName],
+        setJobAllocation:  (data) => { jobAllocationCache[edgeName] = data; },
 
         // Plugin list for this edge
         getPluginNames: () => Object.keys(edgeData[edgeName]?.plugins || {}),
@@ -1935,7 +1938,8 @@
       BRIDGE = '';
       edgeData = {};
       sessions = {};
-      queueDataCache = {};
+      queueDataCache     = {};
+      jobAllocationCache = {};
       window.lastEdges = {};
       window.lastBridge = {};
 

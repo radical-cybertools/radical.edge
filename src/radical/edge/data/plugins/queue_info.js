@@ -78,6 +78,7 @@ async function loadJobAllocation(page, api) {
   try {
     const data  = await api.fetch('job_allocation');
     const alloc = data.allocation;
+    api.setJobAllocation(alloc ?? null);
 
     if (alloc === null || alloc === undefined) {
       area.innerHTML = `

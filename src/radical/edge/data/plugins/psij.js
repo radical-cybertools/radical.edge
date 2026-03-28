@@ -99,11 +99,24 @@ export function init(page, api) {
   // Prefill from cached queue data if already available
   const qd = api.getQueueData();
   if (qd) replaceQueueAccountDropdowns(page, qd);
+
+  // Pre-select slurm executor if queue_info says we're on a SLURM login node
+  const alloc = api.getJobAllocation();
+  if (alloc === null) {
+    const sel = page.querySelector('.p-executor');
+    if (sel) sel.value = 'slurm';
+  }
 }
 
 export function onShow(page, api) {
   const qd = api.getQueueData();
   if (qd) replaceQueueAccountDropdowns(page, qd);
+
+  const alloc = api.getJobAllocation();
+  if (alloc === null) {
+    const sel = page.querySelector('.p-executor');
+    if (sel && sel.value === 'local') sel.value = 'slurm';
+  }
 }
 
 export function onNotification(data, page, api) {
