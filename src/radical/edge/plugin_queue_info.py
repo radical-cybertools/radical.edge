@@ -7,9 +7,12 @@ __license__   = 'MIT'
 
 
 import asyncio
+import logging
 import os
 import shutil
 import subprocess
+
+log = logging.getLogger('radical.edge')
 
 from fastapi import FastAPI, HTTPException
 from starlette.requests import Request
@@ -385,8 +388,18 @@ class PluginQueueInfo(Plugin):
             RuntimeError: If ``SLURM_JOB_ID`` is set but node count or runtime
                 cannot be determined (missing env var, squeue failure, timeout).
         """
+        SLURM_VARS = [
+            'SLURM_JOB_ID', 'SLURM_NNODES', 'SLURM_JOB_NUM_NODES',
+            'SLURM_JOB_PARTITION', 'SLURM_JOB_ACCOUNT', 'SLURM_JOB_NAME',
+            'SLURM_JOB_NODELIST', 'SLURM_CPUS_ON_NODE',
+            'SLURM_GPUS_ON_NODE', 'SLURM_GPUS_PER_NODE',
+        ]
+        env_snapshot = {k: os.environ.get(k) for k in SLURM_VARS}
+        log.debug('[queue_info] get_job_allocation env: %s', env_snapshot)
+
         job_id = os.environ.get('SLURM_JOB_ID')
         if not job_id:
+            log.debug('[queue_info] SLURM_JOB_ID not set — reporting login node')
             return None
 
         n_nodes = (os.environ.get('SLURM_NNODES') or
@@ -395,13 +408,16 @@ class PluginQueueInfo(Plugin):
             raise RuntimeError(
                 f"SLURM_JOB_ID={job_id!r} is set but SLURM_NNODES is unavailable")
 
+        cmd = ['squeue', '--job', job_id, '--noheader', '--format=%l']
+        log.debug('[queue_info] running: %s', cmd)
         try:
-            result = subprocess.run(
-                ['squeue', '--job', job_id, '--noheader', '--format=%l'],
-                capture_output=True, text=True, timeout=10)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise RuntimeError(
                 f"Cannot query runtime for job {job_id}: {exc}") from exc
+
+        log.debug('[queue_info] squeue rc=%d stdout=%r stderr=%r',
+                  result.returncode, result.stdout, result.stderr)
 
         if result.returncode != 0:
             raise RuntimeError(
@@ -434,7 +450,7 @@ class PluginQueueInfo(Plugin):
         else:
             gpus_per_node = None
 
-        return {
+        alloc = {
             'job_id'       : job_id,
             'partition'    : os.environ.get('SLURM_JOB_PARTITION'),
             'n_nodes'      : int(n_nodes),
@@ -445,6 +461,8 @@ class PluginQueueInfo(Plugin):
             'job_name'     : os.environ.get('SLURM_JOB_NAME'),
             'runtime'      : runtime,
         }
+        log.debug('[queue_info] get_job_allocation result: %s', alloc)
+        return alloc
 
     async def job_allocation_endpoint(self, request: Request) -> JSONResponse:
         """Session-less endpoint: returns current edge job allocation info.
