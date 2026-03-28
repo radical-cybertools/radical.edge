@@ -42,6 +42,12 @@ export function template() {
               <option value="lsf">lsf</option>
             </select>
           </div>
+          <div class="form-group"><label>🌍 Environment Variables</label>
+            <div class="psij-envvar-container">
+              <div class="psij-envvar-rows"></div>
+              <button type="button" class="btn btn-secondary btn-sm" data-action="add-env" style="margin-top:8px;">➕ Add Variable</button>
+            </div>
+          </div>
         </div>
         <div>
           <div class="form-group"><label>Queue / Partition</label><input class="p-queue" type="text" placeholder="optional" /></div>
@@ -82,6 +88,12 @@ export function init(page, api) {
     addAttrBtn.addEventListener('click', () => addAttributeRow(page));
   }
 
+  // Bind add env-var button
+  const addEnvBtn = page.querySelector('[data-action="add-env"]');
+  if (addEnvBtn) {
+    addEnvBtn.addEventListener('click', () => addEnvRow(page));
+  }
+
   // Bind submit button
   const submitBtn = page.querySelector('[data-action="submit"]');
   if (submitBtn) {
@@ -106,6 +118,15 @@ export function init(page, api) {
     const sel = page.querySelector('.p-executor');
     if (sel) sel.value = 'slurm';
   }
+
+  // Pre-populate RADICAL_BRIDGE_CERT from the edge's environment
+  api.fetchRaw(`${api.edgeName}/psij/env`)
+    .then(env => {
+      if (env && env.RADICAL_BRIDGE_CERT) {
+        addEnvRow(page, 'RADICAL_BRIDGE_CERT', env.RADICAL_BRIDGE_CERT);
+      }
+    })
+    .catch(() => {});  // silently ignore — env endpoint is best-effort
 }
 
 export function onShow(page, api) {
@@ -195,6 +216,21 @@ function replaceQueueAccountDropdowns(page, queueData) {
     }).join('');
     accountInput.parentNode.replaceChild(sel, accountInput);
   }
+}
+
+function addEnvRow(page, key = '', value = '') {
+  const container = page.querySelector('.psij-envvar-rows');
+  const row = document.createElement('div');
+  row.style.display = 'flex';
+  row.style.gap = '10px';
+  row.style.marginBottom = '8px';
+  row.innerHTML = `
+    <input class="p-env-key" type="text" placeholder="KEY" style="flex:1;" value="${escHtml(key)}" />
+    <input class="p-env-val" type="text" placeholder="value" style="flex:2;" value="${escHtml(value)}" />
+    <button class="btn btn-secondary btn-sm" style="padding: 4px 10px;">❌</button>
+  `;
+  row.querySelector('button').addEventListener('click', () => row.remove());
+  container.appendChild(row);
 }
 
 function addAttributeRow(page) {
@@ -465,6 +501,16 @@ async function submitJob(page, api) {
     if (key && val) {
       if (!job_spec.custom_attributes) job_spec.custom_attributes = {};
       job_spec.custom_attributes[key] = val;
+    }
+  });
+
+  const envRows = page.querySelectorAll('.psij-envvar-rows > div');
+  envRows.forEach(row => {
+    const key = row.querySelector('.p-env-key').value.trim();
+    const val = row.querySelector('.p-env-val').value.trim();
+    if (key) {
+      if (!job_spec.environment) job_spec.environment = {};
+      job_spec.environment[key] = val;
     }
   });
 

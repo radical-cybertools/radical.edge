@@ -494,10 +494,17 @@ class PluginPSIJ(Plugin):
     def __init__(self, app: FastAPI, instance_name: str = "psij"):
         super().__init__(app, instance_name)
 
-        self.add_route_post('submit/{sid}', self.submit_job)
-        self.add_route_get('status/{sid}/{job_id}', self.get_job_status)
-        self.add_route_get('list_jobs/{sid}', self.list_jobs)
+        self.add_route_get('env',                    self.get_env)
+        self.add_route_post('submit/{sid}',          self.submit_job)
+        self.add_route_get('status/{sid}/{job_id}',  self.get_job_status)
+        self.add_route_get('list_jobs/{sid}',        self.list_jobs)
         self.add_route_post('cancel/{sid}/{job_id}', self.cancel_job)
+
+    async def get_env(self, request: Request) -> JSONResponse:
+        """Session-less: return env vars needed by child edge processes."""
+        return JSONResponse({
+            'RADICAL_BRIDGE_CERT': os.environ.get('RADICAL_BRIDGE_CERT', ''),
+        })
 
     async def submit_job(self, request: Request) -> JSONResponse:
         sid = request.path_params['sid']
