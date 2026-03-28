@@ -124,7 +124,7 @@ class RhapsodySession(PluginSession):
 
         results = []
         for t in tasks:
-            self._tasks[t.uid] = t
+            self._tasks[str(t.uid)] = t
             state = t.get("state")
             if state is not None:
                 state = str(state)
