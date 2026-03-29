@@ -692,6 +692,12 @@ class PluginPSIJ(Plugin):
         if tunnel and relay_file is not None:
             result = _json.loads(bytes(resp.body))
             native_id = result.get('native_id')
+            log.info("[psij] submit_edge: edge=%s job_id=%s native_id=%s — starting tunnel watcher",
+                     edge_name, result.get('job_id'), native_id)
+            if native_id is None:
+                log.warning("[psij] native_id is None for edge '%s'; watcher will poll "
+                            "without a SLURM job ID (PsiJ may not have assigned one yet)",
+                            edge_name)
             task = asyncio.create_task(
                 self._tunnel_watcher(edge_name, native_id, relay_file))
             self._watchers[edge_name] = task
@@ -783,11 +789,18 @@ class PluginPSIJ(Plugin):
         log.info("[psij] Watcher started for edge '%s' (job %s)", edge_name, native_id)
 
         # --- wait for job to reach RUNNING ---
+        last_state = None
         for attempt in range(360):          # up to ~30 min (5s × 360)
             await asyncio.sleep(5)
             state = await _get_slurm_state(native_id)
-            log.debug("[psij] watcher edge=%s job=%s state=%s attempt=%d",
+            log.debug("[psij] watcher edge=%s job=%s state=%r attempt=%d",
                       edge_name, native_id, state, attempt)
+
+            # Log every 60 s at INFO so state is visible without DEBUG logging
+            if state != last_state or attempt % 12 == 0:
+                log.info("[psij] watcher edge=%s job=%s state=%r (attempt %d/360)",
+                         edge_name, native_id, state or '(unknown)', attempt)
+                last_state = state
 
             if state in ('FAILED', 'CANCELLED', 'TIMEOUT', 'NODE_FAIL', 'PREEMPTED'):
                 log.warning("[psij] Job %s ended with state %s — aborting tunnel",
@@ -909,7 +922,8 @@ async def _get_slurm_state(native_id) -> str:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE)
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
-        return stdout.decode().strip()
+        lines = [l.strip() for l in stdout.decode().splitlines() if l.strip()]
+        return lines[0] if lines else ''
     except Exception:
         return ''
 
