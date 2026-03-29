@@ -32,6 +32,7 @@ Requires two terminals (optionally three for testing):
 python examples/example_sysinfo.py   # System info
 python examples/example_psij.py      # PsiJ job submission
 python examples/example_rhapsody.py  # Rhapsody tasks
+python examples/example_edge.py      # Submit a child edge service as a batch job
 ```
 
 The bridge includes a web-based **Explorer UI** at the root URL (e.g., `http://localhost:8000/`).
@@ -84,7 +85,9 @@ Key endpoints:
 
 **Available plugins:**
 - **sysinfo** (`plugin_sysinfo.py`) – System info (hostname, OS, CPU, memory, disk, network, GPUs). Detects shared filesystems (Lustre, GPFS, NFS, DVS, etc.). Background prefetch on startup.
-- **psij** (`plugin_psij.py`) – HPC job submission via PsiJ (supports local, SLURM, PBS, LSF). Background job state polling. Default executable: `radical-edge-wrapper.sh`. Stores job metadata at submit time. `get_job_status` returns full metadata plus stdout/stderr with byte-offset streaming. `list_jobs` returns all jobs in a session.
+- **psij** (`plugin_psij.py`) – HPC job submission via PsiJ (supports local, SLURM, PBS, LSF). Background job state polling. Default executable: `radical-edge-wrapper.sh`. Stores job metadata at submit time. `get_job_status` returns full metadata plus stdout/stderr with byte-offset streaming. `list_jobs` returns all jobs in a session. `submit_edge` submits a job that starts a child Edge service; requires `-n`/`--name` in arguments; with `tunnel=true` it injects `RADICAL_RELAY_PORT_FILE` into the job's environment and spawns an async watcher that opens a reverse SSH tunnel (login → compute) once the job is RUNNING. `tunnel_status/<edge_name>` returns watcher state (`pending`, `active`, `failed`, `done`, `no_tunnel`) and the assigned tunnel port.
+- **Relay file protocol**: When `RADICAL_RELAY_PORT_FILE` is set in the child edge's environment, `service.py` polls that file (up to 6 min) before connecting to the bridge, then rewrites the bridge URL to `localhost:<port>` so traffic flows through the reverse SSH tunnel. The port file is written by the parent edge's `_spawn_tunnel` after SSH reports the allocated port via stderr.
+- **Node discovery**: `QueueInfoSlurm.get_job_nodes(native_id)` returns allocated node hostnames via `squeue`/`scontrol show hostnames`; used by the tunnel watcher to target the correct compute node.
 - **queue_info** (`plugin_queue_info.py`) – SLURM queue/partition info, job listings, and allocations. Shared backend with caching. Background prefetch on startup. Session-less `GET /queue_info/is_enabled` returns `{"available": bool}` indicating whether SLURM (`sinfo`) is present on the edge.
 - **rhapsody** (`plugin_rhapsody.py`) – Task execution via Rhapsody backends (local, Dragon, Flux). Registers backend callbacks for intermediate state notifications (e.g. RUNNING). `list_tasks` returns all tasks in a session. `get_task` returns full task details including stdout/stderr/exception.
 - **lucid** (`plugin_lucid.py`) – RADICAL Pilot integration.

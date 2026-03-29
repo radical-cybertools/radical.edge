@@ -297,6 +297,39 @@ class QueueInfoSlurm(QueueInfo):
             self._env['SLURM_CONF'] = slurm_conf
 
 
+    @staticmethod
+    def get_job_nodes(native_id: str) -> list:
+        """Return hostnames of nodes allocated to a running SLURM job.
+
+        Args:
+            native_id: SLURM job ID (string or int).
+
+        Returns:
+            List of hostname strings, or empty list if not determinable.
+        """
+        try:
+            r = subprocess.run(
+                ['squeue', '--job', str(native_id), '--noheader', '--format=%N'],
+                capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.TimeoutExpired):
+            return []
+
+        nodelist = r.stdout.strip()
+        if r.returncode != 0 or not nodelist:
+            return []
+
+        try:
+            r2 = subprocess.run(
+                ['scontrol', 'show', 'hostnames', nodelist],
+                capture_output=True, text=True, timeout=10)
+            if r2.returncode == 0 and r2.stdout.strip():
+                return [h.strip() for h in r2.stdout.splitlines() if h.strip()]
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+        return [nodelist]
+
+
     def _run(self, cmd):
         """Run a subprocess with self._env, return stdout."""
 

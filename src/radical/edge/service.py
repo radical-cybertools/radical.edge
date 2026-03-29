@@ -325,7 +325,7 @@ class EdgeService:
         self._stop_event.clear()
         self._running_task = asyncio.current_task()
 
-        # ── Tunnel setup ──────────────────────────────────────────────────────
+        # ── Direct forward-tunnel setup (RADICAL_TUNNEL_HOST) ────────────────
         bridge_host, bridge_port = _parse_bridge_hostport(self._bridge_url)
         tunnel_host = os.environ.get('RADICAL_TUNNEL_HOST')
 
@@ -398,7 +398,38 @@ class EdgeService:
             # DEBUG_START
             _dbg('tunnel up; redirected bridge_url to %s' % self._bridge_url)
             # DEBUG_END
-        # ── End tunnel setup ──────────────────────────────────────────────────
+        # ── End direct tunnel setup ───────────────────────────────────────────
+
+        # ── Reverse-tunnel relay (RADICAL_RELAY_PORT_FILE) ───────────────────
+        # Used when a parent edge spawned this job and set up a reverse SSH
+        # tunnel.  The tunnel port is written to a shared file; we wait for
+        # it and then rewrite the bridge URL to go through localhost:<port>.
+        relay_file = os.environ.get('RADICAL_RELAY_PORT_FILE')
+        if relay_file:
+            log.info("[Edge] Waiting for relay port file: %s", relay_file)
+            # DEBUG_START
+            _dbg('waiting for relay file: %s' % relay_file)
+            # DEBUG_END
+            for _ in range(180):   # 180 × 2s = 6 min
+                if os.path.exists(relay_file):
+                    break
+                await asyncio.sleep(2)
+            else:
+                raise RuntimeError(
+                    f"Relay port file never appeared: {relay_file}\n"
+                    f"  Bridge URL: {self._bridge_url}")
+
+            relay_port = open(relay_file).read().strip()
+            import re as _re
+            self._bridge_url = _re.sub(
+                r'(wss?://)[^/:]+:\d+',
+                f'\\g<1>localhost:{relay_port}',
+                self._bridge_url)
+            log.info("[Edge] Relay active; using %s", self._bridge_url)
+            # DEBUG_START
+            _dbg('relay active; bridge_url=%s' % self._bridge_url)
+            # DEBUG_END
+        # ── End relay setup ───────────────────────────────────────────────────
 
         transport = ASGITransport(app=self._app)
 

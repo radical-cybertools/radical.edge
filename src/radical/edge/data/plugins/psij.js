@@ -63,6 +63,15 @@ export function template() {
         </div>
       </div>
       <button class="btn btn-success" data-action="submit">🚀 Submit Job</button>
+      <button class="btn btn-primary" data-action="submit-edge" style="margin-left:8px;">🌐 Submit Edge Job</button>
+      <label style="margin-left:16px;cursor:pointer;user-select:none;">
+        <input type="checkbox" class="p-tunnel" style="margin-right:4px;" />
+        Reverse SSH tunnel
+      </label>
+    </div>
+    <div class="card psij-tunnel-card" style="display:none;">
+      <div class="card-title">🔗 Tunnel Status</div>
+      <div class="psij-tunnel-area"><p style="color:var(--muted)">No edge job submitted yet.</p></div>
     </div>
     <div class="card psij-jobs-card">
       <div class="card-title">📊 Job Monitor</div>
@@ -98,6 +107,12 @@ export function init(page, api) {
   const submitBtn = page.querySelector('[data-action="submit"]');
   if (submitBtn) {
     submitBtn.addEventListener('click', () => submitJob(page, api));
+  }
+
+  // Bind submit-edge button
+  const submitEdgeBtn = page.querySelector('[data-action="submit-edge"]');
+  if (submitEdgeBtn) {
+    submitEdgeBtn.addEventListener('click', () => submitEdgeJob(page, api));
   }
 
   // Pre-fill --url / --name args for first submission
@@ -231,7 +246,7 @@ function addEnvRow(page, key = '', value = '') {
   row.innerHTML = `
     <input class="p-env-key" type="text" placeholder="KEY" style="flex:1;" value="${escHtml(key)}" />
     <input class="p-env-val" type="text" placeholder="value" style="flex:2;" value="${escHtml(value)}" />
-    <button class="btn btn-secondary btn-sm" style="padding: 4px 10px;">❌</button>
+    <button class="task-cancel-btn">❌</button>
   `;
   row.querySelector('button').addEventListener('click', () => row.remove());
   container.appendChild(row);
@@ -246,7 +261,7 @@ function addAttributeRow(page) {
   row.innerHTML = `
     <input class="p-attr-key" type="text" placeholder="Key (e.g. slurm.constraint)" style="flex:1;" />
     <input class="p-attr-val" type="text" placeholder="Value (e.g. cpu_gen_1)" style="flex:2;" />
-    <button class="btn btn-secondary btn-sm" style="padding: 4px 10px;">❌</button>
+    <button class="task-cancel-btn">❌</button>
   `;
   row.querySelector('button').addEventListener('click', () => row.remove());
   container.appendChild(row);
@@ -564,6 +579,166 @@ async function submitJob(page, api) {
   } catch (e) {
     api.flash('PsiJ error: ' + e.message, false);
   }
+}
+
+// ─────────────────────────────────────────────────────────────
+//  Submit Edge Job
+// ─────────────────────────────────────────────────────────────
+
+// Active tunnel pollers: edge_name -> intervalId
+const tunnelPollers = {};
+
+async function submitEdgeJob(page, api) {
+  const exec = page.querySelector('.p-exec').value.trim();
+  const args = page.querySelector('.p-args').value.trim().split(/\s+/).filter(Boolean);
+  const executor = page.querySelector('.p-executor').value;
+  const queue = page.querySelector('.p-queue').value.trim();
+  const account = page.querySelector('.p-account').value.trim();
+  const duration = page.querySelector('.p-duration').value.trim();
+  const nodeCountEl = page.querySelector('.p-node-count');
+  const nodeCount = nodeCountEl ? nodeCountEl.value.trim() : '';
+  const tunnel = !!(page.querySelector('.p-tunnel') || {}).checked;
+
+  const job_spec = { executable: exec, arguments: args, attributes: {} };
+  if (queue) job_spec.attributes.queue_name = queue;
+  if (account) job_spec.attributes.account = account;
+  if (duration) job_spec.attributes.duration = duration;
+  if (nodeCount) job_spec.attributes.node_count = parseInt(nodeCount, 10);
+
+  const attrRows = page.querySelectorAll('.psij-attribute-rows > div');
+  attrRows.forEach(row => {
+    const key = row.querySelector('.p-attr-key').value.trim();
+    const val = row.querySelector('.p-attr-val').value.trim();
+    if (key && val) {
+      if (!job_spec.custom_attributes) job_spec.custom_attributes = {};
+      job_spec.custom_attributes[key] = val;
+    }
+  });
+
+  const envRows = page.querySelectorAll('.psij-envvar-rows > div');
+  envRows.forEach(row => {
+    const key = row.querySelector('.p-env-key').value.trim();
+    const val = row.querySelector('.p-env-val').value.trim();
+    if (key) {
+      if (!job_spec.environment) job_spec.environment = {};
+      job_spec.environment[key] = val;
+    }
+  });
+
+  try {
+    const sid = await api.getSession('psij');
+
+    const res = await api.fetch(`submit_edge/${sid}`, {
+      method: 'POST',
+      body: JSON.stringify({ job_spec, executor, tunnel })
+    });
+
+    const jobId     = res.job_id;
+    const edgeName  = res.edge_name;
+    api.flash(`Edge job submitted: ${jobId} (edge: ${edgeName})`);
+    api.registerTask('psij', jobId, `${exec} ${args.join(' ')}`);
+
+    // Track in module state
+    const jobData = {
+      job_id:     jobId,
+      native_id:  res.native_id,
+      executable: exec,
+      arguments:  args,
+      executor:   executor,
+      state:      'NEW',
+      queue_name: queue || null,
+      account:    account || null,
+      node_count: nodeCount || null,
+      duration:   duration || null,
+    };
+    psijJobs[jobId] = jobData;
+    addJobRow(page, api, jobData);
+
+    if (pendingNotifications[jobId]) {
+      const pending = pendingNotifications[jobId];
+      updateJobRow(page, jobId, pending.state, pending.data);
+      if (psijJobs[jobId]) Object.assign(psijJobs[jobId], pending.data);
+      delete pendingNotifications[jobId];
+    }
+
+    // Update --name for next submission
+    const argsInput = page.querySelector('.p-args');
+    const nextName  = getNextEdgeChildName(api.edgeName);
+    argsInput.value = argsInput.value.replace(/--name\s+\S+/, `--name ${nextName}`);
+
+    // Show tunnel card and start status poller
+    if (tunnel && edgeName) {
+      showTunnelCard(page);
+      addTunnelRow(page, edgeName);
+      startTunnelPoller(page, api, edgeName);
+    }
+
+  } catch (e) {
+    api.flash('Edge job error: ' + e.message, false);
+  }
+}
+
+function showTunnelCard(page) {
+  const card = page.querySelector('.psij-tunnel-card');
+  if (card) card.style.display = '';
+}
+
+function addTunnelRow(page, edgeName) {
+  const area = page.querySelector('.psij-tunnel-area');
+  if (!area) return;
+
+  // Remove placeholder
+  const placeholder = area.querySelector('p');
+  if (placeholder) placeholder.remove();
+
+  // Check if row exists
+  let row = area.querySelector(`[data-tunnel-edge="${CSS.escape(edgeName)}"]`);
+  if (!row) {
+    row = document.createElement('div');
+    row.dataset.tunnelEdge = edgeName;
+    row.style.cssText = 'display:flex;align-items:center;gap:12px;padding:6px 0;border-bottom:1px solid var(--border)';
+    row.innerHTML = `
+      <strong>${escHtml(edgeName)}</strong>
+      <span class="badge badge-orange psij-tunnel-badge">pending</span>
+      <span class="psij-tunnel-port" style="color:var(--muted);font-size:0.85em;"></span>
+    `;
+    area.appendChild(row);
+  }
+}
+
+function updateTunnelRow(page, edgeName, status, port) {
+  const area = page.querySelector('.psij-tunnel-area');
+  if (!area) return;
+  const row = area.querySelector(`[data-tunnel-edge="${CSS.escape(edgeName)}"]`);
+  if (!row) return;
+
+  const badge = row.querySelector('.psij-tunnel-badge');
+  if (badge) {
+    badge.textContent = status;
+    const cls = status === 'active' ? 'badge-green'
+              : status === 'failed' ? 'badge-red'
+              : status === 'done'   ? 'badge-green'
+              : 'badge-orange';
+    badge.className = `badge ${cls} psij-tunnel-badge`;
+  }
+  const portEl = row.querySelector('.psij-tunnel-port');
+  if (portEl) portEl.textContent = port ? `port ${port}` : '';
+}
+
+function startTunnelPoller(page, api, edgeName) {
+  if (tunnelPollers[edgeName]) {
+    clearInterval(tunnelPollers[edgeName]);
+  }
+  tunnelPollers[edgeName] = setInterval(async () => {
+    try {
+      const s = await api.fetch(`tunnel_status/${encodeURIComponent(edgeName)}`);
+      updateTunnelRow(page, edgeName, s.status, s.port);
+      if (s.status === 'active' || s.status === 'done' || s.status === 'failed') {
+        clearInterval(tunnelPollers[edgeName]);
+        delete tunnelPollers[edgeName];
+      }
+    } catch (_) { /* silently ignore */ }
+  }, 3000);
 }
 
 // ─────────────────────────────────────────────────────────────
