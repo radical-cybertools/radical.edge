@@ -69,10 +69,6 @@ export function template() {
         Reverse SSH tunnel
       </label>
     </div>
-    <div class="card psij-tunnel-card" style="display:none;">
-      <div class="card-title">🔗 Tunnel Status</div>
-      <div class="psij-tunnel-area"><p style="color:var(--muted)">No edge service submitted yet.</p></div>
-    </div>
     <div class="card psij-jobs-card">
       <div class="card-title">📊 Job Monitor</div>
       <div class="psij-table-area"><p style="color:var(--muted)">No jobs submitted yet.</p></div>
@@ -679,10 +675,8 @@ async function submitEdgeJob(page, api) {
     const nextName  = getNextEdgeChildName(api.edgeName);
     argsInput.value = argsInput.value.replace(/--name\s+\S+/, `--name ${nextName}`);
 
-    // Show tunnel card and start status poller
+    // Start tunnel status poller (updates the job table row)
     if (tunnel && edgeName) {
-      showTunnelCard(page);
-      addTunnelRow(page, edgeName);
       startTunnelPoller(page, api, edgeName);
     }
 
@@ -691,64 +685,15 @@ async function submitEdgeJob(page, api) {
   }
 }
 
-function showTunnelCard(page) {
-  const card = page.querySelector('.psij-tunnel-card');
-  if (card) card.style.display = '';
-}
-
-function addTunnelRow(page, edgeName) {
-  const area = page.querySelector('.psij-tunnel-area');
-  if (!area) return;
-
-  // Remove placeholder
-  const placeholder = area.querySelector('p');
-  if (placeholder) placeholder.remove();
-
-  // Check if row exists
-  let row = area.querySelector(`[data-tunnel-edge="${CSS.escape(edgeName)}"]`);
-  if (!row) {
-    row = document.createElement('div');
-    row.dataset.tunnelEdge = edgeName;
-    row.style.cssText = 'display:flex;align-items:center;gap:12px;padding:6px 0;border-bottom:1px solid var(--border)';
-    row.innerHTML = `
-      <strong>${escHtml(edgeName)}</strong>
-      <span class="badge badge-orange psij-tunnel-badge">pending</span>
-      <span class="psij-tunnel-port" style="color:var(--muted);font-size:0.85em;"></span>
-    `;
-    area.appendChild(row);
-  }
-}
-
-function updateTunnelRow(page, edgeName, status, port) {
-  const area = page.querySelector('.psij-tunnel-area');
-  if (!area) return;
-  const row = area.querySelector(`[data-tunnel-edge="${CSS.escape(edgeName)}"]`);
-  if (!row) return;
-
-  const badge = row.querySelector('.psij-tunnel-badge');
-  if (badge) {
-    badge.textContent = status;
-    const cls = status === 'active' ? 'badge-green'
-              : status === 'failed' ? 'badge-red'
-              : status === 'done'   ? 'badge-green'
-              : 'badge-orange';
-    badge.className = `badge ${cls} psij-tunnel-badge`;
-  }
-  const portEl = row.querySelector('.psij-tunnel-port');
-  if (portEl) portEl.textContent = port ? `port ${port}` : '';
-}
-
 function startTunnelPoller(page, api, edgeName) {
   if (tunnelPollers[edgeName]) {
     clearInterval(tunnelPollers[edgeName]);
   }
-  // Find the job_id for this edge so we can update the table row too
   const jobId = Object.keys(psijJobs).find(id => psijJobs[id].edge_name === edgeName);
 
   tunnelPollers[edgeName] = setInterval(async () => {
     try {
       const s = await api.fetch(`tunnel_status/${encodeURIComponent(edgeName)}`);
-      updateTunnelRow(page, edgeName, s.status, s.port);
       if (jobId) updateJobRowTunnel(page, jobId, s.status);
       if (s.status === 'active' || s.status === 'done' || s.status === 'failed') {
         clearInterval(tunnelPollers[edgeName]);
