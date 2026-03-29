@@ -83,6 +83,7 @@ export function template() {
 export function css() {
   return `
     .psij-table-area table { width: 100%; }
+    .psij-table-area td:first-child { min-width: 9em; }
     .psij-job-row { cursor: pointer; transition: background 0.15s; }
     .psij-job-row:hover { background: var(--hover); }
   `;
@@ -276,8 +277,8 @@ function ensureTable(page) {
   if (!table) {
     area.innerHTML = `<table>
       <thead><tr>
-        <th>Job ID</th><th>State</th><th>Executable</th><th>Executor</th>
-        <th></th>
+        <th>Native ID</th><th>State</th><th>Executable</th><th>Executor</th>
+        <th>Tunnel</th><th></th>
       </tr></thead><tbody></tbody></table>`;
     table = area.querySelector('table');
   }
@@ -298,11 +299,13 @@ function addJobRow(page, api, job) {
   const shortExec = (job.executable || '?').split('/').pop();
   const canCancel = CANCELLABLE.has(st) || !TERMINAL.has(st);
 
+  const nativeId = job.native_id ? escHtml(String(job.native_id)) : '—';
   tr.innerHTML = `
-    <td><strong>${escHtml(job.job_id.slice(0, 12))}…</strong></td>
+    <td><strong>${nativeId}</strong></td>
     <td><span class="badge ${badge}">${st}</span></td>
     <td><code>${escHtml(shortExec)}</code></td>
     <td>${escHtml(job.executor || 'local')}</td>
+    <td class="psij-tunnel-cell">${job.edge_name ? '<span class="badge badge-orange psij-tunnel-badge">pending</span>' : ''}</td>
     <td>${canCancel ? `<button class="task-cancel-btn psij-cancel-btn" title="Cancel">❌</button>` : ''}</td>
   `;
 
@@ -338,7 +341,7 @@ function updateJobRow(page, jobId, state, data) {
   const row = page.querySelector(`.psij-job-row[data-job-id="${CSS.escape(jobId)}"]`);
   if (!row) return;
 
-  const badge = row.querySelector('.badge');
+  const badge = row.querySelector('.badge:not(.psij-tunnel-badge)');
   if (badge) {
     badge.textContent = state;
     badge.className = `badge ${stateBadge(state)}`;
@@ -348,6 +351,18 @@ function updateJobRow(page, jobId, state, data) {
     const cancelBtn = row.querySelector('.psij-cancel-btn');
     if (cancelBtn) cancelBtn.remove();
   }
+}
+
+function updateJobRowTunnel(page, jobId, tunnelStatus) {
+  const row = page.querySelector(`.psij-job-row[data-job-id="${CSS.escape(jobId)}"]`);
+  if (!row) return;
+  const badge = row.querySelector('.psij-tunnel-badge');
+  if (!badge) return;
+  const cls = tunnelStatus === 'active' || tunnelStatus === 'done' ? 'badge-green'
+            : tunnelStatus === 'failed' ? 'badge-red'
+            : 'badge-orange';
+  badge.className = `badge ${cls} psij-tunnel-badge`;
+  badge.textContent = tunnelStatus;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -647,6 +662,7 @@ async function submitEdgeJob(page, api) {
       account:    account || null,
       node_count: nodeCount || null,
       duration:   duration || null,
+      edge_name:  edgeName,
     };
     psijJobs[jobId] = jobData;
     addJobRow(page, api, jobData);
@@ -726,10 +742,14 @@ function startTunnelPoller(page, api, edgeName) {
   if (tunnelPollers[edgeName]) {
     clearInterval(tunnelPollers[edgeName]);
   }
+  // Find the job_id for this edge so we can update the table row too
+  const jobId = Object.keys(psijJobs).find(id => psijJobs[id].edge_name === edgeName);
+
   tunnelPollers[edgeName] = setInterval(async () => {
     try {
       const s = await api.fetch(`tunnel_status/${encodeURIComponent(edgeName)}`);
       updateTunnelRow(page, edgeName, s.status, s.port);
+      if (jobId) updateJobRowTunnel(page, jobId, s.status);
       if (s.status === 'active' || s.status === 'done' || s.status === 'failed') {
         clearInterval(tunnelPollers[edgeName]);
         delete tunnelPollers[edgeName];
