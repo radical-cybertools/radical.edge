@@ -878,6 +878,10 @@ class PluginPSIJ(Plugin):
 
         # Extract the allocated port from SSH stderr.
         # With -v, SSH prints: "Allocated port N for remote forward to ..."
+        # NOTE: some OpenSSH versions also print an earlier line like
+        #   "remote forward success. listening on port 0"
+        # (where 0 is a placeholder before the real port is announced).
+        # We must skip any match of port 0 and keep reading.
         # This is blocking I/O; run it in a thread so the event loop stays free.
         def _read_port() -> tuple[int | None, list[str]]:
             lines: list[str] = []
@@ -888,9 +892,13 @@ class PluginPSIJ(Plugin):
                 log.debug("[psij] ssh stderr: %s", line)
                 m = re.search(r'[Aa]llocated port (\d+)', line)
                 if not m:
-                    m = re.search(r'remote forward success.*listen[:\s]+(\d+)', line)
+                    m = re.search(r'remote forward success.*?(\d+)\s*$', line)
                 if m:
-                    return int(m.group(1)), lines
+                    port = int(m.group(1))
+                    if port > 0:
+                        return port, lines
+                    # port 0 is a placeholder — keep reading for the real port
+                    log.debug("[psij] ssh reported placeholder port 0, still reading…")
                 if proc.poll() is not None:
                     break
             return None, lines
@@ -903,6 +911,8 @@ class PluginPSIJ(Plugin):
             raise RuntimeError(
                 f"SSH tunnel for edge '{edge_name}' did not report a port "
                 f"(exit={rc})\nSSH output (last 20 lines):\n{tail}")
+
+        log.info("[psij] SSH allocated port %d for edge '%s' tunnel", port, edge_name)
 
         # Write rendezvous files and register proc for live status checks
         relay_file.write_text(str(port))
