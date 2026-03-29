@@ -3,7 +3,6 @@ PSIJ Plugin for Radical Edge.
 '''
 
 import asyncio
-import datetime as _dt
 import json as _json
 import logging
 import os
@@ -23,18 +22,6 @@ import psij
 from .plugin_base import Plugin
 from .plugin_session_base import PluginSession
 from .client import PluginClient
-
-# DEBUG_START
-def _dbg(msg):
-    _f = '/autofs/nccs-svm1_home1/merzky1/radical/radical.edge/debug.out'
-    try:
-        with open(_f, 'a') as _h:
-            _h.write('[%s] plugin_psij.py: %s\n' % (_dt.datetime.now().isoformat(), msg))
-            _h.flush()
-    except Exception:
-        pass
-# DEBUG_END
-
 
 log = logging.getLogger("radical.edge")
 
@@ -113,9 +100,6 @@ class PSIJSession(PluginSession):
         '''
         Submit a job via PSIJ.
         '''
-        # DEBUG_START
-        _dbg('submit_job: executor=%s spec=%s' % (executor_name, job_spec_dict))
-        # DEBUG_END
         try:
 
             spec = psij.JobSpec()
@@ -154,12 +138,6 @@ class PSIJSession(PluginSession):
             spec.stdout_path = out_path
             spec.stderr_path = err_path
 
-            # DEBUG_START
-            _dbg('  job.id=%s out=%s err=%s' % (job.id, out_path, err_path))
-            _dbg('  executable=%s args=%s env=%s'
-                 % (executable, arguments, job_spec_dict.get('environment')))
-            # DEBUG_END
-
             ex = psij.JobExecutor.get_instance(executor_name)
 
             # Set poll interval for status updates
@@ -194,10 +172,6 @@ class PSIJSession(PluginSession):
                 if state_str == last_state:
                     return
                 last_state = state_str
-                # DEBUG_START
-                _dbg('_on_status job_id=%s state=%s exit=%s' % (job_id, state_str, status.exit_code))
-                # DEBUG_END
-
                 is_terminal = state_str in TERMINAL_STATES
 
                 stdout_content = ""
@@ -218,9 +192,6 @@ class PSIJSession(PluginSession):
             job.set_job_status_callback(_on_status)
 
             ex.submit(job)
-            # DEBUG_START
-            _dbg('  job submitted: native_id=%s' % job.native_id)
-            # DEBUG_END
 
             # Start background polling for job status updates
             self._start_polling()
@@ -230,9 +201,6 @@ class PSIJSession(PluginSession):
 
         except Exception as e:
             log.exception("Job submission failed: %s", e)
-            # DEBUG_START
-            _dbg('  submit EXCEPTION: %s' % e)
-            # DEBUG_END
             raise HTTPException(status_code=500, detail=str(e)) from e
 
     async def get_job_status(self, job_id: str,
@@ -596,6 +564,8 @@ class PluginPSIJ(Plugin):
 
         # watcher tasks keyed by edge_name (plugin-level, survive session cleanup)
         self._watchers: dict = {}
+        # SSH tunnel processes keyed by edge_name
+        self._tunnel_procs: dict = {}
 
         # Ensure relay directory exists at startup
         _relay_dir()
@@ -761,15 +731,29 @@ class PluginPSIJ(Plugin):
             except (ValueError, OSError):
                 pass
 
-        task = self._watchers.get(edge_name)
+        task  = self._watchers.get(edge_name)
+        proc  = self._tunnel_procs.get(edge_name)
+        alive = proc is not None and proc.poll() is None
+
         if task is None:
+            # No watcher was ever started
             status = 'no_tunnel'
-        elif task.done():
-            exc = task.exception() if not task.cancelled() else None
-            status = 'failed' if exc else 'done'
         elif port is not None:
-            status = 'active'
+            # Relay file exists → tunnel successfully reported a port
+            if alive:
+                status = 'active'
+            elif proc is not None:
+                rc = proc.poll()
+                status = 'done' if rc == 0 else 'failed'
+            else:
+                # Port written but proc not tracked (e.g. migrated session)
+                status = 'active'
+        elif task.done():
+            # Watcher finished but no port was ever written → failed
+            exc = task.exception() if not task.cancelled() else None
+            status = 'failed' if exc else 'failed'
         else:
+            # Watcher still running, waiting for job to reach RUNNING state
             status = 'pending'
 
         return JSONResponse({'edge_name': edge_name,
@@ -851,11 +835,15 @@ class PluginPSIJ(Plugin):
         """
         from urllib.parse import urlparse as _urlparse
 
-        # Derive bridge host/port from environment or service URL
-        bridge_url  = os.environ.get('RADICAL_BRIDGE_URL', '')
+        # Derive bridge host/port from the edge service (authoritative source),
+        # falling back to the RADICAL_BRIDGE_URL env var if not accessible.
+        edge_svc    = getattr(self._app.state, 'edge_service', None)
+        svc_url     = getattr(edge_svc, '_bridge_url', '') if edge_svc else ''
+        bridge_url  = svc_url or os.environ.get('RADICAL_BRIDGE_URL', '')
         parsed      = _urlparse(bridge_url) if bridge_url else None
         bridge_host = (parsed.hostname or 'localhost') if parsed else 'localhost'
         bridge_port = (parsed.port or 8000)            if parsed else 8000
+        log.info("[psij] Tunnel bridge target: %s:%s (from url=%r)", bridge_host, bridge_port, bridge_url)
 
         ssh_cmd = [
             'ssh', '-N', '-v',          # -v required so SSH prints the allocated port
@@ -903,10 +891,11 @@ class PluginPSIJ(Plugin):
                 f"SSH tunnel for edge '{edge_name}' did not report a port "
                 f"(exit={rc})\nSSH output (last 20 lines):\n{tail}")
 
-        # Write rendezvous files
+        # Write rendezvous files and register proc for live status checks
         relay_file.write_text(str(port))
         pid_file = relay_file.with_suffix('.pid')
         pid_file.write_text(str(proc.pid))
+        self._tunnel_procs[edge_name] = proc
 
         log.info("[psij] Reverse tunnel for edge '%s' active on port %d (pid=%d)",
                  edge_name, port, proc.pid)
