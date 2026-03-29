@@ -2404,7 +2404,7 @@
       row.innerHTML = `
         <input class="p-attr-key" type="text" placeholder="Key (e.g. slurm.constraint)" style="flex:1;" />
         <input class="p-attr-val" type="text" placeholder="Value (e.g. cpu_gen_1)" style="flex:2;" />
-        <button class="btn btn-secondary btn-sm" onclick="this.parentElement.remove()" style="padding: 4px 10px;">❌</button>
+        <button class="task-cancel-btn" onclick="this.parentElement.remove()">❌</button>
       `;
       container.appendChild(row);
     }
