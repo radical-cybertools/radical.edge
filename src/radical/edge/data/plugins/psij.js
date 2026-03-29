@@ -63,7 +63,7 @@ export function template() {
         </div>
       </div>
       <button class="btn btn-success" data-action="submit">🚀 Submit Job</button>
-      <button class="btn btn-primary" data-action="submit-edge" style="margin-left:8px;">🌐 Submit Edge Job</button>
+      <button class="btn btn-primary" data-action="submit-edge" style="margin-left:8px;">🌐 Submit Edge Service</button>
       <label style="margin-left:16px;cursor:pointer;user-select:none;">
         <input type="checkbox" class="p-tunnel" style="margin-right:4px;" />
         Reverse SSH tunnel
@@ -71,7 +71,7 @@ export function template() {
     </div>
     <div class="card psij-tunnel-card" style="display:none;">
       <div class="card-title">🔗 Tunnel Status</div>
-      <div class="psij-tunnel-area"><p style="color:var(--muted)">No edge job submitted yet.</p></div>
+      <div class="psij-tunnel-area"><p style="color:var(--muted)">No edge service submitted yet.</p></div>
     </div>
     <div class="card psij-jobs-card">
       <div class="card-title">📊 Job Monitor</div>
@@ -579,7 +579,7 @@ async function submitJob(page, api) {
 }
 
 // ─────────────────────────────────────────────────────────────
-//  Submit Edge Job
+//  Submit Edge Service
 // ─────────────────────────────────────────────────────────────
 
 // Active tunnel pollers: edge_name -> intervalId
