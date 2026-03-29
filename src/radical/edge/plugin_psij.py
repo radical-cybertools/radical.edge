@@ -858,7 +858,7 @@ class PluginPSIJ(Plugin):
         bridge_port = (parsed.port or 8000)            if parsed else 8000
 
         ssh_cmd = [
-            'ssh', '-N',
+            'ssh', '-N', '-v',          # -v required so SSH prints the allocated port
             '-o', 'StrictHostKeyChecking=no',
             '-o', 'BatchMode=yes',
             '-o', 'ServerAliveInterval=10',
@@ -875,27 +875,33 @@ class PluginPSIJ(Plugin):
             start_new_session=True,   # detach so it survives edge restart
         )
 
-        # Extract the assigned port from SSH stderr
-        # SSH reports: "Allocated port <N> for remote forward to ..."
-        port: int | None = None
-        assert proc.stderr is not None
-        for line_bytes in proc.stderr:
-            line = line_bytes.decode('utf-8', errors='replace')
-            m = re.search(r'[Aa]llocated port (\d+)', line)
-            if not m:
-                m = re.search(r'remote forward success.*listen[:\s]+(\d+)', line)
-            if m:
-                port = int(m.group(1))
-                break
-            # Stop reading if SSH exits before reporting
-            if proc.poll() is not None:
-                break
+        # Extract the allocated port from SSH stderr.
+        # With -v, SSH prints: "Allocated port N for remote forward to ..."
+        # This is blocking I/O; run it in a thread so the event loop stays free.
+        def _read_port() -> tuple[int | None, list[str]]:
+            lines: list[str] = []
+            assert proc.stderr is not None
+            for raw in proc.stderr:
+                line = raw.decode('utf-8', errors='replace').rstrip()
+                lines.append(line)
+                log.debug("[psij] ssh stderr: %s", line)
+                m = re.search(r'[Aa]llocated port (\d+)', line)
+                if not m:
+                    m = re.search(r'remote forward success.*listen[:\s]+(\d+)', line)
+                if m:
+                    return int(m.group(1)), lines
+                if proc.poll() is not None:
+                    break
+            return None, lines
+
+        port, ssh_lines = await asyncio.get_event_loop().run_in_executor(None, _read_port)
 
         if port is None:
             rc = proc.poll()
+            tail = '\n'.join(ssh_lines[-20:])
             raise RuntimeError(
                 f"SSH tunnel for edge '{edge_name}' did not report a port "
-                f"(exit={rc})")
+                f"(exit={rc})\nSSH output (last 20 lines):\n{tail}")
 
         # Write rendezvous files
         relay_file.write_text(str(port))
