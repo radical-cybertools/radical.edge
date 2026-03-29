@@ -134,15 +134,12 @@ export function init(page, api) {
     if (sel) sel.value = 'slurm';
   }
 
-  // Pre-populate RADICAL_BRIDGE_CERT and RADICAL_TUNNEL_HOST from the edge
+  // Pre-populate RADICAL_BRIDGE_CERT from the edge environment
   api.fetchRaw(`/${api.edgeName}/psij/env`)
     .then(env => {
       if (!env) return;
       if (env.RADICAL_BRIDGE_CERT) {
         addEnvRow(page, 'RADICAL_BRIDGE_CERT', env.RADICAL_BRIDGE_CERT);
-      }
-      if (env.RADICAL_TUNNEL_HOST) {
-        addEnvRow(page, 'RADICAL_TUNNEL_HOST', env.RADICAL_TUNNEL_HOST);
       }
     })
     .catch(() => {});  // silently ignore — env endpoint is best-effort

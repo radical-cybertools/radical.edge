@@ -8,9 +8,7 @@ import os
 import random
 import ssl
 import socket
-import subprocess
 import threading
-import urllib.parse
 from importlib.metadata import entry_points
 from typing import Any, Dict, Optional
 
@@ -26,21 +24,6 @@ def _dbg(msg):
 # DEBUG_END
 
 
-def _tcp_reachable(host: str, port: int, timeout: float = 5.0) -> bool:
-    """Return True if a TCP connection to host:port succeeds within timeout."""
-    try:
-        with socket.create_connection((host, port), timeout=timeout):
-            return True
-    except OSError:
-        return False
-
-
-def _parse_bridge_hostport(bridge_url: str):
-    """Return (host, port) extracted from a bridge URL."""
-    parsed = urllib.parse.urlparse(bridge_url)
-    host   = parsed.hostname or 'localhost'
-    port   = parsed.port or (443 if parsed.scheme in ('https', 'wss') else 80)
-    return host, port
 
 import httpx
 import websockets
@@ -143,7 +126,6 @@ class EdgeService:
         self._stop_event: asyncio.Event = asyncio.Event()
         self._running_task: Optional[asyncio.Task] = None
         self._thread: Optional[threading.Thread] = None
-        self._tunnel_proc: Optional[subprocess.Popen] = None
 
         self._load_plugins()
         # DEBUG_START
@@ -324,81 +306,6 @@ class EdgeService:
 
         self._stop_event.clear()
         self._running_task = asyncio.current_task()
-
-        # ── Direct forward-tunnel setup (RADICAL_TUNNEL_HOST) ────────────────
-        bridge_host, bridge_port = _parse_bridge_hostport(self._bridge_url)
-        tunnel_host = os.environ.get('RADICAL_TUNNEL_HOST')
-
-        if not _tcp_reachable(bridge_host, bridge_port) and tunnel_host:
-            tunnel_cmd = (
-                f"ssh -N -o StrictHostKeyChecking=no -o BatchMode=yes "
-                f"-o ExitOnForwardFailure=yes "
-                f"-L {bridge_port}:{bridge_host}:{bridge_port} {tunnel_host}"
-            )
-            log.info("[Edge] Bridge unreachable directly; opening SSH tunnel via %s: %s",
-                     tunnel_host, tunnel_cmd)
-            # DEBUG_START
-            _dbg('starting SSH tunnel: %s' % tunnel_cmd)
-            # DEBUG_END
-
-            # Pre-check: local port already in use?
-            if _tcp_reachable('127.0.0.1', bridge_port, timeout=0.1):
-                raise RuntimeError(
-                    f"Bridge host unreachable but local port {bridge_port} is "
-                    f"already bound — cannot set up SSH tunnel.\n"
-                    f"  Bridge URL     : {self._bridge_url}\n"
-                    f"  Tunnel command : {tunnel_cmd}"
-                )
-
-            tunnel_cmd_v = tunnel_cmd.replace('ssh ', 'ssh -v ', 1)
-            self._tunnel_proc = subprocess.Popen(
-                tunnel_cmd_v.split(),
-                stderr=subprocess.PIPE
-            )
-
-            # Poll until local port is bound (tunnel ready) or SSH exits
-            _tunnel_ready = False
-            for _ in range(90):  # 90 × 0.1s = 9s max
-                if _tcp_reachable('127.0.0.1', bridge_port, timeout=0.1):
-                    _tunnel_ready = True
-                    break
-                if self._tunnel_proc.poll() is not None:
-                    break  # SSH exited early
-                await asyncio.sleep(0.1)
-
-            if not _tunnel_ready:
-                _exit_code  = self._tunnel_proc.poll()
-                _ssh_stderr = ''
-                if _exit_code is not None:
-                    # SSH already exited — stderr is available
-                    try:
-                        _pipe = self._tunnel_proc.stderr
-                        _raw  = _pipe.read() if _pipe else b''
-                        _ssh_stderr = _raw.decode('utf-8', errors='replace')
-                    except Exception:
-                        pass
-                else:
-                    self._tunnel_proc.terminate()
-                    _exit_code = 'timeout'
-                # DEBUG_START
-                _dbg('tunnel FAILED exit_code=%s stderr=%r' % (_exit_code, _ssh_stderr))
-                # DEBUG_END
-                raise RuntimeError(
-                    f"Bridge host unreachable directly and SSH tunnel via "
-                    f"{tunnel_host} also failed to come up.\n"
-                    f"  Bridge URL     : {self._bridge_url}\n"
-                    f"  Tunnel command : {tunnel_cmd_v}\n"
-                    f"  SSH exit code  : {_exit_code}\n"
-                    f"  SSH stderr     : {_ssh_stderr or '(empty)'}"
-                )
-
-            # Redirect bridge URL through the local tunnel endpoint
-            self._bridge_url = self._bridge_url.replace(bridge_host, '127.0.0.1', 1)
-            log.info("[Edge] Tunnel active; using %s", self._bridge_url)
-            # DEBUG_START
-            _dbg('tunnel up; redirected bridge_url to %s' % self._bridge_url)
-            # DEBUG_END
-        # ── End direct tunnel setup ───────────────────────────────────────────
 
         # ── Reverse-tunnel relay (RADICAL_RELAY_PORT_FILE) ───────────────────
         # Used when a parent edge spawned this job and set up a reverse SSH
@@ -593,9 +500,6 @@ class EdgeService:
         self._stop_event.set()
         if self._running_task:
             self._running_task.cancel()
-        if self._tunnel_proc and self._tunnel_proc.poll() is None:
-            self._tunnel_proc.terminate()
-            self._tunnel_proc = None
 
 
 
