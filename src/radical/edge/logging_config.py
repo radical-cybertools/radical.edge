@@ -15,6 +15,7 @@ import copy
 import contextvars
 from typing import Optional
 
+
 # Context variable for request correlation ID
 correlation_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
     'correlation_id', default=None
@@ -87,33 +88,24 @@ class ColoredFormatter(logging.Formatter):
         return super().format(record)
 
 
-def configure_logging(level: int = logging.INFO, format_string: Optional[str] = None,
-                      log_file: Optional[str] = None) -> None:
+def configure_logging(level: int = logging.INFO,
+                      format_string: Optional[str] = None) -> None:
     """
     Configure logging for radical.edge.
 
     Args:
-        level:         Logging level for the console handler (default: logging.INFO).
+        level:         Logging level (default: logging.INFO).
         format_string: Custom format string (optional).
-        log_file:      If set, also write to this file at DEBUG level (plain text, no color).
     """
     if format_string is None:
         format_string = '%(levelname)s %(message)s'
 
-    handlers: list = [logging.StreamHandler(sys.stdout)]
-    handlers[0].setFormatter(ColoredFormatter(fmt=format_string))
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(ColoredFormatter(fmt=format_string))
 
-    if log_file:
-        file_fmt = '%(asctime)s %(levelname)s %(message)s'
-        fh = logging.FileHandler(log_file, mode='a', encoding='utf-8')
-        fh.setFormatter(logging.Formatter(fmt=file_fmt))
-        fh.setLevel(logging.DEBUG)
-        handlers.append(fh)
+    logging.basicConfig(force=True, level=level, handlers=[handler])
 
-    logging.basicConfig(force=True, level=logging.DEBUG if log_file else level, handlers=handlers)
-
-    logger = logging.getLogger("radical.edge")
-    logger.setLevel(logging.DEBUG if log_file else level)
+    logging.getLogger("radical.edge").setLevel(level)
 
 
 # Auto-configure on import with INFO level

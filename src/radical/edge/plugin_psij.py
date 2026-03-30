@@ -680,18 +680,11 @@ class PluginPSIJ(Plugin):
             relay_file = _relay_dir() / f'{edge_name}.port'
             relay_file.unlink(missing_ok=True)  # remove stale file from previous run
 
-            log_file = str(_relay_dir() / f'{edge_name}.log')
-            log.info("[psij] Child edge log file: %s", log_file)
-
             # Inject flags so the child edge (a) waits for the relay port file
             # and (b) writes DEBUG logs to a shared-filesystem path visible from
             # the login node.
             if '--tunnel' not in args:
                 args.append('--tunnel')
-            if '--log-file' not in args:
-                args += ['--log-file', log_file]
-            if '--log-level' not in args:
-                args += ['--log-level', 'DEBUG']
 
             job_spec = dict(job_spec)
             job_spec['arguments'] = args
@@ -848,8 +841,8 @@ class PluginPSIJ(Plugin):
                         log.error("[psij] Tunnel spawn failed for edge '%s' "
                                   "after %d attempts: %s", edge_name, spawn_attempt, e)
                         return
-                    log.debug("[psij] Tunnel spawn attempt %d failed, %.0f s left: %s",
-                              spawn_attempt, remaining, e)
+                    log.warning("[psij] Tunnel spawn attempt %d failed, %.0f s left: %s",
+                                spawn_attempt, remaining, e)
                     await asyncio.sleep(1)
 
         log.warning("[psij] Watcher for edge '%s' timed out waiting for job %s to start",
@@ -884,7 +877,7 @@ class PluginPSIJ(Plugin):
         log.info("[psij] Tunnel bridge target: %s:%s (from url=%r)", bridge_host, bridge_port, bridge_url)
 
         ssh_cmd = [
-            'ssh', '-N', '-v',          # -v required so SSH prints the allocated port
+            'ssh', '-N',
             '-o', 'StrictHostKeyChecking=no',
             '-o', 'BatchMode=yes',
             '-o', 'ServerAliveInterval=10',
@@ -914,7 +907,6 @@ class PluginPSIJ(Plugin):
             for raw in proc.stderr:
                 line = raw.decode('utf-8', errors='replace').rstrip()
                 lines.append(line)
-                log.debug("[psij] ssh stderr: %s", line)
                 m = re.search(r'[Aa]llocated port (\d+)', line)
                 if m:
                     port = int(m.group(1))

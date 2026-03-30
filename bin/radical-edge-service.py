@@ -66,29 +66,13 @@ async def main():
     parser.add_argument("--tunnel", action="store_true",
                         help="Wait for a reverse SSH tunnel port file before connecting to bridge. "
                              "Port file path: ~/.radical/edge/tunnels/<name>.port")
-    parser.add_argument("--log-file",
-                        default=os.environ.get("RADICAL_EDGE_LOG_FILE"),
-                        help="Also write logs to this file at DEBUG level "
-                             "(useful for compute-node jobs; env: RADICAL_EDGE_LOG_FILE)")
 
     args = parser.parse_args()
 
-    # Pre-logging breadcrumb — written before any logging setup so we know
-    # the process reached main() even if everything else fails.
-    if args.log_file:
-        try:
-            import datetime
-            with open(args.log_file, 'a') as _f:
-                _f.write(f"[{datetime.datetime.now().isoformat()}] radical-edge-service started "
-                         f"(pid={os.getpid()}, name={args.name}, tunnel={args.tunnel})\n")
-        except Exception:
-            pass
-
     # Apply log level before anything else
     level = getattr(logging, args.log_level.upper(), logging.INFO)
-    _lc.configure_logging(level, log_file=args.log_file)
-    log.info("Log level: %s%s", args.log_level.upper(),
-             f", log-file: {args.log_file}" if args.log_file else "")
+    _lc.configure_logging(level)
+    log.info("Log level: %s", args.log_level.upper())
 
     edge_name = args.name
     edge_url  = args.url or os.environ.get("RADICAL_BRIDGE_URL", "https://localhost:8000")
