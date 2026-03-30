@@ -106,12 +106,25 @@ class SysInfoProvider:
 
     def _detect_gpus(self) -> List[Dict[str, Any]]:
         """
-        Detect available GPUs (NVIDIA, AMD, Intel) and static info.
+        Detect available GPUs (NVIDIA, AMD, Intel) in parallel.
+        Each detector runs in its own thread with a 5 s timeout so a
+        slow or absent tool does not block the others.
         """
-        gpus = []
-        gpus.extend(self._detect_nvidia_gpus())
-        gpus.extend(self._detect_amd_gpus())
-        gpus.extend(self._detect_intel_gpus())
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+
+        gpus: List[Dict[str, Any]] = []
+        detectors = [
+            self._detect_nvidia_gpus,
+            self._detect_amd_gpus,
+            self._detect_intel_gpus,
+        ]
+        with ThreadPoolExecutor(max_workers=3) as ex:
+            futures = [ex.submit(fn) for fn in detectors]
+            for future in futures:
+                try:
+                    gpus.extend(future.result(timeout=5))
+                except (FuturesTimeout, Exception):
+                    pass
         return gpus
 
     def _detect_nvidia_gpus(self) -> List[Dict[str, Any]]:
@@ -122,7 +135,7 @@ class SysInfoProvider:
             subprocess.run([nvidia_smi, "-L"],
                            stdout=subprocess.DEVNULL,
                            stderr=subprocess.DEVNULL,
-                           check=True)
+                           check=True, timeout=5)
 
             # Query static info
             cmd = [
@@ -130,7 +143,7 @@ class SysInfoProvider:
                 "--query-gpu=index,name,driver_version,uuid",
                 "--format=csv,noheader,nounits"
             ]
-            ret = subprocess.check_output(cmd, text=True)
+            ret = subprocess.check_output(cmd, text=True, timeout=5)
             gpus = []
             for line in ret.strip().splitlines():
                 if not line.strip(): continue
@@ -157,7 +170,7 @@ class SysInfoProvider:
             # Check availability: rocm-smi --json returns full info
             # Note: --json flag support varies by version, but modern rocm-smi has it.
             cmd = [rocm_smi, "--showproductname", "--showdriverversion", "--showuniqueid", "--json"]
-            ret = subprocess.check_output(cmd, text=True)
+            ret = subprocess.check_output(cmd, text=True, timeout=5)
             data = json.loads(ret)
 
             gpus = []

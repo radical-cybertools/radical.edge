@@ -94,23 +94,25 @@ class QueueInfo(ABC):
 
     def start_prefetch(self):
         """
-        Start a background thread to prefetch queue info and allocations.
-
-        This lazily fills the cache so later queries are faster.
+        Start background threads to prefetch queue info and allocations in
+        parallel so both caches are warm as quickly as possible.
         """
-        def _prefetch():
+        user = getpass.getuser()
 
-            user = getpass.getuser()
+        def _fetch_info():
             try:
-                # Prefetch queue info for current user
                 self.get_info(user=user)
-                # Prefetch allocations for current user
+            except Exception:
+                pass
+
+        def _fetch_alloc():
+            try:
                 self.list_allocations(user=user)
             except Exception:
-                pass  # Silently ignore prefetch failures
+                pass
 
-        thread = threading.Thread(target=_prefetch, daemon=True)
-        thread.start()
+        threading.Thread(target=_fetch_info,  daemon=True).start()
+        threading.Thread(target=_fetch_alloc, daemon=True).start()
 
 
     def _get_cached(self, key, force, collector, *args):

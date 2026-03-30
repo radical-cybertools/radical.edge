@@ -1,7 +1,6 @@
 
 import asyncio
 import base64
-import datetime as _dt
 import json
 import logging
 import os
@@ -11,19 +10,6 @@ import socket
 import threading
 from importlib.metadata import entry_points
 from typing import Any, Dict, Optional
-
-# DEBUG_START
-def _dbg(msg):
-    _f = '/autofs/nccs-svm1_home1/merzky1/radical/radical.edge/debug.out'
-    try:
-        with open(_f, 'a') as _h:
-            _h.write('[%s] service.py: %s\n' % (_dt.datetime.now().isoformat(), msg))
-            _h.flush()
-    except Exception:
-        pass
-# DEBUG_END
-
-
 
 import httpx
 import websockets
@@ -128,10 +114,6 @@ class EdgeService:
         self._thread: Optional[threading.Thread] = None
 
         self._load_plugins()
-        # DEBUG_START
-        _dbg('EdgeService.__init__ done: name=%s url=%s plugins=%s'
-             % (self._name, self._bridge_url, list(self._plugins.keys())))
-        # DEBUG_END
 
 
     @property
@@ -314,10 +296,7 @@ class EdgeService:
         relay_file = os.environ.get('RADICAL_RELAY_PORT_FILE')
         if relay_file:
             log.info("[Edge] Waiting for relay port file: %s", relay_file)
-            # DEBUG_START
-            _dbg('waiting for relay file: %s' % relay_file)
-            # DEBUG_END
-            for _ in range(180):   # 180 × 2s = 6 min
+            for _ in range(30):   # 30 × 2s = 60 s
                 if os.path.exists(relay_file):
                     break
                 await asyncio.sleep(2)
@@ -333,9 +312,6 @@ class EdgeService:
                 f'\\g<1>localhost:{relay_port}',
                 self._bridge_url)
             log.info("[Edge] Relay active; using %s", self._bridge_url)
-            # DEBUG_START
-            _dbg('relay active; bridge_url=%s' % self._bridge_url)
-            # DEBUG_END
         # ── End relay setup ───────────────────────────────────────────────────
 
         transport = ASGITransport(app=self._app)
@@ -370,25 +346,14 @@ class EdgeService:
                             if certfile and os.path.exists(certfile):
                                 ssl_ctx.load_verify_locations(certfile)
 
-                        # DEBUG_START
-                        _dbg('ws connect attempt: url=%s ssl=%s certfile=%s cert_exists=%s'
-                             % (ws_url, ssl_ctx is not None,
-                                os.environ.get('RADICAL_BRIDGE_CERT', '<unset>'),
-                                os.path.exists(os.environ.get('RADICAL_BRIDGE_CERT', ''))
-                                if os.environ.get('RADICAL_BRIDGE_CERT') else False))
-                        # DEBUG_END
-
                         async with websockets.connect(ws_url,
                                                       ssl=ssl_ctx,
                                                       ping_interval=PING_INTERVAL,
                                                       ping_timeout=PING_TIMEOUT,
-                                                      close_timeout=10) as ws:
+                                                      close_timeout=2) as ws:
 
                             self._ws = ws
                             log.info("[Edge] Connected to %s", self._bridge_url)
-                            # DEBUG_START
-                            _dbg('ws connected to %s' % self._bridge_url)
-                            # DEBUG_END
                             backoff = 0.5  # Reset backoff on success
 
                             # Register edge + all plugins in a single message
@@ -421,10 +386,6 @@ class EdgeService:
                                     plugins=plugins_data,
                                 )
                                 await ws.send(reg.model_dump_json())
-                                # DEBUG_START
-                                _dbg('register message sent: edge=%s plugins=%s'
-                                     % (self._name, list(plugins_data.keys())))
-                                # DEBUG_END
 
                             # Processing Loop
                             while not self._stop_event.is_set():
@@ -476,9 +437,6 @@ class EdgeService:
                         sleep_time = backoff + jitter
                         log.warning("[Edge] Connection lost: %s. Reconnecting in %.1fs...",
                                     e, sleep_time)
-                        # DEBUG_START
-                        _dbg('connection lost: %s  reconnect in %.1fs' % (e, sleep_time))
-                        # DEBUG_END
                         await asyncio.sleep(sleep_time)
                         backoff = min(backoff * BACKOFF_FACTOR, MAX_BACKOFF)
 
@@ -488,12 +446,8 @@ class EdgeService:
                     break
 
                 log.exception("[Edge] Unexpected error: %s", e)
-                # DEBUG_START
-                _dbg('UNEXPECTED ERROR in run(): %s' % e)
-                # DEBUG_END
-                # Add jitter to error recovery sleep as well
-                jitter = 5 * JITTER_FACTOR * random.random()
-                await asyncio.sleep(5 + jitter)
+                jitter = 2 * JITTER_FACTOR * random.random()
+                await asyncio.sleep(2 + jitter)
 
     def stop(self):
         """Signal the service to stop."""

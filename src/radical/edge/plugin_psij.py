@@ -790,15 +790,15 @@ class PluginPSIJ(Plugin):
 
         # --- wait for job to reach RUNNING ---
         last_state = None
-        for attempt in range(360):          # up to ~30 min (5s × 360)
-            await asyncio.sleep(5)
+        for attempt in range(120):          # up to ~4 min (2s × 120)
+            await asyncio.sleep(2)
             state = await _get_slurm_state(native_id)
             log.debug("[psij] watcher edge=%s job=%s state=%r attempt=%d",
                       edge_name, native_id, state, attempt)
 
             # Log every 60 s at INFO so state is visible without DEBUG logging
-            if state != last_state or attempt % 12 == 0:
-                log.info("[psij] watcher edge=%s job=%s state=%r (attempt %d/360)",
+            if state != last_state or attempt % 30 == 0:
+                log.info("[psij] watcher edge=%s job=%s state=%r (attempt %d/120)",
                          edge_name, native_id, state or '(unknown)', attempt)
                 last_state = state
 
