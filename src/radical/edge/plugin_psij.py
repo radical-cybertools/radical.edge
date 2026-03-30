@@ -839,7 +839,7 @@ class PluginPSIJ(Plugin):
                         return
                     log.debug("[psij] Tunnel spawn attempt %d failed, %.0f s left: %s",
                               spawn_attempt, remaining, e)
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(1)
 
         log.warning("[psij] Watcher for edge '%s' timed out waiting for job %s to start",
                     edge_name, native_id)
