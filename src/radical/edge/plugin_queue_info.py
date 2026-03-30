@@ -263,6 +263,16 @@ class QueueInfoClient(PluginClient):
         self._raise(resp)
         return resp.json()
 
+    def is_enabled(self) -> bool:
+        """Return whether SLURM is available on the edge.
+
+        No session is required.  Calls the edge-side ``is_enabled`` endpoint
+        which checks for the presence and functionality of ``sinfo --json``.
+        """
+        resp = self._http.get(self._url('is_enabled'))
+        self._raise(resp, 'is_enabled')
+        return resp.json()['available']
+
     def job_allocation(self) -> 'dict | None':
         """Return edge job allocation info, or None if not inside a SLURM job.
 

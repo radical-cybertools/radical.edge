@@ -522,6 +522,15 @@ class SysInfoClient(PluginClient):
     Client-side interface for the SysInfo plugin.
     """
 
+    def homedir(self) -> str:
+        """Return the home directory of the edge-side process.
+
+        No session is required.
+        """
+        resp = self._http.get(self._url('homedir'))
+        self._raise(resp, 'homedir')
+        return resp.json()['homedir']
+
     def get_metrics(self) -> dict:
         """
         Return current system metrics.
