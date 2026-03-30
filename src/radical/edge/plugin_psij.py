@@ -673,15 +673,25 @@ class PluginPSIJ(Plugin):
                 status_code=409,
                 detail=f"Tunnel watcher already active for edge '{edge_name}'")
 
-        # --- prepare relay file and inject --tunnel flag when tunnel requested ---
+        # --- prepare relay file and inject --tunnel / logging flags ---
         relay_file: pathlib.Path | None = None
         if tunnel:
             relay_file = _relay_dir() / f'{edge_name}.port'
             relay_file.unlink(missing_ok=True)  # remove stale file from previous run
-            # Inject --tunnel into the job's argument list so the child edge
-            # knows to wait for the relay port file before connecting.
+
+            log_file = str(_relay_dir() / f'{edge_name}.log')
+            log.info("[psij] Child edge log file: %s", log_file)
+
+            # Inject flags so the child edge (a) waits for the relay port file
+            # and (b) writes DEBUG logs to a shared-filesystem path visible from
+            # the login node.
             if '--tunnel' not in args:
                 args.append('--tunnel')
+            if '--log-file' not in args:
+                args += ['--log-file', log_file]
+            if '--log-level' not in args:
+                args += ['--log-level', 'DEBUG']
+
             job_spec = dict(job_spec)
             job_spec['arguments'] = args
 
