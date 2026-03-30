@@ -52,8 +52,8 @@ export function template() {
         <div>
           <div class="form-group"><label>Queue / Partition</label><input class="p-queue" type="text" placeholder="optional" /></div>
           <div class="form-group"><label>Account / Project</label><input class="p-account" type="text" placeholder="optional" /></div>
-          <div class="form-group"><label>Duration (seconds)</label><input class="p-duration" type="text" placeholder="e.g. 600" /></div>
-          <div class="form-group"><label>Number of Nodes</label><input class="p-node-count" type="number" placeholder="e.g. 1" /></div>
+          <div class="form-group"><label>Duration (seconds)</label><input class="p-duration" type="text" value="600" /></div>
+          <div class="form-group"><label>Number of Nodes</label><input class="p-node-count" type="number" value="1" /></div>
           <div class="form-group"><label>🔧 Custom Attributes</label>
             <div class="psij-attributes-container" style="margin-bottom: 4px;">
               <div class="psij-attribute-rows"></div>
@@ -62,12 +62,12 @@ export function template() {
           </div>
         </div>
       </div>
-      <button class="btn btn-success" data-action="submit">🚀 Submit Job</button>
-      <button class="btn btn-primary" data-action="submit-edge" style="margin-left:8px;">🌐 Submit Edge Service</button>
+      <button class="btn btn-success" data-action="submit">🚀 Submit</button>
       <label style="margin-left:16px;cursor:pointer;user-select:none;">
         <input type="checkbox" class="p-tunnel" style="margin-right:4px;" />
         Reverse SSH tunnel
       </label>
+      <input class="p-tunnel-port" type="text" style="width:80px; margin-left:8px; display:inline-block;" placeholder="port" title="Bridge port for reverse tunnel" />
     </div>
     <div class="card psij-jobs-card">
       <div class="card-title">📊 Job Monitor</div>
@@ -100,16 +100,17 @@ export function init(page, api) {
     addEnvBtn.addEventListener('click', () => addEnvRow(page));
   }
 
-  // Bind submit button
+  // Bind submit button — dispatches to submit_tunneled if tunnel checkbox is checked
   const submitBtn = page.querySelector('[data-action="submit"]');
   if (submitBtn) {
-    submitBtn.addEventListener('click', () => submitJob(page, api));
-  }
-
-  // Bind submit-edge button
-  const submitEdgeBtn = page.querySelector('[data-action="submit-edge"]');
-  if (submitEdgeBtn) {
-    submitEdgeBtn.addEventListener('click', () => submitEdgeJob(page, api));
+    submitBtn.addEventListener('click', () => {
+      const tunnel = !!(page.querySelector('.p-tunnel') || {}).checked;
+      if (tunnel) {
+        submitEdgeJob(page, api);
+      } else {
+        submitJob(page, api);
+      }
+    });
   }
 
   // Pre-fill --url / --name args for first submission
@@ -118,6 +119,17 @@ export function init(page, api) {
     const nextName = getNextEdgeChildName(api.edgeName);
     const plugins  = api.getPluginNames().join(',');
     argsInput.value = `--url ${api.bridgeUrl} --name ${nextName} -p ${plugins}`;
+  }
+
+  // Pre-populate tunnel port from bridge URL
+  const portInput = page.querySelector('.p-tunnel-port');
+  if (portInput && !portInput.value) {
+    try {
+      const urlPort = new URL(api.bridgeUrl).port || '8000';
+      portInput.value = urlPort;
+    } catch (_) {
+      portInput.value = '8000';
+    }
   }
 
   // Prefill from cached queue data if already available
@@ -636,7 +648,7 @@ async function submitEdgeJob(page, api) {
   try {
     const sid = await api.getSession('psij');
 
-    const res = await api.fetch(`submit_edge/${sid}`, {
+    const res = await api.fetch(`submit_tunneled/${sid}`, {
       method: 'POST',
       body: JSON.stringify({ job_spec, executor, tunnel })
     });

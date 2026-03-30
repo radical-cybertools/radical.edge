@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import random
+import re
 import ssl
 import socket
 import threading
@@ -306,8 +307,7 @@ class EdgeService:
                     f"  Bridge URL: {self._bridge_url}")
 
             relay_port = open(relay_file).read().strip()
-            import re as _re
-            self._bridge_url = _re.sub(
+            self._bridge_url = re.sub(
                 r'(wss?://)[^/:]+:\d+',
                 f'\\g<1>localhost:{relay_port}',
                 self._bridge_url)
@@ -316,7 +316,26 @@ class EdgeService:
 
         transport = ASGITransport(app=self._app)
 
+        def _apply_relay_if_available() -> None:
+            """Rewrite bridge URL through relay if the port file appeared since startup."""
+            rf = os.environ.get('RADICAL_RELAY_PORT_FILE')
+            if not rf or not os.path.exists(rf):
+                return
+            if 'localhost' in self._bridge_url:
+                return   # already using relay
+            try:
+                port = open(rf).read().strip()
+                if port and port.isdigit() and int(port) > 0:
+                    self._bridge_url = re.sub(
+                        r'(wss?://)[^/:]+:\d+',
+                        f'\\g<1>localhost:{port}',
+                        self._bridge_url)
+                    log.info("[Edge] Relay detected on reconnect; using %s", self._bridge_url)
+            except OSError:
+                pass
+
         while not self._stop_event.is_set():
+            _apply_relay_if_available()
             try:
                 async with httpx.AsyncClient(transport=transport,
                                              base_url="http://local") as http_client:
@@ -387,12 +406,36 @@ class EdgeService:
                                 )
                                 await ws.send(reg.model_dump_json())
 
-                            # Processing Loop
-                            while not self._stop_event.is_set():
-                                try:
-                                    raw_msg = await asyncio.wait_for(ws.recv(), timeout=1.0)
-                                    data = json.loads(raw_msg)
+                            # Processing Loop — use asyncio.wait so the loop wakes
+                            # immediately on either a new message or stop signal,
+                            # eliminating the 1-second idle timeout overhead.
+                            _recv_task = asyncio.ensure_future(ws.recv())
+                            _stop_fut  = asyncio.ensure_future(self._stop_event.wait())
+                            try:
+                                while not self._stop_event.is_set():
+                                    done, _ = await asyncio.wait(
+                                        {_recv_task, _stop_fut},
+                                        return_when=asyncio.FIRST_COMPLETED)
 
+                                    if _stop_fut in done:
+                                        _recv_task.cancel()
+                                        break
+
+                                    # _recv_task completed — retrieve result
+                                    try:
+                                        raw_msg = _recv_task.result()
+                                    except websockets.exceptions.ConnectionClosed:
+                                        if self._stop_event.is_set():
+                                            _stop_fut.cancel()
+                                            break
+                                        log.info("[Edge] Connection closed")
+                                        _stop_fut.cancel()
+                                        raise  # Reconnect
+
+                                    # Arm next recv immediately
+                                    _recv_task = asyncio.ensure_future(ws.recv())
+
+                                    data = json.loads(raw_msg)
                                     try:
                                         msg = parse_bridge_message(data)
                                     except ValueError as ve:
@@ -402,6 +445,8 @@ class EdgeService:
                                     if isinstance(msg, ErrorMessage):
                                         log.error("[Edge] Registration error: %s", msg.message)
                                         self._stop_event.set()
+                                        _recv_task.cancel()
+                                        _stop_fut.cancel()
                                         return  # Fatal error, stop
 
                                     if isinstance(msg, PingMessage):
@@ -412,6 +457,8 @@ class EdgeService:
                                     if isinstance(msg, ShutdownMessage):
                                         log.info("[Edge] Shutdown requested: %s", msg.reason)
                                         self._stop_event.set()
+                                        _recv_task.cancel()
+                                        _stop_fut.cancel()
                                         return
 
                                     if isinstance(msg, RequestMessage):
@@ -419,14 +466,9 @@ class EdgeService:
 
                                     if isinstance(msg, TopologyMessage):
                                         asyncio.create_task(self._handle_topology(msg))
-
-                                except asyncio.TimeoutError:
-                                    continue  # Check stop event
-                                except websockets.exceptions.ConnectionClosed:
-                                    if self._stop_event.is_set():
-                                        break
-                                    log.info("[Edge] Connection closed")
-                                    raise  # Reconnect
+                            finally:
+                                _recv_task.cancel()
+                                _stop_fut.cancel()
 
                     except (ws_exc.ConnectionClosed, OSError) as e:
                         if self._stop_event.is_set():

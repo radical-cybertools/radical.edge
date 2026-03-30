@@ -105,7 +105,7 @@ def main():
     if args.tunnel:
         print("  Reverse SSH tunnel requested — watcher will spawn SSH once job starts.")
 
-    result = psij.submit_edge(job_spec, executor=args.executor, tunnel=args.tunnel)
+    result = psij.submit_tunneled(job_spec, executor=args.executor, tunnel=args.tunnel)
 
     job_id    = result['job_id']
     native_id = result.get('native_id', '?')

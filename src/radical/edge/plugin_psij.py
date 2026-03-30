@@ -439,9 +439,9 @@ class PSIJClient(PluginClient):
         self._raise(resp, f"cancel job {job_id!r}")
         return resp.json()
 
-    def submit_edge(self, job_spec: Dict[str, Any],
-                    executor: str = 'local',
-                    tunnel: bool = False) -> Dict[str, Any]:
+    def submit_tunneled(self, job_spec: Dict[str, Any],
+                        executor: str = 'local',
+                        tunnel: bool = False) -> Dict[str, Any]:
         """Submit a job that launches a child Edge service on a compute node.
 
         The ``job_spec.arguments`` list *must* contain ``-n <edge_name>`` or
@@ -468,11 +468,11 @@ class PSIJClient(PluginClient):
         """
         self._require_session()
 
-        url     = self._url(f"submit_edge/{self.sid}")
+        url     = self._url(f"submit_tunneled/{self.sid}")
         payload = {"job_spec": job_spec, "executor": executor, "tunnel": tunnel}
 
         resp = self._http.post(url, json=payload)
-        self._raise(resp, f"psij submit_edge on {executor!r}")
+        self._raise(resp, f"psij submit_tunneled on {executor!r}")
         return resp.json()
 
     def tunnel_status(self, edge_name: str) -> Dict[str, Any]:
@@ -572,7 +572,7 @@ class PluginPSIJ(Plugin):
 
         self.add_route_get('env',                              self.get_env)
         self.add_route_post('submit/{sid}',                    self.submit_job)
-        self.add_route_post('submit_edge/{sid}',               self.submit_edge)
+        self.add_route_post('submit_tunneled/{sid}',           self.submit_tunneled)
         self.add_route_get('tunnel_status/{edge_name}',        self.tunnel_status)
         self.add_route_get('status/{sid}/{job_id}',            self.get_job_status)
         self.add_route_get('list_jobs/{sid}',                  self.list_jobs)
@@ -617,7 +617,7 @@ class PluginPSIJ(Plugin):
     #  Edge-job submission with optional reverse SSH tunnel
     # ─────────────────────────────────────────────────────────────────────────
 
-    async def submit_edge(self, request: Request) -> JSONResponse:
+    async def submit_tunneled(self, request: Request) -> JSONResponse:
         """Submit a job that starts a new Edge service on a compute node.
 
         The job *must* pass ``-n``/``--name <edge_name>`` in its arguments so
@@ -664,7 +664,7 @@ class PluginPSIJ(Plugin):
         if not edge_name:
             raise HTTPException(
                 status_code=422,
-                detail="submit_edge requires -n/--name <edge_name> in job_spec.arguments")
+                detail="submit_tunneled requires -n/--name <edge_name> in job_spec.arguments")
 
         # --- guard against duplicate watchers ---
         existing = self._watchers.get(edge_name)
@@ -692,7 +692,7 @@ class PluginPSIJ(Plugin):
         if tunnel and relay_file is not None:
             result = _json.loads(bytes(resp.body))
             native_id = result.get('native_id')
-            log.info("[psij] submit_edge: edge=%s job_id=%s native_id=%s — starting tunnel watcher",
+            log.info("[psij] submit_tunneled: edge=%s job_id=%s native_id=%s — starting tunnel watcher",
                      edge_name, result.get('job_id'), native_id)
             if native_id is None:
                 log.warning("[psij] native_id is None for edge '%s'; watcher will poll "

@@ -140,8 +140,8 @@ async def test_cancel_job(mock_psij):
 
 
 @pytest.mark.asyncio
-async def test_submit_edge_missing_name(mock_psij):
-    """submit_edge returns 422 when -n/--name is absent from arguments."""
+async def test_submit_tunneled_missing_name(mock_psij):
+    """submit_tunneled returns 422 when -n/--name is absent from arguments."""
     app = FastAPI()
     plugin = PluginPSIJ(app)
     client = TestClient(app)
@@ -156,13 +156,13 @@ async def test_submit_edge_missing_name(mock_psij):
         },
         "executor": "local"
     }
-    resp = client.post(f"{plugin.namespace}/submit_edge/{sid}", json=payload)
+    resp = client.post(f"{plugin.namespace}/submit_tunneled/{sid}", json=payload)
     assert resp.status_code == 422
 
 
 @pytest.mark.asyncio
-async def test_submit_edge_no_tunnel(mock_psij):
-    """submit_edge without tunnel submits the job and returns edge_name."""
+async def test_submit_tunneled_no_tunnel(mock_psij):
+    """submit_tunneled without tunnel submits the job and returns edge_name."""
     app = FastAPI()
     plugin = PluginPSIJ(app)
 
@@ -183,7 +183,7 @@ async def test_submit_edge_no_tunnel(mock_psij):
         "executor": "local",
         "tunnel": False
     }
-    resp = client.post(f"{plugin.namespace}/submit_edge/{sid}", json=payload)
+    resp = client.post(f"{plugin.namespace}/submit_tunneled/{sid}", json=payload)
     assert resp.status_code == 200
     data = resp.json()
     assert data['job_id'] == 'edge-job.1'
@@ -193,8 +193,8 @@ async def test_submit_edge_no_tunnel(mock_psij):
 
 
 @pytest.mark.asyncio
-async def test_submit_edge_with_tunnel(mock_psij, tmp_path):
-    """submit_edge with tunnel=True injects env var and spawns watcher task."""
+async def test_submit_tunneled_with_tunnel(mock_psij, tmp_path):
+    """submit_tunneled with tunnel=True injects env var and spawns watcher task."""
     app = FastAPI()
     plugin = PluginPSIJ(app)
 
@@ -222,7 +222,7 @@ async def test_submit_edge_with_tunnel(mock_psij, tmp_path):
                 "executor": "slurm",
                 "tunnel": True
             }
-            resp = client.post(f"{plugin.namespace}/submit_edge/{sid}", json=payload)
+            resp = client.post(f"{plugin.namespace}/submit_tunneled/{sid}", json=payload)
             assert resp.status_code == 200
             data = resp.json()
             assert data['edge_name'] == 'tunnel-edge'
@@ -239,8 +239,8 @@ async def test_submit_edge_with_tunnel(mock_psij, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_submit_edge_duplicate_watcher(mock_psij):
-    """submit_edge returns 409 if a live watcher already exists for that edge."""
+async def test_submit_tunneled_duplicate_watcher(mock_psij):
+    """submit_tunneled returns 409 if a live watcher already exists for that edge."""
     app = FastAPI()
     plugin = PluginPSIJ(app)
 
@@ -260,7 +260,7 @@ async def test_submit_edge_duplicate_watcher(mock_psij):
         },
         "executor": "local"
     }
-    resp = client.post(f"{plugin.namespace}/submit_edge/{sid}", json=payload)
+    resp = client.post(f"{plugin.namespace}/submit_tunneled/{sid}", json=payload)
     assert resp.status_code == 409
 
 

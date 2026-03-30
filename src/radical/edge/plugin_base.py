@@ -138,6 +138,7 @@ class Plugin(object):
         self._sessions: Dict[str, PluginSession] = {}
         self._session_last_access: Dict[str, float] = {}  # Track last access time
         self._main_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._cleanup_task: Optional[asyncio.Task] = None
 
         # Built-in session management routes
         self.add_route_post('register_session', self.register_session)
@@ -217,6 +218,7 @@ class Plugin(object):
 
     async def register_session(self, request: Request) -> JSONResponse:
         """Register a new session and return its unique session ID."""
+        self._ensure_cleanup_task()
         sid = f"session.{uuid.uuid4().hex[:8]}"
         self._sessions[sid] = self._create_session(sid)
         self._session_last_access[sid] = time.time()
@@ -271,10 +273,6 @@ class Plugin(object):
         """
         uptime = time.time() - self._start_time
         active_sessions = len(self._sessions)
-
-        # Clean up expired sessions while we're here
-        if self.session_ttl > 0:
-            await self._cleanup_expired_sessions()
 
         return JSONResponse({
             "status": "healthy",
@@ -335,12 +333,11 @@ class Plugin(object):
             HTTPException: If session not found or method fails.
         """
         if self.session_ttl > 0:
-            # Detect expiry of THIS session before the general cleanup removes it
+            # Detect expiry of THIS session before the background cleanup removes it
             last        = self._session_last_access.get(sid)
-            sid_expired = (last is not None and
-                           (time.time() - last) > self.session_ttl)
-            await self._cleanup_expired_sessions()
+            sid_expired = (last is not None and (time.time() - last) > self.session_ttl)
             if sid_expired:
+                await self._cleanup_expired_sessions()
                 raise HTTPException(status_code=410, detail=f"session expired: {sid}")
 
         session = self._sessions.get(sid)
@@ -388,6 +385,23 @@ class Plugin(object):
             log.info("[%s] Cleaned up expired session %s", self.instance_name, sid)
 
         return len(expired_sids)
+
+    def _ensure_cleanup_task(self) -> None:
+        """Start the background session-cleanup task if not already running."""
+        if self._cleanup_task is not None and not self._cleanup_task.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+            self._cleanup_task = loop.create_task(self._cleanup_loop())
+        except RuntimeError:
+            pass  # No running loop yet; will retry on next call
+
+    async def _cleanup_loop(self) -> None:
+        """Background task: expire stale sessions every 5 seconds."""
+        while True:
+            await asyncio.sleep(5)
+            if self.session_ttl > 0:
+                await self._cleanup_expired_sessions()
 
     def _log_routes(self) -> None:
         """Log all registered routes for debugging."""

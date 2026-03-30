@@ -84,7 +84,7 @@ class QueueInfo(ABC):
     configurable TTL.
     """
 
-    _cache_ttl = 3600   # class attribute — 1-hour default, tweakable
+    _cache_ttl = 60     # class attribute — 60-second default, tweakable
 
     def __init__(self):
 
