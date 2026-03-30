@@ -110,7 +110,7 @@ def configure_logging(level: int = logging.INFO, format_string: Optional[str] = 
         fh.setLevel(logging.DEBUG)
         handlers.append(fh)
 
-    logging.basicConfig(level=logging.DEBUG if log_file else level, handlers=handlers)
+    logging.basicConfig(force=True, level=logging.DEBUG if log_file else level, handlers=handlers)
 
     logger = logging.getLogger("radical.edge")
     logger.setLevel(logging.DEBUG if log_file else level)

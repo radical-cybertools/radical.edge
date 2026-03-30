@@ -10,6 +10,7 @@ import pathlib
 import re
 import subprocess
 import tempfile
+import threading
 
 from datetime import timedelta
 from typing import Any, Dict
@@ -928,6 +929,10 @@ class PluginPSIJ(Plugin):
             return None, lines
 
         port, ssh_lines = await asyncio.get_event_loop().run_in_executor(None, _read_port)
+
+        # Drain SSH stderr in background so the pipe never fills and blocks SSH.
+        if proc.stderr:
+            threading.Thread(target=proc.stderr.read, daemon=True).start()
 
         if port is None:
             rc = proc.poll()
