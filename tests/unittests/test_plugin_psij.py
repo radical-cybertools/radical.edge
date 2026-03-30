@@ -292,3 +292,41 @@ def test_tunnel_status_active(tmp_path):
         data = resp.json()
         assert data['status'] == 'active'
         assert data['port'] == 12345
+
+
+# ---------------------------------------------------------------------------
+# _get_slurm_state (module-level async helper, Tier 2)
+# ---------------------------------------------------------------------------
+
+from radical.edge.plugin_psij import _get_slurm_state
+
+
+@pytest.mark.asyncio
+async def test_get_slurm_state_running():
+    """Returns state string when squeue produces output."""
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"RUNNING\n", b""))
+    with patch("radical.edge.plugin_psij.asyncio.create_subprocess_exec",
+               return_value=mock_proc):
+        state = await _get_slurm_state("12345")
+    assert state == "RUNNING"
+
+
+@pytest.mark.asyncio
+async def test_get_slurm_state_empty_output():
+    """Returns empty string when job is not in queue."""
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+    with patch("radical.edge.plugin_psij.asyncio.create_subprocess_exec",
+               return_value=mock_proc):
+        state = await _get_slurm_state("99999")
+    assert state == ""
+
+
+@pytest.mark.asyncio
+async def test_get_slurm_state_exception_returns_empty():
+    """Any exception during squeue must return empty string, not raise."""
+    with patch("radical.edge.plugin_psij.asyncio.create_subprocess_exec",
+               side_effect=OSError("squeue not found")):
+        state = await _get_slurm_state("12345")
+    assert state == ""

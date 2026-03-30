@@ -649,8 +649,8 @@ class XGFabricSession(PluginSession):
                  self._state.phase, self._state.status,
                  [c['name'] for c in self._state.immediate_clusters],
                  [c['name'] for c in self._state.allocate_clusters])
-        if self._notify:
-            self._notify('workflow_status', asdict(self._state))
+        if self._plugin:
+            self._plugin._dispatch_notify('workflow_status', asdict(self._state))
 
     async def _is_edge_online(self, cluster: Dict) -> bool:
         """Check if cluster's child edge is online."""
@@ -1320,7 +1320,7 @@ class PluginXGFabric(Plugin):
         for session in self._sessions.values():
             if isinstance(session, XGFabricSession):
                 session.update_connected_edges(edges)
-                if session._notify:
+                if session._plugin:
                     session._notify_state()
 
     # -- Route handlers -------------------------------------------------------

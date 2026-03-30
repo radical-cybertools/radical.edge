@@ -1,5 +1,18 @@
 '''
-PSIJ Plugin for Radical Edge.
+PsiJ plugin for RADICAL Edge — HPC job submission.
+
+Three-class pattern
+-------------------
+PSIJSession   Edge-side session: holds one PsiJ ``Executor`` per submit call,
+              manages job state via callbacks and background polling, streams
+              stdout/stderr incrementally.
+
+PSIJClient    Application-side thin HTTP wrapper: delegates to the edge service
+              over the bridge (``submit_job``, ``get_job_status``, ``list_jobs``,
+              ``cancel_job``, ``submit_tunneled``, ``tunnel_status``).
+
+PluginPSIJ    Registers the plugin with the edge, adds URL routes, and wires
+              requests to the correct PSIJSession via ``_forward()``.
 '''
 
 import asyncio
@@ -161,7 +174,7 @@ class PSIJSession(PluginSession):
             }
 
             # Register status callback BEFORE submit so no transitions are missed
-            notify = self._notify
+            plugin = self._plugin
             job_id = job.id
             last_state = None
 
@@ -181,8 +194,8 @@ class PSIJSession(PluginSession):
                     stdout_content = _read_output_file(j, 'stdout_path')
                     stderr_content = _read_output_file(j, 'stderr_path')
 
-                if notify:
-                    notify("job_status", {
+                if plugin:
+                    plugin._dispatch_notify("job_status", {
                         "job_id":    job_id,
                         "state":     state_str,
                         "exit_code": status.exit_code if is_terminal else None,
@@ -334,8 +347,8 @@ class PSIJSession(PluginSession):
                             stdout_content = _read_output_file(job, 'stdout_path')
                             stderr_content = _read_output_file(job, 'stderr_path')
 
-                        if self._notify:
-                            self._notify("job_status", {
+                        if self._plugin:
+                            self._plugin._dispatch_notify("job_status", {
                                 "job_id":    job_id,
                                 "state":     state_str,
                                 "exit_code": status.exit_code if is_terminal else None,

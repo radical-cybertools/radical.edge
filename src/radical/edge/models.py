@@ -91,33 +91,35 @@ EdgeToBridgeMessage = Union[RegisterMessage, ResponseMessage, NotificationMessag
 BridgeToEdgeMessage = Union[RequestMessage, PingMessage, ErrorMessage, ShutdownMessage, TopologyMessage]
 
 
+_EDGE_MSG_TYPES = {
+    "register":     RegisterMessage,
+    "response":     ResponseMessage,
+    "notification": NotificationMessage,
+    "pong":         PongMessage,
+}
+
+_BRIDGE_MSG_TYPES = {
+    "request":  RequestMessage,
+    "ping":     PingMessage,
+    "error":    ErrorMessage,
+    "shutdown": ShutdownMessage,
+    "topology": TopologyMessage,
+}
+
+
 def parse_edge_message(data: dict) -> EdgeToBridgeMessage:
     """Parse a message from edge to bridge."""
     msg_type = data.get("type")
-    if msg_type == "register":
-        return RegisterMessage(**data)
-    elif msg_type == "response":
-        return ResponseMessage(**data)
-    elif msg_type == "notification":
-        return NotificationMessage(**data)
-    elif msg_type == "pong":
-        return PongMessage(**data)
-    else:
+    cls = _EDGE_MSG_TYPES.get(msg_type)  # type: ignore[arg-type]
+    if cls is None:
         raise ValueError(f"Unknown edge message type: {msg_type}")
+    return cls(**data)
 
 
 def parse_bridge_message(data: dict) -> BridgeToEdgeMessage:
     """Parse a message from bridge to edge."""
     msg_type = data.get("type")
-    if msg_type == "request":
-        return RequestMessage(**data)
-    elif msg_type == "ping":
-        return PingMessage(**data)
-    elif msg_type == "error":
-        return ErrorMessage(**data)
-    elif msg_type == "shutdown":
-        return ShutdownMessage(**data)
-    elif msg_type == "topology":
-        return TopologyMessage(**data)
-    else:
+    cls = _BRIDGE_MSG_TYPES.get(msg_type)  # type: ignore[arg-type]
+    if cls is None:
         raise ValueError(f"Unknown bridge message type: {msg_type}")
+    return cls(**data)

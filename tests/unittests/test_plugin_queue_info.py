@@ -353,5 +353,101 @@ async def test_plugin_queue_info_unknown_session_error(mock_slurm):
     assert exc_info.value.status_code == 404
 
 
+# ---------------------------------------------------------------------------
+# QueueInfoSession.cancel_job (Tier 2)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+@patch('radical.edge.plugin_queue_info.subprocess.run')
+async def test_queue_info_session_cancel_job_success(mock_run):
+    """cancel_job calls scancel and returns status dict."""
+    mock_run.return_value = Mock(returncode=0, stderr='')
+    session = QueueInfoSession("sid-cancel", backend=Mock())
+    result = await session.cancel_job("12345")
+    assert result == {'job_id': '12345', 'status': 'canceled'}
+    mock_run.assert_called_once()
+    args = mock_run.call_args[0][0]
+    assert 'scancel' in args
+    assert '12345' in args
+
+
+@pytest.mark.asyncio
+@patch('radical.edge.plugin_queue_info.subprocess.run')
+async def test_queue_info_session_cancel_job_failure(mock_run):
+    """cancel_job raises HTTPException on scancel failure."""
+    from fastapi import HTTPException
+    mock_run.return_value = Mock(returncode=1, stderr='Job not found')
+    session = QueueInfoSession("sid-cancel2", backend=Mock())
+    with pytest.raises(HTTPException) as exc_info:
+        await session.cancel_job("99999")
+    assert exc_info.value.status_code == 500
+    assert "scancel failed" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_queue_info_session_list_all_jobs():
+    """list_all_jobs delegates to backend.list_all_jobs."""
+    mock_backend = Mock()
+    mock_backend.list_all_jobs = Mock(return_value={"jobs": [{"id": "1"}]})
+    session = QueueInfoSession("sid-alljobs", backend=mock_backend)
+    result = await session.list_all_jobs(user="alice", force=True)
+    assert result == {"jobs": [{"id": "1"}]}
+    mock_backend.list_all_jobs.assert_called_once_with("alice", True)
+
+
+# ---------------------------------------------------------------------------
+# QueueInfoClient — session-less HTTP wrappers (Tier 1)
+# ---------------------------------------------------------------------------
+
+def _make_queue_info_client(json_resp, status_code=200):
+    """Return a QueueInfoClient backed by a mock httpx.Client."""
+    import httpx
+    from radical.edge.plugin_queue_info import QueueInfoClient
+    mock_resp = Mock()
+    mock_resp.is_error = (status_code >= 400)
+    mock_resp.status_code = status_code
+    mock_resp.json = Mock(return_value=json_resp)
+    mock_http = Mock()
+    mock_http.get = Mock(return_value=mock_resp)
+    mock_http.post = Mock(return_value=mock_resp)
+    client = QueueInfoClient(mock_http, "/queue_info")
+    client._sid = "sid-123"
+    return client
+
+
+def test_queue_info_client_is_enabled_true():
+    client = _make_queue_info_client({"available": True})
+    assert client.is_enabled() is True
+
+
+def test_queue_info_client_is_enabled_false():
+    client = _make_queue_info_client({"available": False})
+    assert client.is_enabled() is False
+
+
+def test_queue_info_client_job_allocation_none():
+    client = _make_queue_info_client({"allocation": None})
+    assert client.job_allocation() is None
+
+
+def test_queue_info_client_job_allocation_dict():
+    alloc = {"n_nodes": 4, "runtime": 3600}
+    client = _make_queue_info_client({"allocation": alloc})
+    assert client.job_allocation() == alloc
+
+
+def test_queue_info_client_cancel_job():
+    client = _make_queue_info_client({"job_id": "42", "status": "canceled"})
+    result = client.cancel_job("42")
+    assert result["status"] == "canceled"
+    client._http.post.assert_called_once()
+
+
+def test_queue_info_client_list_all_jobs():
+    client = _make_queue_info_client({"jobs": []})
+    result = client.list_all_jobs()
+    assert "jobs" in result
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

@@ -101,8 +101,8 @@ class RhapsodySession(PluginSession):
         if state_str.upper() in TERMINAL_STATES:
             return
 
-        if self._notify:
-            self._notify("task_status", {
+        if self._plugin:
+            self._plugin._dispatch_notify("task_status", {
                 "uid":   uid_str,
                 "state": state_str,
             })
@@ -131,7 +131,7 @@ class RhapsodySession(PluginSession):
             results.append({"uid": t.uid, "state": state})
 
         # Start one background watcher per task so each notifies independently
-        if self._notify:
+        if self._plugin:
             for t in tasks:
                 asyncio.ensure_future(self._watch_task(t))
 
@@ -158,7 +158,8 @@ class RhapsodySession(PluginSession):
 
             d = self._sanitize_task(task)
             log.debug("[%s] Sending notification for task %s: %s", self._sid, uid_str, d)
-            self._notify("task_status", d)
+            if self._plugin:
+                self._plugin._dispatch_notify("task_status", d)
 
         except Exception as e:
             log.warning("[%s] Rhapsody watch error for task %s: %s", self._sid, uid_str, e)
@@ -167,8 +168,8 @@ class RhapsodySession(PluginSession):
 
     def _send_error_notification(self, uid: str, error: str) -> None:
         """Send a FAILED notification when watcher encounters an error."""
-        if self._notify:
-            self._notify("task_status", {
+        if self._plugin:
+            self._plugin._dispatch_notify("task_status", {
                 "uid": uid,
                 "state": "FAILED",
                 "error": error

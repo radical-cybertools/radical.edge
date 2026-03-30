@@ -17,6 +17,21 @@ _UNAVAIL_STATES = {'DOWN',    'DRAIN',   'DRAINING',
                    'NOT_RESPONDING', 'REBOOT_ISSUED'}
 
 
+def _resolve_user(user):
+    """
+    Normalise the user argument used throughout QueueInfo public methods.
+
+    - ``None``  → current OS user (default: self)
+    - ``'*'``   → ``None`` (no filter; admin / all-users view)
+    - anything else → returned unchanged
+    """
+    if user is None:
+        return getpass.getuser()
+    if user == '*':
+        return None
+    return user
+
+
 def _unwrap(obj):
     """
     Extract a value from SLURM's {set, infinite, number} wrapper.
@@ -153,12 +168,7 @@ class QueueInfo(ABC):
         Returns:
             dict: {"queues": {<partition_name>: {...}, ...}}
         """
-        if user is None:
-
-            user = getpass.getuser()
-        elif user == '*':
-            user = None
-
+        user = _resolve_user(user)
         key = f'info:{user}'
         return self._get_cached(key, force, self._collect_info_filtered, user)
 
@@ -177,12 +187,7 @@ class QueueInfo(ABC):
         Returns:
             dict: {"jobs": [<job_dict>, ...]}
         """
-        if user is None:
-
-            user = getpass.getuser()
-        elif user == '*':
-            user = None
-
+        user = _resolve_user(user)
         key = f'jobs:{queue}:{user}'
         return self._get_cached(key, force, self._collect_jobs, queue, user)
 
@@ -200,12 +205,7 @@ class QueueInfo(ABC):
         Returns:
             dict: {"jobs": [<job_dict>, ...]}
         """
-        if user is None:
-
-            user = getpass.getuser()
-        elif user == '*':
-            user = None
-
+        user = _resolve_user(user)
         key = f'all_jobs:{user}'
         return self._get_cached(key, force, self._collect_all_user_jobs, user)
 
@@ -216,12 +216,7 @@ class QueueInfo(ABC):
         When user=None, defaults to the current user. To return all
         rows, pass user='*'.
         """
-        if user is None:
-
-            user = getpass.getuser()
-        elif user == '*':
-            user = None
-
+        user = _resolve_user(user)
         key = f'alloc:{user}'
         return self._get_cached(key, force, self._collect_allocations, user)
 
@@ -431,6 +426,39 @@ class QueueInfoSlurm(QueueInfo):
         return {'queues': partitions}
 
 
+    @staticmethod
+    def _parse_squeue_jobs(jobs):
+        """
+        Convert a list of raw squeue JSON job objects to normalised dicts.
+
+        Shared by _collect_jobs and _collect_all_user_jobs.
+        """
+        now    = time.time()
+        result = []
+        for job in jobs:
+            start = _unwrap(job.get('start_time', {})) or 0
+            state = (job.get('job_state', ['UNKNOWN']) or ['UNKNOWN'])[0]
+
+            time_used = int(now - start) if (state == 'RUNNING' and start > 0) else 0
+
+            result.append({
+                'job_id'     : str(job.get('job_id', '')),
+                'job_name'   : job.get('name', ''),
+                'user'       : job.get('user_name', ''),
+                'partition'  : job.get('partition', ''),
+                'state'      : state,
+                'nodes'      : _unwrap(job.get('node_count', {})) or 0,
+                'cpus'       : _unwrap(job.get('cpus', {}))       or 0,
+                'time_limit' : _unwrap(job.get('time_limit', {})),
+                'time_used'  : time_used,
+                'submit_time': _unwrap(job.get('submit_time', {})) or 0,
+                'start_time' : start,
+                'priority'   : _unwrap(job.get('priority', {}))   or 0,
+                'account'    : job.get('account', ''),
+                'node_list'  : job.get('nodes', ''),
+            })
+        return result
+
     def _collect_jobs(self, queue, user):
         """
         Collect job list via squeue --json.
@@ -442,45 +470,12 @@ class QueueInfoSlurm(QueueInfo):
         Returns:
           dict: {"jobs": [<job_dict>, ...]}
         """
-
         cmd = ['squeue', '--json', '-p', queue]
         if user:
             cmd.extend(['--user', user])
-
         stdout = self._run(cmd)
         jobs   = json.loads(stdout).get('jobs', [])
-
-        now    = time.time()
-        result = []
-        for job in jobs:
-
-            start = _unwrap(job.get('start_time', {})) or 0
-            state = (job.get('job_state', ['UNKNOWN']) or ['UNKNOWN'])[0]
-
-            if state == 'RUNNING' and start > 0:
-                time_used = int(now - start)
-            else:
-                time_used = 0
-
-            result.append({
-                'job_id'     : str(job.get('job_id', '')),
-                'job_name'   : job.get('name', ''),
-                'user'       : job.get('user_name', ''),
-                'partition'  : job.get('partition', ''),
-                'state'      : state,
-                'nodes'      : _unwrap(job.get('node_count', {})) or 0,
-                'cpus'       : _unwrap(job.get('cpus', {}))       or 0,
-                'time_limit' : _unwrap(job.get('time_limit', {})),
-                'time_used'  : time_used,
-                'submit_time': _unwrap(job.get('submit_time', {})) or 0,
-                'start_time' : start,
-                'priority'   : _unwrap(job.get('priority', {}))   or 0,
-                'account'    : job.get('account', ''),
-                'node_list'  : job.get('nodes', ''),
-            })
-
-        return {'jobs': result}
-
+        return {'jobs': self._parse_squeue_jobs(jobs)}
 
     def _collect_all_user_jobs(self, user):
         """
@@ -492,44 +487,12 @@ class QueueInfoSlurm(QueueInfo):
         Returns:
           dict: {"jobs": [<job_dict>, ...]}
         """
-
         cmd = ['squeue', '--json']
         if user:
             cmd.extend(['--user', user])
-
         stdout = self._run(cmd)
         jobs   = json.loads(stdout).get('jobs', [])
-
-        now    = time.time()
-        result = []
-        for job in jobs:
-
-            start = _unwrap(job.get('start_time', {})) or 0
-            state = (job.get('job_state', ['UNKNOWN']) or ['UNKNOWN'])[0]
-
-            if state == 'RUNNING' and start > 0:
-                time_used = int(now - start)
-            else:
-                time_used = 0
-
-            result.append({
-                'job_id'     : str(job.get('job_id', '')),
-                'job_name'   : job.get('name', ''),
-                'user'       : job.get('user_name', ''),
-                'partition'  : job.get('partition', ''),
-                'state'      : state,
-                'nodes'      : _unwrap(job.get('node_count', {})) or 0,
-                'cpus'       : _unwrap(job.get('cpus', {}))       or 0,
-                'time_limit' : _unwrap(job.get('time_limit', {})),
-                'time_used'  : time_used,
-                'submit_time': _unwrap(job.get('submit_time', {})) or 0,
-                'start_time' : start,
-                'priority'   : _unwrap(job.get('priority', {}))   or 0,
-                'account'    : job.get('account', ''),
-                'node_list'  : job.get('nodes', ''),
-            })
-
-        return {'jobs': result}
+        return {'jobs': self._parse_squeue_jobs(jobs)}
 
 
     def _collect_allocations(self, user):

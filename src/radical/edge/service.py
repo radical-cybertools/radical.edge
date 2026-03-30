@@ -309,8 +309,9 @@ class EdgeService:
                 await asyncio.sleep(2)
             else:
                 raise RuntimeError(
-                    f"Relay port file never appeared: {relay_file}\n"
-                    f"  Bridge URL: {self._bridge_url}")
+                    f"Relay port file never appeared after 60 s: {relay_file}\n"
+                    f"  The parent edge's SSH reverse-tunnel watcher writes this file "
+                    f"once the tunnel is active.  Bridge URL: {self._bridge_url}")
 
             relay_port = relay_file.read_text().strip()
             self._bridge_url = re.sub(

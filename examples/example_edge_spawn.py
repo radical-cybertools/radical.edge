@@ -17,41 +17,33 @@ def select_edge(bc):
     edges = bc.list_edges()
     if not edges:
         raise RuntimeError("No edges available")
-
-    print("\nAvailable edges:")
     for i, eid in enumerate(edges):
         print(f"  [{i}] {eid}")
-
-    choice = input("\nSelect edge number [0]: ").strip() or "0"
+    choice = input("Select edge number [0]: ").strip() or "0"
     return edges[int(choice)]
 
 
 def get_job_params(ec):
-    """Prompt user for job parameters."""
-    qi = ec.get_plugin('queue_info')
-
-    info   = qi.get_info()
-    queues = list(info.get('queues', {}).keys())
-    allocs = qi.list_allocations().get('allocations', [])
-    accounts = list(set(a['account'] for a in allocs if a.get('account')))
-
-    print(f"\nQueues:   {', '.join(queues[:5])}")
-    print(f"Accounts: {', '.join(accounts[:5])}")
-
-    queue = input(f"Queue [{queues[0] if queues else 'debug'}]: ").strip()
-    queue = queue or (queues[0] if queues else 'debug')
-
-    account = input(f"Account [{accounts[0] if accounts else ''}]: ").strip()
-    account = account or (accounts[0] if accounts else None)
-
+    """Prompt user for job parameters, showing available queues and accounts."""
+    qi       = ec.get_plugin('queue_info')
+    queues   = list(qi.get_info().get('queues', {}).keys())
+    accounts = list(set(
+        a['account']
+        for a in qi.list_allocations().get('allocations', [])
+        if a.get('account')
+    ))
+    print(f"Queues: {', '.join(queues[:5]) or '(none)'}  "
+          f"Accounts: {', '.join(accounts[:5]) or '(none)'}")
+    queue    = input(f"Queue [{queues[0] if queues else 'debug'}]: ").strip() \
+               or (queues[0] if queues else 'debug')
+    account  = input(f"Account [{accounts[0] if accounts else ''}]: ").strip() \
+               or (accounts[0] if accounts else None)
     duration = input("Duration in seconds [600]: ").strip() or "600"
     executor = input("Executor [slurm]: ").strip() or "slurm"
-
     return queue, account, duration, executor
 
 
 def ask_tunnel() -> bool:
-    """Ask whether a reverse SSH tunnel should be created for the child edge."""
     ans = input("Create reverse SSH tunnel for spawned edge? [y/N]: ").strip().lower()
     return ans in ('y', 'yes')
 

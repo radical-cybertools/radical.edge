@@ -199,4 +199,151 @@ if __name__ == '__main__':
     pytest.main([__file__, '-v'])
 
 
+# ---------------------------------------------------------------------------
+# Config helper functions (pure, no I/O)
+# ---------------------------------------------------------------------------
+
+from radical.edge.plugin_xgfabric import (
+    ResourceConfig, WorkflowConfig,
+    dict_to_resource_config, dict_to_config, config_to_dict,
+    XGFabricClient,
+)
+
+
+def test_dict_to_resource_config_basic():
+    d = {"name": "test", "bridge_url": "https://host:9000"}
+    cfg = dict_to_resource_config(d)
+    assert isinstance(cfg, ResourceConfig)
+    assert cfg.name == "test"
+    assert cfg.bridge_url == "https://host:9000"
+
+
+def test_dict_to_resource_config_unknown_fields_ignored():
+    d = {"name": "x", "unknown_field": "should_be_dropped"}
+    cfg = dict_to_resource_config(d)
+    assert cfg.name == "x"
+    assert not hasattr(cfg, "unknown_field")
+
+
+def test_dict_to_resource_config_defaults():
+    cfg = dict_to_resource_config({})
+    assert cfg.name == "default"
+    assert cfg.bridge_cert is None
+
+
+def test_dict_to_config_basic():
+    d = {"name": "wf1", "num_simulations": 8}
+    cfg = dict_to_config(d)
+    assert isinstance(cfg, WorkflowConfig)
+    assert cfg.name == "wf1"
+    assert cfg.num_simulations == 8
+
+
+def test_dict_to_config_unknown_fields_ignored():
+    d = {"name": "wf", "not_a_field": 99}
+    cfg = dict_to_config(d)
+    assert cfg.name == "wf"
+    assert not hasattr(cfg, "not_a_field")
+
+
+def test_dict_to_config_int_conversion():
+    """String numbers for int fields must be converted."""
+    d = {"cspot_limit": "5", "num_simulations": "32", "batch_size": "8"}
+    cfg = dict_to_config(d)
+    assert cfg.cspot_limit == 5
+    assert cfg.num_simulations == 32
+    assert cfg.batch_size == 8
+
+
+def test_config_to_dict_roundtrip():
+    """config_to_dict → dict_to_config roundtrip preserves values."""
+    original = WorkflowConfig(name="rt", cspot_limit=7, batch_size=2)
+    d = config_to_dict(original)
+    restored = dict_to_config(d)
+    assert restored.name == original.name
+    assert restored.cspot_limit == original.cspot_limit
+    assert restored.batch_size == original.batch_size
+
+
+# ---------------------------------------------------------------------------
+# XGFabricClient — thin HTTP wrappers
+# ---------------------------------------------------------------------------
+
+def _make_xgfabric_client(json_resp=None, status_code=200):
+    from unittest.mock import Mock
+    if json_resp is None:
+        json_resp = {"ok": True}
+    mock_resp = Mock()
+    mock_resp.is_error = (status_code >= 400)
+    mock_resp.status_code = status_code
+    mock_resp.json = Mock(return_value=json_resp)
+    mock_http = Mock()
+    mock_http.get = Mock(return_value=mock_resp)
+    mock_http.post = Mock(return_value=mock_resp)
+    client = XGFabricClient(mock_http, "/xgfabric")
+    client._sid = "sid-xgf"
+    return client
+
+
+def test_xgfabric_client_get_workdir():
+    client = _make_xgfabric_client({"workdir": "/data"})
+    result = client.get_workdir()
+    assert result["workdir"] == "/data"
+    client._http.get.assert_called_once()
+
+
+def test_xgfabric_client_set_workdir():
+    client = _make_xgfabric_client({"path": "/new"})
+    result = client.set_workdir("/new")
+    client._http.post.assert_called_once()
+    call_kwargs = client._http.post.call_args
+    assert call_kwargs[1]["json"]["path"] == "/new"
+
+
+def test_xgfabric_client_list_configs():
+    client = _make_xgfabric_client([{"name": "cfg1"}])
+    result = client.list_configs()
+    assert isinstance(result, list)
+    client._http.get.assert_called_once()
+
+
+def test_xgfabric_client_load_config():
+    client = _make_xgfabric_client({"name": "cfg1", "num_simulations": 16})
+    result = client.load_config("cfg1")
+    assert result["name"] == "cfg1"
+    client._http.get.assert_called_once()
+
+
+def test_xgfabric_client_save_config():
+    client = _make_xgfabric_client({"saved": True})
+    client.save_config({"name": "new_cfg"})
+    client._http.post.assert_called_once()
+
+
+def test_xgfabric_client_delete_config():
+    client = _make_xgfabric_client({"deleted": True})
+    client.delete_config("old_cfg")
+    client._http.post.assert_called_once()
+
+
+def test_xgfabric_client_get_status():
+    status = {"state": "idle", "immediate_clusters": [], "allocate_clusters": []}
+    client = _make_xgfabric_client(status)
+    result = client.get_status()
+    assert result["state"] == "idle"
+
+
+def test_xgfabric_client_start_workflow():
+    client = _make_xgfabric_client({"started": True})
+    client.start_workflow(workflow="wf1", resource="res1")
+    call_kwargs = client._http.post.call_args
+    assert call_kwargs[1]["json"]["workflow"] == "wf1"
+
+
+def test_xgfabric_client_stop_workflow():
+    client = _make_xgfabric_client({"stopped": True})
+    client.stop_workflow()
+    client._http.post.assert_called_once()
+
+
 
