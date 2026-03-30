@@ -194,7 +194,7 @@ async def test_submit_tunneled_no_tunnel(mock_psij):
 
 @pytest.mark.asyncio
 async def test_submit_tunneled_with_tunnel(mock_psij, tmp_path):
-    """submit_tunneled with tunnel=True injects env var and spawns watcher task."""
+    """submit_tunneled with tunnel=True and RADICAL_RELAY_PORT_FILE spawns watcher."""
     app = FastAPI()
     plugin = PluginPSIJ(app)
 
@@ -203,39 +203,55 @@ async def test_submit_tunneled_with_tunnel(mock_psij, tmp_path):
     mock_job.native_id = '88888'
     mock_psij.Job.return_value = mock_job
 
-    # Patch _relay_dir to use tmp_path
-    with patch('radical.edge.plugin_psij._relay_dir', return_value=tmp_path):
-        with patch('radical.edge.plugin_psij.asyncio.create_task') as mock_create_task:
-            mock_task = MagicMock()
-            mock_task.done.return_value = False
-            mock_create_task.return_value = mock_task
+    relay_file = str(tmp_path / 'tunnel-edge.port')
 
-            client = TestClient(app)
-            resp = client.post(f"{plugin.namespace}/register_session")
-            sid = resp.json()['sid']
+    with patch('radical.edge.plugin_psij.asyncio.create_task') as mock_create_task:
+        mock_task = MagicMock()
+        mock_task.done.return_value = False
+        mock_create_task.return_value = mock_task
 
-            payload = {
-                "job_spec": {
-                    "executable": "radical-edge-wrapper.sh",
-                    "arguments": ["--url", "http://bridge:8000", "-n", "tunnel-edge"]
-                },
-                "executor": "slurm",
-                "tunnel": True
-            }
-            resp = client.post(f"{plugin.namespace}/submit_tunneled/{sid}", json=payload)
-            assert resp.status_code == 200
-            data = resp.json()
-            assert data['edge_name'] == 'tunnel-edge'
+        client = TestClient(app)
+        resp = client.post(f"{plugin.namespace}/register_session")
+        sid = resp.json()['sid']
 
-            # Watcher task was created
-            assert mock_create_task.called
+        payload = {
+            "job_spec": {
+                "executable": "radical-edge-wrapper.sh",
+                "arguments": ["--url", "http://bridge:8000", "-n", "tunnel-edge"],
+                "environment": {"RADICAL_RELAY_PORT_FILE": relay_file},
+            },
+            "executor": "slurm",
+            "tunnel": True
+        }
+        resp = client.post(f"{plugin.namespace}/submit_tunneled/{sid}", json=payload)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data['edge_name'] == 'tunnel-edge'
 
-            # RADICAL_RELAY_PORT_FILE was injected into submitted job spec
-            session = plugin._sessions[sid]
-            submitted_job = session._jobs.get('edge-job.2')
-            # The environment was passed to psij.JobSpec via spec.environment
-            # (we verify by checking the spec mock received it)
-            assert submitted_job is not None
+        # Watcher task was created
+        assert mock_create_task.called
+
+
+@pytest.mark.asyncio
+async def test_submit_tunneled_missing_relay_file(mock_psij):
+    """submit_tunneled returns 422 when tunnel=True but RADICAL_RELAY_PORT_FILE is absent."""
+    app = FastAPI()
+    plugin = PluginPSIJ(app)
+    client = TestClient(app)
+
+    resp = client.post(f"{plugin.namespace}/register_session")
+    sid = resp.json()['sid']
+
+    payload = {
+        "job_spec": {
+            "executable": "radical-edge-wrapper.sh",
+            "arguments": ["--url", "http://bridge:8000", "-n", "tunnel-edge"],
+        },
+        "executor": "slurm",
+        "tunnel": True
+    }
+    resp = client.post(f"{plugin.namespace}/submit_tunneled/{sid}", json=payload)
+    assert resp.status_code == 422
 
 
 @pytest.mark.asyncio

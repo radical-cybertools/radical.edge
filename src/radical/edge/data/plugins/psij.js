@@ -106,7 +106,7 @@ export function init(page, api) {
     submitBtn.addEventListener('click', () => {
       const tunnel = !!(page.querySelector('.p-tunnel') || {}).checked;
       if (tunnel) {
-        submitEdgeJob(page, api);
+        submitTunneledJob(page, api);
       } else {
         submitJob(page, api);
       }
@@ -132,6 +132,13 @@ export function init(page, api) {
     }
   }
 
+  // When tunnel checkbox is toggled, add/remove the RADICAL_RELAY_PORT_FILE env row.
+  // The relay base dir is fetched once from /env and cached on the page element.
+  const tunnelChk = page.querySelector('.p-tunnel');
+  if (tunnelChk) {
+    tunnelChk.addEventListener('change', () => updateRelayEnvRow(page));
+  }
+
   // Prefill from cached queue data if already available
   const qd = api.getQueueData();
   if (qd) replaceQueueAccountDropdowns(page, qd);
@@ -143,12 +150,19 @@ export function init(page, api) {
     if (sel) sel.value = 'slurm';
   }
 
-  // Pre-populate RADICAL_BRIDGE_CERT from the edge environment
+  // Pre-populate env vars from the edge environment (RADICAL_BRIDGE_CERT,
+  // and RADICAL_RELAY_BASE used to construct RADICAL_RELAY_PORT_FILE).
   api.fetchRaw(`/${api.edgeName}/psij/env`)
     .then(env => {
       if (!env) return;
       if (env.RADICAL_BRIDGE_CERT) {
         addEnvRow(page, 'RADICAL_BRIDGE_CERT', env.RADICAL_BRIDGE_CERT);
+      }
+      if (env.RADICAL_RELAY_BASE) {
+        page._relayBase = env.RADICAL_RELAY_BASE;
+        // If tunnel is already checked, populate the relay env var now
+        const tunnelChk = page.querySelector('.p-tunnel');
+        if (tunnelChk && tunnelChk.checked) updateRelayEnvRow(page);
       }
     })
     .catch(() => {});  // silently ignore — env endpoint is best-effort
@@ -196,6 +210,29 @@ export const notificationConfig = {
 // ─────────────────────────────────────────────────────────────
 //  Internal functions
 // ─────────────────────────────────────────────────────────────
+
+function updateRelayEnvRow(page) {
+  const tunnelChk = page.querySelector('.p-tunnel');
+  const checked   = tunnelChk && tunnelChk.checked;
+  const relayBase = page._relayBase;
+  const rows      = page.querySelectorAll('.psij-envvar-rows > div');
+
+  // Remove any existing RADICAL_RELAY_PORT_FILE row
+  rows.forEach(row => {
+    const key = row.querySelector('.p-env-key');
+    if (key && key.value.trim() === 'RADICAL_RELAY_PORT_FILE') row.remove();
+  });
+
+  if (!checked || !relayBase) return;
+
+  // Parse edge_name from --name / -n in the args input
+  const argsInput = page.querySelector('.p-args');
+  const argsStr   = argsInput ? argsInput.value : '';
+  const m         = argsStr.match(/(?:--name|-n)\s+(\S+)/);
+  const edgeName  = m ? m[1] : 'edge';
+
+  addEnvRow(page, 'RADICAL_RELAY_PORT_FILE', `${relayBase}/${edgeName}.port`);
+}
 
 function getNextEdgeChildName(edgeName) {
   if (!edgeCounters[edgeName]) edgeCounters[edgeName] = 0;
@@ -602,13 +639,13 @@ async function submitJob(page, api) {
 }
 
 // ─────────────────────────────────────────────────────────────
-//  Submit Edge Service
+//  Submit Tunneled Edge Service
 // ─────────────────────────────────────────────────────────────
 
 // Active tunnel pollers: edge_name -> intervalId
 const tunnelPollers = {};
 
-async function submitEdgeJob(page, api) {
+async function submitTunneledJob(page, api) {
   const exec = page.querySelector('.p-exec').value.trim();
   const args = page.querySelector('.p-args').value.trim().split(/\s+/).filter(Boolean);
   const executor = page.querySelector('.p-executor').value;

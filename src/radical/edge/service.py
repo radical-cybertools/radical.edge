@@ -281,8 +281,8 @@ class EdgeService:
         Connects to Bridge and starts processing loop.
         """
         PING_INTERVAL  = 20
-        PING_TIMEOUT   = 120
-        MAX_BACKOFF    = 30
+        PING_TIMEOUT   = 30
+        MAX_BACKOFF    = 10
         JITTER_FACTOR  = 0.3  # Add up to 30% jitter to prevent thundering herd
         BACKOFF_FACTOR = 1.2
         backoff = 0.5
@@ -316,26 +316,7 @@ class EdgeService:
 
         transport = ASGITransport(app=self._app)
 
-        def _apply_relay_if_available() -> None:
-            """Rewrite bridge URL through relay if the port file appeared since startup."""
-            rf = os.environ.get('RADICAL_RELAY_PORT_FILE')
-            if not rf or not os.path.exists(rf):
-                return
-            if 'localhost' in self._bridge_url:
-                return   # already using relay
-            try:
-                port = open(rf).read().strip()
-                if port and port.isdigit() and int(port) > 0:
-                    self._bridge_url = re.sub(
-                        r'(wss?://)[^/:]+:\d+',
-                        f'\\g<1>localhost:{port}',
-                        self._bridge_url)
-                    log.info("[Edge] Relay detected on reconnect; using %s", self._bridge_url)
-            except OSError:
-                pass
-
         while not self._stop_event.is_set():
-            _apply_relay_if_available()
             try:
                 async with httpx.AsyncClient(transport=transport,
                                              base_url="http://local") as http_client:

@@ -485,7 +485,7 @@ async def terminate_bridge():
 # ---------------------------------------------------------------------------
 
 @app.post("/edge/submit", tags=["Edge Submission"])
-async def submit_edge(request: Request):
+async def submit_tunneled(request: Request):
     """
     Submit a new edge service to a remote resource via PsiJ.
 
