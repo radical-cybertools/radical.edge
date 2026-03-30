@@ -63,6 +63,9 @@ async def main():
                         default=os.environ.get("RADICAL_EDGE_LOG_LEVEL", "INFO"),
                         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
                         help="Log level (default: INFO; env: RADICAL_EDGE_LOG_LEVEL)")
+    parser.add_argument("--tunnel", action="store_true",
+                        help="Wait for a reverse SSH tunnel port file before connecting to bridge. "
+                             "Port file path: ~/.radical/edge/tunnels/<name>.port")
 
     args = parser.parse_args()
 
@@ -77,7 +80,8 @@ async def main():
 
     validate_ssl_cert(edge_url)
 
-    service = EdgeService(bridge_url=edge_url, name=edge_name, plugins=plugins)
+    service = EdgeService(bridge_url=edge_url, name=edge_name, plugins=plugins,
+                          tunnel=args.tunnel)
     loop = asyncio.get_running_loop()
     stop_event = asyncio.Event()
 

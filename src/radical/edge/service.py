@@ -4,6 +4,7 @@ import base64
 import json
 import logging
 import os
+import pathlib
 import random
 import re
 import ssl
@@ -86,7 +87,7 @@ class EdgeService:
     """
 
     def __init__(self, bridge_url: Optional[str] = None, name: Optional[str] = None,
-                 plugins: Optional[list] = None):
+                 plugins: Optional[list] = None, tunnel: bool = False):
         """
         Initialize the Edge Service.
 
@@ -107,6 +108,7 @@ class EdgeService:
         self._plugin_filter: list = plugins or ['all']
         self._app.state.edge_name = self._name
         self._app.state.edge_service = self
+        self._tunnel: bool = tunnel
         self._ws: Optional[websockets.WebSocketClientProtocol] = None
         self._http_client: Optional[httpx.AsyncClient] = None
         self._send_lock: asyncio.Lock = asyncio.Lock()
@@ -290,15 +292,19 @@ class EdgeService:
         self._stop_event.clear()
         self._running_task = asyncio.current_task()
 
-        # ── Reverse-tunnel relay (RADICAL_RELAY_PORT_FILE) ───────────────────
-        # Used when a parent edge spawned this job and set up a reverse SSH
-        # tunnel.  The tunnel port is written to a shared file; we wait for
-        # it and then rewrite the bridge URL to go through localhost:<port>.
-        relay_file = os.environ.get('RADICAL_RELAY_PORT_FILE')
-        if relay_file:
-            log.info("[Edge] Waiting for relay port file: %s", relay_file)
+        # ── Reverse-tunnel relay (--tunnel flag) ─────────────────────────────
+        # When --tunnel is passed, a parent edge has set up a reverse SSH
+        # tunnel.  The tunnel port is written to a shared file derived from
+        # this edge's name; we wait for it and rewrite the bridge URL to go
+        # through localhost:<port>.
+        if self._tunnel:
+            relay_file = (
+                pathlib.Path.home() / '.radical' / 'edge' / 'tunnels'
+                / f'{self._name}.port'
+            )
+            log.info("[Edge] --tunnel: waiting for relay port file: %s", relay_file)
             for _ in range(30):   # 30 × 2s = 60 s
-                if os.path.exists(relay_file):
+                if relay_file.exists():
                     break
                 await asyncio.sleep(2)
             else:
@@ -306,16 +312,15 @@ class EdgeService:
                     f"Relay port file never appeared: {relay_file}\n"
                     f"  Bridge URL: {self._bridge_url}")
 
-            relay_port = open(relay_file).read().strip()
+            relay_port = relay_file.read_text().strip()
             self._bridge_url = re.sub(
-                r'(wss?://)[^/:]+:\d+',
+                r'(https?://|wss?://)[^/:]+:\d+',
                 f'\\g<1>localhost:{relay_port}',
                 self._bridge_url)
             log.info("[Edge] Relay active; using %s", self._bridge_url)
         # ── End relay setup ───────────────────────────────────────────────────
 
         transport = ASGITransport(app=self._app)
-
         while not self._stop_event.is_set():
             try:
                 async with httpx.AsyncClient(transport=transport,

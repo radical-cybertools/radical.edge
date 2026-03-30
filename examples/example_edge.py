@@ -94,29 +94,25 @@ def main():
     if args.account:
         attributes['account'] = args.account
 
-    # When tunnel=True the job must carry RADICAL_RELAY_PORT_FILE in its
-    # environment so the child edge knows where to find the relay port.
-    # The path follows the convention used by the tunnel watcher on the login node:
-    #   ~/.radical/edge/tunnels/{edge_name}.port
-    import pathlib as _pl
-    environment: dict = {}
+    # When tunnel=True the server-side watcher writes the port to the hardcoded
+    # path ~/.radical/edge/tunnels/{edge_name}.port.  We inject --tunnel into
+    # the child edge's arguments so it knows to wait for that file.
     if args.tunnel:
-        relay_dir  = _pl.Path.home() / '.radical' / 'edge' / 'tunnels'
-        relay_dir.mkdir(parents=True, exist_ok=True)
-        environment['RADICAL_RELAY_PORT_FILE'] = str(relay_dir / f'{args.name}.port')
+        arguments.append('--tunnel')
 
     job_spec = {
-        'executable':  'radical-edge-wrapper.sh',
-        'arguments':   arguments,
-        'attributes':  attributes,
-        'environment': environment,
+        'executable': 'radical-edge-wrapper.sh',
+        'arguments':  arguments,
+        'attributes': attributes,
     }
 
     # ── Submit the edge job ──────────────────────────────────────────────────
     print(f"Submitting edge job '{args.name}' via executor '{args.executor}' …")
     if args.tunnel:
         print("  Reverse SSH tunnel requested — watcher will spawn SSH once job starts.")
-        print(f"  Relay port file: {environment['RADICAL_RELAY_PORT_FILE']}")
+        import pathlib as _pl
+        relay_file = _pl.Path.home() / '.radical' / 'edge' / 'tunnels' / f'{args.name}.port'
+        print(f"  Relay port file: {relay_file}")
 
     result = psij.submit_tunneled(job_spec, executor=args.executor, tunnel=args.tunnel)
 

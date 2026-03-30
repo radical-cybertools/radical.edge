@@ -193,8 +193,8 @@ async def test_submit_tunneled_no_tunnel(mock_psij):
 
 
 @pytest.mark.asyncio
-async def test_submit_tunneled_with_tunnel(mock_psij, tmp_path):
-    """submit_tunneled with tunnel=True and RADICAL_RELAY_PORT_FILE spawns watcher."""
+async def test_submit_tunneled_with_tunnel(mock_psij):
+    """submit_tunneled with tunnel=True injects --tunnel into args and spawns watcher."""
     app = FastAPI()
     plugin = PluginPSIJ(app)
 
@@ -202,8 +202,6 @@ async def test_submit_tunneled_with_tunnel(mock_psij, tmp_path):
     mock_job.id = 'edge-job.2'
     mock_job.native_id = '88888'
     mock_psij.Job.return_value = mock_job
-
-    relay_file = str(tmp_path / 'tunnel-edge.port')
 
     with patch('radical.edge.plugin_psij.asyncio.create_task') as mock_create_task:
         mock_task = MagicMock()
@@ -218,7 +216,6 @@ async def test_submit_tunneled_with_tunnel(mock_psij, tmp_path):
             "job_spec": {
                 "executable": "radical-edge-wrapper.sh",
                 "arguments": ["--url", "http://bridge:8000", "-n", "tunnel-edge"],
-                "environment": {"RADICAL_RELAY_PORT_FILE": relay_file},
             },
             "executor": "slurm",
             "tunnel": True
@@ -231,27 +228,9 @@ async def test_submit_tunneled_with_tunnel(mock_psij, tmp_path):
         # Watcher task was created
         assert mock_create_task.called
 
-
-@pytest.mark.asyncio
-async def test_submit_tunneled_missing_relay_file(mock_psij):
-    """submit_tunneled returns 422 when tunnel=True but RADICAL_RELAY_PORT_FILE is absent."""
-    app = FastAPI()
-    plugin = PluginPSIJ(app)
-    client = TestClient(app)
-
-    resp = client.post(f"{plugin.namespace}/register_session")
-    sid = resp.json()['sid']
-
-    payload = {
-        "job_spec": {
-            "executable": "radical-edge-wrapper.sh",
-            "arguments": ["--url", "http://bridge:8000", "-n", "tunnel-edge"],
-        },
-        "executor": "slurm",
-        "tunnel": True
-    }
-    resp = client.post(f"{plugin.namespace}/submit_tunneled/{sid}", json=payload)
-    assert resp.status_code == 422
+        # --tunnel must have been injected into the job arguments
+        spec_instance = mock_psij.JobSpec.return_value
+        assert '--tunnel' in spec_instance.arguments
 
 
 @pytest.mark.asyncio

@@ -132,13 +132,6 @@ export function init(page, api) {
     }
   }
 
-  // When tunnel checkbox is toggled, add/remove the RADICAL_RELAY_PORT_FILE env row.
-  // The relay base dir is fetched once from /env and cached on the page element.
-  const tunnelChk = page.querySelector('.p-tunnel');
-  if (tunnelChk) {
-    tunnelChk.addEventListener('change', () => updateRelayEnvRow(page));
-  }
-
   // Prefill from cached queue data if already available
   const qd = api.getQueueData();
   if (qd) replaceQueueAccountDropdowns(page, qd);
@@ -150,22 +143,27 @@ export function init(page, api) {
     if (sel) sel.value = 'slurm';
   }
 
-  // Pre-populate env vars from the edge environment (RADICAL_BRIDGE_CERT,
-  // and RADICAL_RELAY_BASE used to construct RADICAL_RELAY_PORT_FILE).
-  api.fetchRaw(`/${api.edgeName}/psij/env`)
-    .then(env => {
-      if (!env) return;
-      if (env.RADICAL_BRIDGE_CERT) {
-        addEnvRow(page, 'RADICAL_BRIDGE_CERT', env.RADICAL_BRIDGE_CERT);
+  // Toggle --tunnel in the arguments field when the checkbox changes.
+  // Only modify args when the executable is the edge wrapper / service script,
+  // since --tunnel is a radical-edge-service flag, not a general job argument.
+  const EDGE_EXEC_RE = /radical-edge(?:-wrapper\.sh|-service(?:\.py)?)$/;
+  const tunnelChk = page.querySelector('.p-tunnel');
+  if (tunnelChk) {
+    tunnelChk.addEventListener('change', () => {
+      const argsInput = page.querySelector('.p-args');
+      const execInput = page.querySelector('.p-exec');
+      if (!argsInput || !execInput) return;
+      if (!EDGE_EXEC_RE.test(execInput.value.trim())) return;
+      const parts = argsInput.value.trim().split(/\s+/).filter(Boolean);
+      if (tunnelChk.checked) {
+        if (!parts.includes('--tunnel')) parts.push('--tunnel');
+      } else {
+        const idx = parts.indexOf('--tunnel');
+        if (idx !== -1) parts.splice(idx, 1);
       }
-      if (env.RADICAL_RELAY_BASE) {
-        page._relayBase = env.RADICAL_RELAY_BASE;
-        // If tunnel is already checked, populate the relay env var now
-        const tunnelChk = page.querySelector('.p-tunnel');
-        if (tunnelChk && tunnelChk.checked) updateRelayEnvRow(page);
-      }
-    })
-    .catch(() => {});  // silently ignore — env endpoint is best-effort
+      argsInput.value = parts.join(' ');
+    });
+  }
 }
 
 export function onShow(page, api) {
@@ -210,29 +208,6 @@ export const notificationConfig = {
 // ─────────────────────────────────────────────────────────────
 //  Internal functions
 // ─────────────────────────────────────────────────────────────
-
-function updateRelayEnvRow(page) {
-  const tunnelChk = page.querySelector('.p-tunnel');
-  const checked   = tunnelChk && tunnelChk.checked;
-  const relayBase = page._relayBase;
-  const rows      = page.querySelectorAll('.psij-envvar-rows > div');
-
-  // Remove any existing RADICAL_RELAY_PORT_FILE row
-  rows.forEach(row => {
-    const key = row.querySelector('.p-env-key');
-    if (key && key.value.trim() === 'RADICAL_RELAY_PORT_FILE') row.remove();
-  });
-
-  if (!checked || !relayBase) return;
-
-  // Parse edge_name from --name / -n in the args input
-  const argsInput = page.querySelector('.p-args');
-  const argsStr   = argsInput ? argsInput.value : '';
-  const m         = argsStr.match(/(?:--name|-n)\s+(\S+)/);
-  const edgeName  = m ? m[1] : 'edge';
-
-  addEnvRow(page, 'RADICAL_RELAY_PORT_FILE', `${relayBase}/${edgeName}.port`);
-}
 
 function getNextEdgeChildName(edgeName) {
   if (!edgeCounters[edgeName]) edgeCounters[edgeName] = 0;

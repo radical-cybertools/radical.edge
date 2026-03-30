@@ -448,11 +448,12 @@ class PSIJClient(PluginClient):
         ``--name <edge_name>`` so the child edge can register under the
         correct name.
 
-        When *tunnel* is ``True`` the plugin-side watcher will open a reverse
-        SSH tunnel (login node → compute node) once the job is running, and
-        write the assigned port to a shared relay file.  The child edge
-        service reads that file and rewrites its bridge URL to connect through
-        the tunnel.
+        When *tunnel* is ``True`` the server automatically appends ``--tunnel``
+        to the job arguments.  The plugin-side watcher then opens a reverse
+        SSH tunnel (login node → compute node) once the job is running and
+        writes the port to ``~/.radical/edge/tunnels/{edge_name}.port``.  The
+        child edge service reads that file at startup and rewrites its bridge
+        URL to connect through the tunnel.
 
         Args:
             job_spec: PsiJ job specification dict.  ``arguments`` must include
@@ -570,26 +571,12 @@ class PluginPSIJ(Plugin):
         # Ensure relay directory exists at startup
         _relay_dir()
 
-        self.add_route_get('env',                              self.get_env)
         self.add_route_post('submit/{sid}',                    self.submit_job)
         self.add_route_post('submit_tunneled/{sid}',           self.submit_tunneled)
         self.add_route_get('tunnel_status/{edge_name}',        self.tunnel_status)
         self.add_route_get('status/{sid}/{job_id}',            self.get_job_status)
         self.add_route_get('list_jobs/{sid}',                  self.list_jobs)
         self.add_route_post('cancel/{sid}/{job_id}',           self.cancel_job)
-
-    async def get_env(self, request: Request) -> JSONResponse:
-        """Session-less: return env vars needed by child edge processes.
-
-        Used by the Explorer UI to pre-populate the job environment form.
-        ``RADICAL_RELAY_BASE`` is the directory where relay port files are written
-        by the tunnel watcher; the child edge reads ``{RADICAL_RELAY_BASE}/{name}.port``
-        to discover the tunnel port.
-        """
-        return JSONResponse({
-            'RADICAL_BRIDGE_CERT': os.environ.get('RADICAL_BRIDGE_CERT', ''),
-            'RADICAL_RELAY_BASE':  str(_relay_dir()),
-        })
 
     async def submit_job(self, request: Request) -> JSONResponse:
         sid = request.path_params['sid']
@@ -630,18 +617,18 @@ class PluginPSIJ(Plugin):
         The job *must* pass ``-n``/``--name <edge_name>`` in its arguments so
         the child edge service can register under the correct name.
 
-        When ``tunnel=true`` the caller *must* include ``RADICAL_RELAY_PORT_FILE``
-        in ``job_spec.environment`` — the path where the tunnel watcher will write
-        the allocated SSH port.  The child edge reads this file at startup and
-        rewrites its bridge URL to ``localhost:<port>`` so it can reach the bridge
-        through the reverse SSH tunnel.  Use the ``/env`` endpoint to get the
-        canonical relay base directory (``RADICAL_RELAY_BASE``) and construct the
-        path as ``{RADICAL_RELAY_BASE}/{edge_name}.port``.
+        When ``tunnel=true`` the plugin automatically appends ``--tunnel`` to the
+        job's argument list.  The child edge service reads this flag at startup and
+        waits for a relay port file at the hardcoded path
+        ``~/.radical/edge/tunnels/{edge_name}.port`` before connecting to the bridge.
+        The watcher on the parent edge writes that file once the reverse SSH tunnel
+        is established.
 
         When ``tunnel=true`` the plugin:
 
         1. Cleans up any stale relay file from a previous run.
-        2. Spawns an async watcher that waits for the SLURM job to reach RUNNING,
+        2. Injects ``--tunnel`` into the job arguments.
+        3. Spawns an async watcher that waits for the SLURM job to reach RUNNING,
            then opens a reverse SSH tunnel (login → compute) and writes the
            allocated port to the relay file.
 
@@ -657,8 +644,6 @@ class PluginPSIJ(Plugin):
 
         Raises:
             422 if ``-n``/``--name`` is missing from ``job_spec.arguments``.
-            422 if ``tunnel=true`` but ``RADICAL_RELAY_PORT_FILE`` is absent from
-                ``job_spec.environment``.
             409 if a tunnel watcher for the same edge name is already active.
         """
         sid  = request.path_params['sid']
@@ -688,18 +673,17 @@ class PluginPSIJ(Plugin):
                 status_code=409,
                 detail=f"Tunnel watcher already active for edge '{edge_name}'")
 
-        # --- validate / prepare relay file path when tunnel requested ---
+        # --- prepare relay file and inject --tunnel flag when tunnel requested ---
         relay_file: pathlib.Path | None = None
         if tunnel:
-            relay_file_str = (job_spec.get('environment') or {}).get('RADICAL_RELAY_PORT_FILE')
-            if not relay_file_str:
-                raise HTTPException(
-                    status_code=422,
-                    detail="tunnel=true requires RADICAL_RELAY_PORT_FILE in "
-                           "job_spec.environment (use /env to get RADICAL_RELAY_BASE "
-                           "and set the path to {RADICAL_RELAY_BASE}/{edge_name}.port)")
-            relay_file = pathlib.Path(relay_file_str)
+            relay_file = _relay_dir() / f'{edge_name}.port'
             relay_file.unlink(missing_ok=True)  # remove stale file from previous run
+            # Inject --tunnel into the job's argument list so the child edge
+            # knows to wait for the relay port file before connecting.
+            if '--tunnel' not in args:
+                args.append('--tunnel')
+            job_spec = dict(job_spec)
+            job_spec['arguments'] = args
 
         resp = await self._forward(sid, PSIJSession.submit_job,
                                    job_spec_dict=job_spec,
