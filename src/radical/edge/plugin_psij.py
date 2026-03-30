@@ -823,22 +823,23 @@ class PluginPSIJ(Plugin):
 
             # Retry spawn: pam_slurm_adopt rejects SSH until the job's
             # processes are live, which can lag a few seconds behind squeue
-            # reporting RUNNING.  Retry up to 10 times with 15 s gaps.
-            for spawn_attempt in range(10):
-                if spawn_attempt > 0:
-                    log.info("[psij] Retrying tunnel for edge '%s' in 15 s "
-                             "(attempt %d/10)", edge_name, spawn_attempt + 1)
-                    await asyncio.sleep(15)
+            # reporting RUNNING.  Retry rapidly for up to 15 s.
+            deadline     = asyncio.get_event_loop().time() + 15
+            spawn_attempt = 0
+            while True:
                 try:
                     await self._spawn_tunnel(compute_node, relay_file, edge_name)
                     return   # success
                 except Exception as e:
-                    log.warning("[psij] Tunnel spawn attempt %d failed for "
-                                "edge '%s': %s", spawn_attempt + 1, edge_name, e)
-
-            log.error("[psij] All tunnel spawn attempts failed for edge '%s'",
-                      edge_name)
-            return
+                    spawn_attempt += 1
+                    remaining = deadline - asyncio.get_event_loop().time()
+                    if remaining <= 0:
+                        log.error("[psij] Tunnel spawn failed for edge '%s' "
+                                  "after %d attempts: %s", edge_name, spawn_attempt, e)
+                        return
+                    log.debug("[psij] Tunnel spawn attempt %d failed, %.0f s left: %s",
+                              spawn_attempt, remaining, e)
+                    await asyncio.sleep(2)
 
         log.warning("[psij] Watcher for edge '%s' timed out waiting for job %s to start",
                     edge_name, native_id)
