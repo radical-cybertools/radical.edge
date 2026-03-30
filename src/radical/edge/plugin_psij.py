@@ -916,14 +916,10 @@ class PluginPSIJ(Plugin):
                 lines.append(line)
                 log.debug("[psij] ssh stderr: %s", line)
                 m = re.search(r'[Aa]llocated port (\d+)', line)
-                if not m:
-                    m = re.search(r'remote forward success.*?(\d+)\s*$', line)
                 if m:
                     port = int(m.group(1))
                     if port > 0:
                         return port, lines
-                    # port 0 is a placeholder — keep reading for the real port
-                    log.debug("[psij] ssh reported placeholder port 0, still reading…")
                 if proc.poll() is not None:
                     break
             return None, lines
