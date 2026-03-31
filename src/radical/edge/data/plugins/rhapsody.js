@@ -286,15 +286,18 @@ function renderDetailOverlay(api, task) {
   body += '</div>';
 
   // stdout / stderr / exception sections
+  const outText = task.stdout || '';
+  const errText = task.stderr || '';
   const hasException = task.exception;
+  const noOutput = '<span style="color:var(--muted);font-style:italic">(no output captured)</span>';
   body += `
     <div class="job-output-section">
       <h4>stdout</h4>
-      <pre id="rh-detail-stdout" class="out-stream">${escHtml(task.stdout || '')}</pre>
+      <pre id="rh-detail-stdout" class="out-stream">${outText ? escHtml(outText) : noOutput}</pre>
     </div>
     <div class="job-output-section">
       <h4>stderr</h4>
-      <pre id="rh-detail-stderr" class="err-stream">${escHtml(task.stderr || '')}</pre>
+      <pre id="rh-detail-stderr" class="err-stream">${errText ? escHtml(errText) : noOutput}</pre>
     </div>
     <div class="job-output-section" style="${hasException ? '' : 'display:none'}">
       <h4>exception</h4>
