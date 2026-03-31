@@ -13,6 +13,7 @@ export function template() {
       <h2>Queue Info — <span class="edge-label"></span></h2>
       <button class="btn btn-secondary btn-sm" style="margin-left:auto" data-action="refresh">↺ Refresh</button>
     </div>
+    <div class="qi-allocation-area"></div>
     <div class="queueinfo-content">
       <div class="empty">
         <div class="empty-icon">⏳</div>
@@ -24,61 +25,41 @@ export function template() {
 
 export function css() {
   return `
-    .job-row {
+    .qi-job-row {
       cursor: pointer;
       transition: background 0.15s;
     }
-    .job-row:hover {
+    .qi-job-row:hover {
       background: var(--hover);
     }
-    .job-row.selected {
+    .qi-job-row.selected {
       background: rgba(59, 130, 246, 0.15);
       border-left: 3px solid var(--primary);
-    }
-    .job-detail-panel {
-      background: rgba(30, 35, 50, 0.5);
-      border-radius: 6px;
-      padding: 12px 16px;
-      margin-top: 12px;
-      font-size: 0.85rem;
-      border: 1px solid var(--border);
-    }
-    .job-detail-panel h4 {
-      margin: 0 0 10px 0;
-      font-size: 0.95rem;
-    }
-    .job-detail-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-      gap: 8px 16px;
-    }
-    .job-detail-item {
-      display: flex;
-      flex-direction: column;
-    }
-    .job-detail-item .label {
-      font-size: 0.75rem;
-      color: var(--muted);
-      text-transform: uppercase;
-    }
-    .job-detail-item .value {
-      font-weight: 500;
     }
   `;
 }
 
 // Module-level state
 let currentJobsData = [];
+let myJobsData = [];
 let queueDataCache = {};
 
+// Shared with api.escHtml — set in init()
+let escHtml = s => String(s || '');  // safe fallback until init()
+
 export function init(page, api) {
+  escHtml = api.escHtml;
   // Bind refresh button
   const refreshBtn = page.querySelector('[data-action="refresh"]');
   if (refreshBtn) {
-    refreshBtn.addEventListener('click', () => loadQueueInfo(page, api));
+    refreshBtn.addEventListener('click', () => {
+      loadJobAllocation(page, api);
+      loadQueueInfo(page, api);
+    });
   }
 
   // Auto-load on init
+  loadJobAllocation(page, api);
   loadQueueInfo(page, api);
 }
 
@@ -89,6 +70,66 @@ export function onNotification(data, page, api) {
 // ─────────────────────────────────────────────────────────────
 //  Internal functions
 // ─────────────────────────────────────────────────────────────
+
+async function loadJobAllocation(page, api) {
+  const area = page.querySelector('.qi-allocation-area');
+  if (!area) return;
+
+  try {
+    const data  = await api.fetch('job_allocation');
+    const alloc = data.allocation;
+    api.setJobAllocation(alloc ?? null);
+
+    if (alloc === null || alloc === undefined) {
+      area.innerHTML = `
+        <div class="card">
+          <div class="card-title">🖥️ Edge Node Allocation</div>
+          <p style="color:var(--muted)">Edge running on login node / head node — not inside a job allocation.</p>
+        </div>`;
+      return;
+    }
+
+    const runtime      = alloc.runtime != null ? formatDuration(alloc.runtime) : 'Unlimited';
+    const partition    = escHtml(alloc.partition  || '-');
+    const account      = escHtml(alloc.account    || '-');
+    const jobName      = escHtml(alloc.job_name   || '-');
+    const nodelistRaw  = alloc.nodelist || '-';
+    const nodelistDisp = nodelistRaw.includes(',')
+      ? nodelistRaw.slice(0, nodelistRaw.indexOf(',')) + ', …'
+      : nodelistRaw;
+    const nodelist     = escHtml(nodelistDisp);
+    const cpus         = alloc.cpus_per_node != null ? String(alloc.cpus_per_node) : '-';
+    const gpus         = alloc.gpus_per_node != null ? String(alloc.gpus_per_node) : '-';
+
+    area.innerHTML = `
+      <div class="card">
+        <div class="card-title">🖥️ Edge Node Allocation</div>
+        <table>
+          <thead><tr>
+            <th>Job ID</th><th>Partition</th><th>Nodes</th><th>CPUs/Node</th><th>GPUs/Node</th>
+            <th>Walltime</th><th>Account</th><th>Job Name</th><th>Node List</th>
+          </tr></thead>
+          <tbody><tr>
+            <td><strong>${escHtml(alloc.job_id || '-')}</strong></td>
+            <td>${partition}</td>
+            <td>${escHtml(String(alloc.n_nodes))}</td>
+            <td>${escHtml(cpus)}</td>
+            <td>${escHtml(gpus)}</td>
+            <td>${escHtml(runtime)}</td>
+            <td>${account}</td>
+            <td>${jobName}</td>
+            <td>${nodelist}</td>
+          </tr></tbody>
+        </table>
+      </div>`;
+  } catch (e) {
+    area.innerHTML = `
+      <div class="card">
+        <div class="card-title">🖥️ Edge Node Allocation</div>
+        <p style="color:var(--danger)">Error: ${escHtml(e.message)}</p>
+      </div>`;
+  }
+}
 
 async function loadQueueInfo(page, api) {
   const content = page.querySelector('.queueinfo-content');
@@ -116,8 +157,11 @@ async function loadQueueInfo(page, api) {
         loadQueueJobs(api, sid, queue, btn);
       });
     });
+
+    // Load user's jobs into the inline table
+    loadMyJobs(content, api, sid);
   } catch (e) {
-    content.innerHTML = `<div class="card"><p style="color:var(--danger)">Error: ${api.escHtml(e.message)}</p></div>`;
+    content.innerHTML = `<div class="card"><p style="color:var(--danger)">Error: ${escHtml(e.message)}</p></div>`;
     api.flash('QueueInfo error: ' + e.message, false);
   }
 }
@@ -135,13 +179,14 @@ function renderQueueInfo(partitions, allocations, api, sid) {
       const name = p.name || p.partition || JSON.stringify(p).slice(0, 30);
       const state = p.state || p.avail || '-';
       const stateBadge = state.toLowerCase().includes('up') ? 'badge-green' : 'badge-orange';
+      const eName = escHtml(name);
       html += `<tr>
-        <td><strong>${name}</strong></td>
-        <td><span class="badge ${stateBadge}">${state}</span></td>
+        <td><strong>${eName}</strong></td>
+        <td><span class="badge ${stateBadge}">${escHtml(state)}</span></td>
         <td>${p.nodes || p.total_nodes || '-'}</td>
         <td>${p.cpus || p.total_cpus || '-'}</td>
         <td>${p.jobs || '-'}</td>
-        <td><button class="btn btn-secondary btn-sm" data-action="view-jobs" data-queue="${api.escHtml(name)}">View Jobs</button></td>
+        <td><button class="btn btn-secondary btn-sm" data-action="view-jobs" data-queue="${eName}">View Jobs</button></td>
       </tr>`;
     }
     html += '</tbody></table></div>';
@@ -153,10 +198,10 @@ function renderQueueInfo(partitions, allocations, api, sid) {
 
     for (const a of allocations) {
       html += `<tr>
-        <td><strong>${a.account || '-'}</strong></td>
-        <td>${a.user || '-'}</td>
+        <td><strong>${escHtml(a.account || '-')}</strong></td>
+        <td>${escHtml(a.user || '-')}</td>
         <td>${a.fairshare || '-'}</td>
-        <td><span class="badge badge-gray">${a.qos || '-'}</span></td>
+        <td><span class="badge badge-gray">${escHtml(a.qos || '-')}</span></td>
         <td>${a.max_jobs || '-'}</td>
       </tr>`;
     }
@@ -186,21 +231,22 @@ async function loadQueueJobs(api, sid, queue, btn) {
 
       let html = `<table>
         <thead><tr>
-          <th>Job ID</th><th>Name</th><th>User</th><th>State</th><th>Nodes</th><th>Time Used</th><th></th>
+          <th>Job ID</th><th>State</th><th>Name</th><th>User</th><th>Nodes</th><th>Time Used</th><th></th>
         </tr></thead><tbody>`;
 
       for (const j of jobs) {
         const jobId = j.job_id || j.id || '-';
         const st = j.state || j.job_state || '-';
         const badge = { 'RUNNING': 'badge-green', 'PENDING': 'badge-orange', 'COMPLETED': 'badge-blue', 'FAILED': 'badge-red' }[st] || 'badge-gray';
+        const eid = escHtml(jobId);
         const cancelBtn = CANCELLABLE.has(st)
-          ? `<button class="btn btn-danger btn-sm cancel-job-btn" data-job-id="${jobId}" title="Cancel job ${jobId}">✕</button>`
+          ? `<button class="task-cancel-btn cancel-job-btn" data-job-id="${eid}" title="Cancel job ${eid}">❌</button>`
           : '';
-        html += `<tr class="job-row" data-job-id="${jobId}">
-          <td><strong>${jobId}</strong></td>
-          <td>${j.job_name || j.name || '-'}</td>
-          <td>${j.user || j.user_name || '-'}</td>
-          <td><span class="badge ${badge}">${st}</span></td>
+        html += `<tr class="qi-job-row" data-job-id="${eid}">
+          <td><strong>${eid}</strong></td>
+          <td><span class="badge ${badge}">${escHtml(st)}</span></td>
+          <td>${escHtml(j.job_name || j.name || '-')}</td>
+          <td>${escHtml(j.user || j.user_name || '-')}</td>
           <td>${j.nodes || j.num_nodes || '-'}</td>
           <td>${formatDuration(j.time_used)}</td>
           <td>${cancelBtn}</td>
@@ -213,12 +259,11 @@ async function loadQueueJobs(api, sid, queue, btn) {
 
     api.showOverlay(title, body);
 
-    // Bind job row clicks
-    document.querySelectorAll('.job-row').forEach(row => {
+    // Bind job row clicks — use dataset (already escaped on write)
+    document.querySelectorAll('.qi-job-row').forEach(row => {
       row.addEventListener('click', (e) => {
         if (e.target.closest('.cancel-job-btn')) return;
-        const jobId = row.dataset.jobId;
-        showJobDetail(jobId);
+        showJobDetail(row.dataset.jobId);
       });
     });
 
@@ -237,7 +282,7 @@ async function loadQueueJobs(api, sid, queue, btn) {
         } catch (err) {
           api.flash('Cancel failed: ' + err.message, false);
           cancelBtn.disabled = false;
-          cancelBtn.textContent = '✕';
+          cancelBtn.textContent = '❌';
         }
       });
     });
@@ -261,27 +306,27 @@ function showJobDetail(jobId) {
   const badge = { 'RUNNING': 'badge-green', 'PENDING': 'badge-orange', 'COMPLETED': 'badge-blue', 'FAILED': 'badge-red' }[st] || 'badge-gray';
 
   detailPanel.innerHTML = `
-    <h4>📋 Job Details: ${job.job_id || job.id || '-'}</h4>
+    <h4>📋 Job Details: ${escHtml(job.job_id || job.id || '-')}</h4>
     <div class="job-detail-grid">
       <div class="job-detail-item">
         <span class="label">Job Name</span>
-        <span class="value">${job.job_name || job.name || '-'}</span>
+        <span class="value">${escHtml(job.job_name || job.name || '-')}</span>
       </div>
       <div class="job-detail-item">
         <span class="label">State</span>
-        <span class="value"><span class="badge ${badge}">${st}</span></span>
+        <span class="value"><span class="badge ${badge}">${escHtml(st)}</span></span>
       </div>
       <div class="job-detail-item">
         <span class="label">User</span>
-        <span class="value">${job.user || job.user_name || '-'}</span>
+        <span class="value">${escHtml(job.user || job.user_name || '-')}</span>
       </div>
       <div class="job-detail-item">
         <span class="label">Partition</span>
-        <span class="value">${job.partition || '-'}</span>
+        <span class="value">${escHtml(job.partition || '-')}</span>
       </div>
       <div class="job-detail-item">
         <span class="label">Account</span>
-        <span class="value">${job.account || '-'}</span>
+        <span class="value">${escHtml(job.account || '-')}</span>
       </div>
       <div class="job-detail-item">
         <span class="label">Nodes</span>
@@ -293,7 +338,7 @@ function showJobDetail(jobId) {
       </div>
       <div class="job-detail-item">
         <span class="label">Node List</span>
-        <span class="value">${job.node_list || '-'}</span>
+        <span class="value">${escHtml(job.node_list || '-')}</span>
       </div>
       <div class="job-detail-item">
         <span class="label">Submit Time</span>
@@ -320,9 +365,154 @@ function showJobDetail(jobId) {
   detailPanel.style.display = 'block';
 
   // Highlight selected row
-  document.querySelectorAll('.job-row').forEach(r => r.classList.remove('selected'));
-  const selectedRow = document.querySelector(`.job-row[data-job-id="${jobId}"]`);
+  document.querySelectorAll('.qi-job-row').forEach(r => r.classList.remove('selected'));
+  const selectedRow = document.querySelector(`.qi-job-row[data-job-id="${CSS.escape(jobId)}"]`);
   if (selectedRow) selectedRow.classList.add('selected');
+}
+
+async function loadMyJobs(content, api, sid) {
+  const area = content.querySelector('#qi-jobs-area');
+  if (!area) return;
+
+  area.innerHTML = '<div class="card"><div class="card-title">👤 Jobs</div><div class="empty"><div class="spinner"></div><p style="margin-top:10px">Loading…</p></div></div>';
+
+  try {
+    const data = await api.fetch(`list_all_jobs/${sid}?force=true`);
+    const jobs = data.jobs || [];
+    myJobsData = jobs;
+
+    if (!jobs.length) {
+      area.innerHTML = '<div class="card"><div class="card-title">👤 Jobs</div><p style="color:var(--muted)">No active jobs.</p></div>';
+      return;
+    }
+
+    const CANCELLABLE = new Set(['RUNNING', 'PENDING', 'CONFIGURING', 'SUSPENDED']);
+    let html = `<div class="card"><div class="card-title">👤 Jobs</div>
+      <table>
+        <thead><tr>
+          <th>Job ID</th><th>State</th><th>Name</th><th>Partition</th><th>Nodes</th><th>Time Used</th><th></th>
+        </tr></thead><tbody>`;
+
+    for (const j of jobs) {
+      const jobId = j.job_id || j.id || '-';
+      const eid = escHtml(jobId);
+      const st = j.state || j.job_state || '-';
+      const badge = { 'RUNNING': 'badge-green', 'PENDING': 'badge-orange', 'COMPLETED': 'badge-blue', 'FAILED': 'badge-red' }[st] || 'badge-gray';
+      const cancelBtn = CANCELLABLE.has(st)
+        ? `<button class="task-cancel-btn my-cancel-job-btn" data-job-id="${eid}" title="Cancel job ${eid}">❌</button>`
+        : '';
+      html += `<tr class="qi-job-row qi-my-job-row" data-job-id="${eid}">
+        <td><strong>${eid}</strong></td>
+        <td><span class="badge ${badge}">${escHtml(st)}</span></td>
+        <td>${escHtml(j.job_name || j.name || '-')}</td>
+        <td>${escHtml(j.partition || '-')}</td>
+        <td>${j.nodes || j.num_nodes || '-'}</td>
+        <td>${formatDuration(j.time_used)}</td>
+        <td>${cancelBtn}</td>
+      </tr>`;
+    }
+    html += '</tbody></table></div>';
+    area.innerHTML = html;
+
+    // Bind row clicks to show detail overlay
+    area.querySelectorAll('.qi-my-job-row').forEach(row => {
+      row.addEventListener('click', (e) => {
+        if (e.target.closest('.my-cancel-job-btn')) return;
+        const jobId = row.dataset.jobId;
+        showJobDetailOverlay(jobId, api);
+      });
+    });
+
+    // Bind cancel buttons
+    area.querySelectorAll('.my-cancel-job-btn').forEach(cancelBtn => {
+      cancelBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const jobId = cancelBtn.dataset.jobId;
+        cancelBtn.disabled = true;
+        cancelBtn.textContent = '…';
+        try {
+          await api.fetch(`cancel/${sid}/${encodeURIComponent(jobId)}`, { method: 'POST' });
+          api.flash(`Job ${jobId} canceled`);
+          cancelBtn.closest('tr').querySelector('.badge').textContent = 'CANCELED';
+          cancelBtn.remove();
+        } catch (err) {
+          api.flash('Cancel failed: ' + err.message, false);
+          cancelBtn.disabled = false;
+          cancelBtn.textContent = '❌';
+        }
+      });
+    });
+
+  } catch (e) {
+    area.innerHTML = `<div class="card"><div class="card-title">👤 Jobs</div><p style="color:var(--danger)">Error: ${escHtml(e.message)}</p></div>`;
+  }
+}
+
+function showJobDetailOverlay(jobId, api) {
+  const job = myJobsData.find(j => (j.job_id || j.id) === jobId);
+  if (!job) return;
+
+  const st = job.state || job.job_state || '-';
+  const badge = { 'RUNNING': 'badge-green', 'PENDING': 'badge-orange', 'COMPLETED': 'badge-blue', 'FAILED': 'badge-red' }[st] || 'badge-gray';
+
+  const body = `
+    <div class="job-detail-grid">
+      <div class="job-detail-item">
+        <span class="label">Job Name</span>
+        <span class="value">${escHtml(job.job_name || job.name || '-')}</span>
+      </div>
+      <div class="job-detail-item">
+        <span class="label">State</span>
+        <span class="value"><span class="badge ${badge}">${escHtml(st)}</span></span>
+      </div>
+      <div class="job-detail-item">
+        <span class="label">User</span>
+        <span class="value">${escHtml(job.user || job.user_name || '-')}</span>
+      </div>
+      <div class="job-detail-item">
+        <span class="label">Partition</span>
+        <span class="value">${escHtml(job.partition || '-')}</span>
+      </div>
+      <div class="job-detail-item">
+        <span class="label">Account</span>
+        <span class="value">${escHtml(job.account || '-')}</span>
+      </div>
+      <div class="job-detail-item">
+        <span class="label">Nodes</span>
+        <span class="value">${job.nodes || job.num_nodes || '-'}</span>
+      </div>
+      <div class="job-detail-item">
+        <span class="label">CPUs</span>
+        <span class="value">${job.cpus || '-'}</span>
+      </div>
+      <div class="job-detail-item">
+        <span class="label">Node List</span>
+        <span class="value">${escHtml(job.node_list || '-')}</span>
+      </div>
+      <div class="job-detail-item">
+        <span class="label">Submit Time</span>
+        <span class="value">${formatTimestamp(job.submit_time)}</span>
+      </div>
+      <div class="job-detail-item">
+        <span class="label">Start Time</span>
+        <span class="value">${formatTimestamp(job.start_time)}</span>
+      </div>
+      <div class="job-detail-item">
+        <span class="label">Time Limit</span>
+        <span class="value">${job.time_limit ? formatDuration(job.time_limit * 60) : '-'}</span>
+      </div>
+      <div class="job-detail-item">
+        <span class="label">Time Used</span>
+        <span class="value">${formatDuration(job.time_used)}</span>
+      </div>
+      <div class="job-detail-item">
+        <span class="label">Priority</span>
+        <span class="value">${job.priority || '-'}</span>
+      </div>
+    </div>
+  `;
+
+  api.showOverlay(`📋 Job Details: ${escHtml(job.job_id || job.id || '-')}`, body);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -345,3 +535,4 @@ function formatDuration(seconds) {
   if (m > 0) return `${m}m ${s}s`;
   return `${s}s`;
 }
+

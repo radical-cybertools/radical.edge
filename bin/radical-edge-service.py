@@ -7,8 +7,9 @@ import signal
 import sys
 
 import argparse
+
 from radical.edge.service import EdgeService
-import radical.edge.logging_config  # noqa: F401 # pylint: disable=unused-import, W0611
+import radical.edge.logging_config as _lc
 
 
 log = logging.getLogger("radical.edge")
@@ -52,23 +53,35 @@ async def main():
     Main entry point for the standalone Radical Edge Service.
     """
     parser = argparse.ArgumentParser(description="Radical Edge Service")
-    parser.add_argument("--name",    "-n", nargs="?", help="Edge name")
-    parser.add_argument("--url",     "-u", nargs="?", help="Bridge URL")
-    parser.add_argument("--plugins", "-p", default="all",
+    parser.add_argument("--name",      "-n", nargs="?", help="Edge name")
+    parser.add_argument("--url",       "-u", nargs="?", help="Bridge URL")
+    parser.add_argument("--plugins",   "-p", default="all",
                         help="Comma-separated plugins to load (default: all). "
                              "Prefix matching supported: 'sys'→sysinfo, "
                              "'q'→queue_info, 'ro'→rose, etc.")
+    parser.add_argument("--log-level", "-l",
+                        default=os.environ.get("RADICAL_EDGE_LOG_LEVEL", "INFO"),
+                        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+                        help="Log level (default: INFO; env: RADICAL_EDGE_LOG_LEVEL)")
+    parser.add_argument("--tunnel", action="store_true",
+                        help="Wait for a reverse SSH tunnel port file before connecting to bridge. "
+                             "Port file path: ~/.radical/edge/tunnels/<name>.port")
 
     args = parser.parse_args()
+
+    # Apply log level before anything else
+    level = getattr(logging, args.log_level.upper(), logging.INFO)
+    _lc.configure_logging(level)
+    log.info("Log level: %s", args.log_level.upper())
 
     edge_name = args.name
     edge_url  = args.url or os.environ.get("RADICAL_BRIDGE_URL", "https://localhost:8000")
     plugins   = [t.strip() for t in args.plugins.split(',') if t.strip()]
 
-    # Validate SSL certificate before connecting
     validate_ssl_cert(edge_url)
 
-    service = EdgeService(bridge_url=edge_url, name=edge_name, plugins=plugins)
+    service = EdgeService(bridge_url=edge_url, name=edge_name, plugins=plugins,
+                          tunnel=args.tunnel)
     loop = asyncio.get_running_loop()
     stop_event = asyncio.Event()
 
@@ -86,7 +99,7 @@ async def main():
         await service.run()
     except asyncio.CancelledError:
         log.info("Service cancelled")
-    except Exception:
+    except Exception as _e:
         log.exception("Service crashed")
         sys.exit(1)
     finally:
@@ -98,4 +111,3 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         pass
-

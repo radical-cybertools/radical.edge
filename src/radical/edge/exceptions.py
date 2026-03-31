@@ -148,7 +148,5 @@ def exception_to_http_status(exc: Exception) -> int:
         return 503
     elif isinstance(exc, EdgeDisconnectedError):
         return 503
-    elif isinstance(exc, EdgeError):
-        return 500
     else:
-        return 500
+        return 500  # includes EdgeError and any unexpected exception type

@@ -27,8 +27,35 @@ class StagingSession(PluginSession):
     Provides methods to transfer files between client and edge filesystems.
     """
 
+    # Allowed base directories for file operations (resolved via realpath).
+    # All requested paths must reside under one of these.
+    _ALLOWED_BASES = [
+        os.path.realpath(os.path.expanduser('~')),
+        os.path.realpath('/tmp'),
+    ]
+
     def __init__(self, sid: str):
         super().__init__(sid)
+
+    def _validate_path(self, path: str) -> str:
+        """Validate that path is absolute (or starts with ~) and within an
+        allowed base directory.
+
+        Returns the resolved (real) path.
+
+        Raises:
+            ValueError: If path is not absolute or escapes allowed directories.
+        """
+        path = os.path.expanduser(path)
+        if not os.path.isabs(path):
+            raise ValueError(f"Path must be absolute (or use ~): {path}")
+        resolved = os.path.realpath(path)
+        for base in self._ALLOWED_BASES:
+            if resolved == base or resolved.startswith(base + os.sep):
+                return resolved
+        raise ValueError(
+            f"Path escapes allowed directories: {path} "
+            f"(resolves to {resolved})")
 
     def _ensure_parent_dirs(self, path: str) -> None:
         """Create parent directories if they don't exist."""
@@ -48,7 +75,7 @@ class StagingSession(PluginSession):
         Write file content to the remote filesystem.
 
         Args:
-            filename: Absolute path on the edge filesystem
+            filename: Absolute path (or ~/...) on the edge filesystem
             content_b64: File content as base64-encoded string
             overwrite: If True, replace an existing file silently
 
@@ -61,9 +88,8 @@ class StagingSession(PluginSession):
         """
         self._check_active()
 
-        # Validate absolute path
-        if not os.path.isabs(filename):
-            raise ValueError(f"Path must be absolute: {filename}")
+        # Validate path is absolute and within allowed directories
+        filename = self._validate_path(filename)
 
         # Check target doesn't exist (unless overwrite requested)
         if not overwrite:
@@ -87,7 +113,7 @@ class StagingSession(PluginSession):
         Read file content from the remote filesystem.
 
         Args:
-            filename: Absolute path on the edge filesystem
+            filename: Absolute path (or ~/...) on the edge filesystem
 
         Returns:
             {"path": str, "size": int, "content": str (base64-encoded)}
@@ -98,9 +124,8 @@ class StagingSession(PluginSession):
         """
         self._check_active()
 
-        # Validate absolute path
-        if not os.path.isabs(filename):
-            raise ValueError(f"Path must be absolute: {filename}")
+        # Validate path is absolute and within allowed directories
+        filename = self._validate_path(filename)
 
         # Check file exists
         if not os.path.exists(filename):
@@ -124,7 +149,7 @@ class StagingSession(PluginSession):
         List contents of a directory on the remote filesystem.
 
         Args:
-            path: Absolute path to the directory
+            path: Absolute path (or ~/...) to the directory
 
         Returns:
             {
@@ -141,9 +166,8 @@ class StagingSession(PluginSession):
         """
         self._check_active()
 
-        # Validate absolute path
-        if not os.path.isabs(path):
-            raise ValueError(f"Path must be absolute: {path}")
+        # Validate path is absolute and within allowed directories
+        path = self._validate_path(path)
 
         # Check path exists
         if not os.path.exists(path):
@@ -193,7 +217,7 @@ class StagingClient(PluginClient):
 
         Args:
             src: Absolute path on the local (client) filesystem
-            tgt: Absolute path on the remote (edge) filesystem
+            tgt: Absolute path (or ~/...) on the remote (edge) filesystem
             overwrite: If True, replace an existing remote file silently
 
         Returns:
@@ -204,8 +228,7 @@ class StagingClient(PluginClient):
             FileExistsError: If remote target file already exists and overwrite is False
             RuntimeError: If no active session
         """
-        if not self.sid:
-            raise RuntimeError("No active session")
+        self._require_session()
 
         # Validate local source exists
         if not os.path.exists(src):
@@ -239,7 +262,7 @@ class StagingClient(PluginClient):
         Download a remote file to the local client filesystem.
 
         Args:
-            src: Absolute path on the remote (edge) filesystem
+            src: Absolute path (or ~/...) on the remote (edge) filesystem
             tgt: Absolute path on the local (client) filesystem
 
         Returns:
@@ -250,8 +273,7 @@ class StagingClient(PluginClient):
             FileExistsError: If local target file already exists (client-side)
             RuntimeError: If no active session
         """
-        if not self.sid:
-            raise RuntimeError("No active session")
+        self._require_session()
 
         # Check local target doesn't exist
         if os.path.exists(tgt):
@@ -285,7 +307,7 @@ class StagingClient(PluginClient):
         List contents of a directory on the remote edge filesystem.
 
         Args:
-            path: Absolute path on the remote (edge) filesystem
+            path: Absolute path (or ~/...) on the remote (edge) filesystem
 
         Returns:
             {
@@ -300,8 +322,7 @@ class StagingClient(PluginClient):
             NotADirectoryError: If path is not a directory
             RuntimeError: If no active session
         """
-        if not self.sid:
-            raise RuntimeError("No active session")
+        self._require_session()
 
         url = self._url(f"list/{self.sid}")
         resp = self._http.post(url, json={"path": path})
@@ -349,8 +370,6 @@ class PluginStaging(Plugin):
         self.add_route_post('put/{sid}', self.put_endpoint)
         self.add_route_post('get/{sid}', self.get_endpoint)
         self.add_route_post('list/{sid}', self.list_endpoint)
-
-        self._log_routes()
 
     async def put_endpoint(self, request: Request) -> JSONResponse:
         """

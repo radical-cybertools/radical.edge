@@ -171,25 +171,6 @@ async def test_lucid_session_task_wait(mock_rp):
     assert result["task"]["state"] == "DONE"
 
 
-@pytest.mark.asyncio
-@patch('radical.edge.plugin_lucid.rp')
-async def test_lucid_session_echo(mock_rp):
-    '''
-    Test echo functionality.
-    '''
-    mock_rp.Session.return_value = Mock()
-    mock_rp.PilotManager.return_value = Mock()
-    mock_rp.TaskManager.return_value = Mock()
-
-    session = LucidSession("test_session_001")
-
-    result = await session.request_echo("test message")
-
-    assert result["sid"] == "test_session_001"
-    assert result["echo"] == "test message"
-
-
-
 @patch('radical.edge.plugin_lucid.rp')
 def test_plugin_lucid_initialization(mock_rp):
     '''
@@ -200,8 +181,6 @@ def test_plugin_lucid_initialization(mock_rp):
 
     assert plugin._instance_name == "lucid"
     assert plugin._sessions == {}
-    assert plugin._id_lock is not None
-
     # Check that routes were added
     route_paths = [route.path for route in app.router.routes]
     assert any("register_session" in path for path in route_paths)
@@ -209,7 +188,7 @@ def test_plugin_lucid_initialization(mock_rp):
     assert any("pilot_submit" in path for path in route_paths)
     assert any("task_submit" in path for path in route_paths)
     assert any("task_wait" in path for path in route_paths)
-    assert any("echo" in path for path in route_paths)
+    assert any("version" in path for path in route_paths)
 
 
 @pytest.mark.asyncio
@@ -263,36 +242,6 @@ async def test_plugin_lucid_unregister_session(mock_rp):
 
     assert isinstance(response, JSONResponse)
     assert sid not in plugin._sessions
-
-
-@pytest.mark.asyncio
-@patch('radical.edge.plugin_lucid.rp')
-async def test_plugin_lucid_echo(mock_rp):
-    '''
-    Test echo endpoint.
-    '''
-    mock_rp.Session.return_value = Mock()
-    mock_rp.PilotManager.return_value = Mock()
-    mock_rp.TaskManager.return_value = Mock()
-
-    app = FastAPI()
-    plugin = PluginLucid(app)
-
-    # Register a session
-    request = Mock(spec=Request)
-    response = await plugin.register_session(request)
-    import json
-    sid = json.loads(response.body)['sid']
-
-    # Echo request
-    request.path_params = {"sid": sid}
-    request.query_params = {"q": "test"}
-    
-    response = await plugin.echo(request)
-
-    assert isinstance(response, JSONResponse)
-    data = json.loads(response.body)
-    assert data["echo"] == "test"
 
 
 @pytest.mark.asyncio
@@ -381,12 +330,10 @@ async def test_plugin_lucid_unknown_session_error(mock_rp):
     app = FastAPI()
     plugin = PluginLucid(app)
 
-    request = Mock(spec=Request)
-    request.path_params = {"sid": "unknown_session"}
-    request.query_params = {}
+    from radical.edge.plugin_session_base import PluginSession
 
     with pytest.raises(HTTPException) as exc_info:
-        await plugin.echo(request)
+        await plugin._forward("unknown_session", PluginSession.close)
 
     assert exc_info.value.status_code == 404
 

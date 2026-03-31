@@ -1,4 +1,5 @@
 
+import getpass
 import os
 import re
 import json
@@ -14,6 +15,21 @@ _UNAVAIL_STATES = {'DOWN',    'DRAIN',   'DRAINING',
                    'FAIL',    'FAILING', 'MAINT',
                    'FUTURE',  'POWER_DOWN', 'POWERED_DOWN',
                    'NOT_RESPONDING', 'REBOOT_ISSUED'}
+
+
+def _resolve_user(user):
+    """
+    Normalise the user argument used throughout QueueInfo public methods.
+
+    - ``None``  → current OS user (default: self)
+    - ``'*'``   → ``None`` (no filter; admin / all-users view)
+    - anything else → returned unchanged
+    """
+    if user is None:
+        return getpass.getuser()
+    if user == '*':
+        return None
+    return user
 
 
 def _unwrap(obj):
@@ -83,7 +99,7 @@ class QueueInfo(ABC):
     configurable TTL.
     """
 
-    _cache_ttl = 3600   # class attribute — 1-hour default, tweakable
+    _cache_ttl = 60     # class attribute — 60-second default, tweakable
 
     def __init__(self):
 
@@ -93,23 +109,25 @@ class QueueInfo(ABC):
 
     def start_prefetch(self):
         """
-        Start a background thread to prefetch queue info and allocations.
-
-        This lazily fills the cache so later queries are faster.
+        Start background threads to prefetch queue info and allocations in
+        parallel so both caches are warm as quickly as possible.
         """
-        def _prefetch():
-            import getpass
-            user = getpass.getuser()
+        user = getpass.getuser()
+
+        def _fetch_info():
             try:
-                # Prefetch queue info for current user
                 self.get_info(user=user)
-                # Prefetch allocations for current user
+            except Exception:
+                pass
+
+        def _fetch_alloc():
+            try:
                 self.list_allocations(user=user)
             except Exception:
-                pass  # Silently ignore prefetch failures
+                pass
 
-        thread = threading.Thread(target=_prefetch, daemon=True)
-        thread.start()
+        threading.Thread(target=_fetch_info,  daemon=True).start()
+        threading.Thread(target=_fetch_alloc, daemon=True).start()
 
 
     def _get_cached(self, key, force, collector, *args):
@@ -150,12 +168,7 @@ class QueueInfo(ABC):
         Returns:
             dict: {"queues": {<partition_name>: {...}, ...}}
         """
-        if user is None:
-            import getpass
-            user = getpass.getuser()
-        elif user == '*':
-            user = None
-
+        user = _resolve_user(user)
         key = f'info:{user}'
         return self._get_cached(key, force, self._collect_info_filtered, user)
 
@@ -174,14 +187,27 @@ class QueueInfo(ABC):
         Returns:
             dict: {"jobs": [<job_dict>, ...]}
         """
-        if user is None:
-            import getpass
-            user = getpass.getuser()
-        elif user == '*':
-            user = None
-
+        user = _resolve_user(user)
         key = f'jobs:{queue}:{user}'
         return self._get_cached(key, force, self._collect_jobs, queue, user)
+
+
+    def list_all_jobs(self, user=None, force=False):
+        """
+        List all jobs for a user across all partitions.
+
+        Args:
+            user (str): User to filter jobs for. When None (default),
+                defaults to the current user. Pass user='*' to return all
+                jobs.
+            force (bool): Bypass cache if True.
+
+        Returns:
+            dict: {"jobs": [<job_dict>, ...]}
+        """
+        user = _resolve_user(user)
+        key = f'all_jobs:{user}'
+        return self._get_cached(key, force, self._collect_all_user_jobs, user)
 
 
     def list_allocations(self, user=None, force=False):
@@ -190,12 +216,7 @@ class QueueInfo(ABC):
         When user=None, defaults to the current user. To return all
         rows, pass user='*'.
         """
-        if user is None:
-            import getpass
-            user = getpass.getuser()
-        elif user == '*':
-            user = None
-
+        user = _resolve_user(user)
         key = f'alloc:{user}'
         return self._get_cached(key, force, self._collect_allocations, user)
 
@@ -273,11 +294,51 @@ class QueueInfoSlurm(QueueInfo):
             self._env['SLURM_CONF'] = slurm_conf
 
 
+    @staticmethod
+    def get_job_nodes(native_id: str, env: 'dict | None' = None) -> list:
+        """Return hostnames of nodes allocated to a running SLURM job.
+
+        Args:
+            native_id: SLURM job ID (string or int).
+            env:       Environment dict (e.g. with SLURM_CONF).
+                       Defaults to inheriting the current environment.
+
+        Returns:
+            List of hostname strings, or empty list if not determinable.
+        """
+        try:
+            r = subprocess.run(
+                ['squeue', '--job', str(native_id), '--noheader', '--format=%N'],
+                capture_output=True, text=True, timeout=10, env=env)
+        except (OSError, subprocess.TimeoutExpired):
+            return []
+
+        nodelist = r.stdout.strip()
+        if r.returncode != 0 or not nodelist:
+            return []
+
+        try:
+            r2 = subprocess.run(
+                ['scontrol', 'show', 'hostnames', nodelist],
+                capture_output=True, text=True, timeout=10, env=env)
+            if r2.returncode == 0 and r2.stdout.strip():
+                return [h.strip() for h in r2.stdout.splitlines() if h.strip()]
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+        return []
+
+
     def _run(self, cmd):
         """Run a subprocess with self._env, return stdout."""
 
-        result = subprocess.run(cmd, capture_output=True, text=True,
-                                timeout=60, env=self._env, check=True)
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True,
+                                    timeout=60, env=self._env, check=True)
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(
+                f"Command {cmd} failed (rc={e.returncode}): "
+                f"{e.stderr.strip()}") from e
         return result.stdout
 
 
@@ -367,36 +428,20 @@ class QueueInfoSlurm(QueueInfo):
         return {'queues': partitions}
 
 
-    def _collect_jobs(self, queue, user):
+    @staticmethod
+    def _parse_squeue_jobs(jobs):
         """
-        Collect job list via squeue --json.
+        Convert a list of raw squeue JSON job objects to normalised dicts.
 
-        Args:
-          queue (str): Partition name to filter on.
-          user (str): Optional user name for server-side filtering.
-
-        Returns:
-          dict: {"jobs": [<job_dict>, ...]}
+        Shared by _collect_jobs and _collect_all_user_jobs.
         """
-
-        cmd = ['squeue', '--json', '-p', queue]
-        if user:
-            cmd.extend(['--user', user])
-
-        stdout = self._run(cmd)
-        jobs   = json.loads(stdout).get('jobs', [])
-
         now    = time.time()
         result = []
         for job in jobs:
-
             start = _unwrap(job.get('start_time', {})) or 0
             state = (job.get('job_state', ['UNKNOWN']) or ['UNKNOWN'])[0]
 
-            if state == 'RUNNING' and start > 0:
-                time_used = int(now - start)
-            else:
-                time_used = 0
+            time_used = int(now - start) if (state == 'RUNNING' and start > 0) else 0
 
             result.append({
                 'job_id'     : str(job.get('job_id', '')),
@@ -414,8 +459,42 @@ class QueueInfoSlurm(QueueInfo):
                 'account'    : job.get('account', ''),
                 'node_list'  : job.get('nodes', ''),
             })
+        return result
 
-        return {'jobs': result}
+    def _collect_jobs(self, queue, user):
+        """
+        Collect job list via squeue --json.
+
+        Args:
+          queue (str): Partition name to filter on.
+          user (str): Optional user name for server-side filtering.
+
+        Returns:
+          dict: {"jobs": [<job_dict>, ...]}
+        """
+        cmd = ['squeue', '--json', '-p', queue]
+        if user:
+            cmd.extend(['--user', user])
+        stdout = self._run(cmd)
+        jobs   = json.loads(stdout).get('jobs', [])
+        return {'jobs': self._parse_squeue_jobs(jobs)}
+
+    def _collect_all_user_jobs(self, user):
+        """
+        Collect all jobs for a user across all partitions via squeue --json.
+
+        Args:
+          user (str): Optional user name for server-side filtering.
+
+        Returns:
+          dict: {"jobs": [<job_dict>, ...]}
+        """
+        cmd = ['squeue', '--json']
+        if user:
+            cmd.extend(['--user', user])
+        stdout = self._run(cmd)
+        jobs   = json.loads(stdout).get('jobs', [])
+        return {'jobs': self._parse_squeue_jobs(jobs)}
 
 
     def _collect_allocations(self, user):

@@ -6,6 +6,9 @@
 
 export const name = 'staging';
 
+// Shared with api.escHtml — set in init()
+let escHtml = s => String(s || '');  // safe fallback until init()
+
 export function template() {
   return `
     <div class="page-header">
@@ -78,6 +81,8 @@ export function css() {
 }
 
 export function init(page, api) {
+  escHtml = api.escHtml;
+
   // Bind browse button
   page.querySelector('[data-action="browse"]')?.addEventListener('click', () => navigate(page, api));
 
@@ -348,7 +353,3 @@ function formatBytes(bytes) {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
 }
 
-function escHtml(s) {
-  if (!s) return '';
-  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}

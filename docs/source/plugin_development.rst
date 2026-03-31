@@ -5,9 +5,9 @@ Plugin Development Guide
 Overview
 ========
 
-The Radical Edge plugin system provides a standardized framework for creating
-plugins that manage multiple client sessions. This guide explains how to create
-new plugins using the provided base classes.
+The Radical Edge plugin system lets you extend edge nodes with
+domain-specific functionality.  Each plugin gets its own URL namespace,
+session management, and notification support out of the box.
 
 Architecture
 ============
@@ -15,278 +15,516 @@ Architecture
 Base Classes
 ------------
 
-The plugin system provides two main base classes:
+The plugin system provides three base classes:
 
-1. **PluginClient** - Base class for client implementations
+1. **Plugin** (``plugin_base.py``) — Server-side plugin registered on the edge.
 
-   - Manages client ID and session state
-   - Provides echo service for testing
-   - Handles session validation
+   - Manages sessions, routes, and notifications
+   - Auto-registers via ``plugin_name`` class attribute
+   - Provides ``add_route_post()`` / ``add_route_get()`` helpers
+   - Forwards requests to sessions via ``_forward()``
 
-2. **ClientManagedPlugin** - Base class for plugins
+2. **PluginSession** (``plugin_session_base.py``) — Per-client session state.
 
-   - Manages multiple client instances
-   - Handles client registration/unregistration
-   - Provides request forwarding with error handling
-   - Auto-generates unique client IDs
+   - Created when a client calls ``register_session``
+   - Holds domain-specific state (jobs, tasks, connections)
+   - Sends notifications via ``self._notify(topic, data)``
+
+3. **PluginClient** (``client.py``) — Application-side client helper.
+
+   - Wraps HTTP calls to the bridge/edge REST API
+   - Manages session registration and lifecycle
+   - Optional: only needed for Python client usage
 
 Inheritance Hierarchy
 ---------------------
 
 .. code-block:: text
 
-    Plugin (base)
-      └── ClientManagedPlugin
-            ├── PluginLucid
-            ├── PluginXGFabric
-            └── PluginQueueInfo
+    Plugin (server-side)
+      ├── PluginSysinfo
+      ├── PluginPSIJ
+      ├── PluginRhapsody
+      ├── PluginQueueInfo
+      ├── PluginLucid
+      └── PluginXGFabric
+
+    PluginSession (server-side)
+      ├── SysinfoSession
+      ├── PSIJSession
+      ├── RhapsodySession
+      ├── QueueInfoSession
+      └── ...
+
+    PluginClient (client-side)
+      ├── PSIJClient
+      ├── RhapsodyClient
+      ├── QueueInfoClient
+      └── ...
 
 Creating a New Plugin
 =====================
 
-Step 1: Define Your Client Class
----------------------------------
+Step 1: Define Your Session Class
+----------------------------------
 
-Create a client class that inherits from ``PluginClient``:
+Create a session class that inherits from ``PluginSession``:
 
 .. code-block:: python
 
-    from radical.edge.plugin_client_base import PluginClient
+    from radical.edge.plugin_session_base import PluginSession
 
-    class MyServiceClient(PluginClient):
-        """Client for MyService."""
+    class MySession(PluginSession):
+        """Server-side session for MyPlugin."""
 
-        def __init__(self, cid: str):
-            super().__init__(cid)
-            # Initialize your service connection
-            self._connection = MyServiceConnection()
+        def __init__(self, sid: str):
+            super().__init__(sid)
+            self._data = {}  # Per-session state
+
+        async def do_work(self, param: str) -> dict:
+            """Perform a domain-specific operation."""
+            self._check_active()
+            result = f"processed: {param}"
+            self._data[param] = result
+
+            # Send real-time notification to clients
+            if self._notify:
+                self._notify("work_status", {
+                    "param": param,
+                    "status": "done"
+                })
+
+            return {"result": result}
 
         async def close(self) -> dict:
-            """Close service connection."""
-            await self._connection.close()
+            """Clean up session resources."""
+            self._data = {}
             return await super().close()
-
-        async def my_operation(self, param: str) -> dict:
-            """Perform a service-specific operation."""
-            self._check_active()  # Validate session is open
-            result = await self._connection.do_something(param)
-            return {"result": result}
 
 **Key Points:**
 
-- Call ``super().__init__(cid)`` to initialize base functionality
-- Use ``self._check_active()`` to validate session state before operations
+- Call ``super().__init__(sid)`` to initialize base functionality
+- Use ``self._check_active()`` to validate session is open
+- Use ``self._notify(topic, data)`` for real-time notifications
 - Call ``await super().close()`` in your close method
-- Inherited methods: ``request_echo()``, ``_check_active()``
 
 Step 2: Define Your Plugin Class
 ---------------------------------
 
-Create a plugin class that inherits from ``ClientManagedPlugin``:
+Create a plugin class that inherits from ``Plugin``:
 
 .. code-block:: python
 
-    from fastapi import FastAPI
-    from starlette.requests import Request
+    from fastapi import FastAPI, Request
     from starlette.responses import JSONResponse
+    from radical.edge.plugin_base import Plugin
 
-    from radical.edge.plugin_client_managed import ClientManagedPlugin
-
-    class PluginMyService(ClientManagedPlugin):
+    class PluginMyService(Plugin):
         """MyService plugin for Radical Edge."""
 
-        client_class = MyServiceClient  # Required!
+        plugin_name   = "myservice"     # URL namespace and registry key
+        session_class = MySession       # Required!
+        version       = '0.1.0'
 
-        def __init__(self, app: FastAPI):
-            super().__init__(app, 'myservice')
+        def __init__(self, app: FastAPI, instance_name: str = "myservice"):
+            super().__init__(app, instance_name)
 
             # Add plugin-specific routes
-            self.add_route_post('my_operation/{cid}', self.my_operation)
+            self.add_route_post('do_work/{sid}', self.do_work)
 
-            # Log all routes for debugging
-            self._log_routes()
-
-        async def my_operation(self, request: Request) -> JSONResponse:
-            """Perform my operation."""
-            cid = request.path_params['cid']
+        async def do_work(self, request: Request) -> JSONResponse:
+            """Route handler — forwards to session method."""
+            sid  = request.path_params['sid']
             data = await request.json()
-            param = data['param']
-            return await self._forward(cid, MyServiceClient.my_operation, param)
+            return await self._forward(sid, MySession.do_work,
+                                       param=data['param'])
 
 **Key Points:**
 
-- Set ``client_class`` attribute to your client class
-- Call ``super().__init__(app, 'plugin_name')`` to initialize
-- Use ``self.add_route_post()`` and ``self.add_route_get()`` to register routes
-- Use ``self._forward(cid, method, *args, **kwargs)`` to forward requests
-- Call ``self._log_routes()`` at the end of ``__init__`` for debugging
+- Set ``plugin_name`` for auto-registration and URL namespace
+- Set ``session_class`` to your session class
+- Use ``self.add_route_post()`` / ``self.add_route_get()`` for routes
+- Use ``self._forward(sid, method, **kwargs)`` to dispatch to sessions
+- ``_forward`` handles session lookup, error wrapping, and JSON response
 
 Auto-Registered Routes
 -----------------------
 
-Your plugin automatically gets these routes from ``ClientManagedPlugin``:
+Every plugin automatically gets these routes:
 
-- ``POST /{plugin_name}/{uid}/register_client`` - Register a new client
-- ``POST /{plugin_name}/{uid}/unregister_client/{cid}`` - Unregister a client
-- ``GET /{plugin_name}/{uid}/echo/{cid}`` - Echo service for testing
+- ``POST /{plugin_name}/register_session`` — Create a new session
+- ``POST /{plugin_name}/unregister_session/{sid}`` — Close a session
+- ``GET  /{plugin_name}/version`` — Plugin version
+- ``GET  /{plugin_name}/list_sessions`` — List active sessions
+- ``GET  /{plugin_name}/health`` — Health check
+- ``GET  /{plugin_name}/ui_config`` — UI configuration for the Explorer
 
-You only need to add plugin-specific routes!
+Step 3: Define Your Client Class (Optional)
+--------------------------------------------
+
+For Python client access, create a client class:
+
+.. code-block:: python
+
+    from radical.edge.client import PluginClient
+
+    class MyServiceClient(PluginClient):
+        """Client-side interface for MyService plugin."""
+
+        def do_work(self, param: str) -> dict:
+            """Call do_work on the edge."""
+            if not self.sid:
+                raise RuntimeError("No active session")
+
+            url  = self._url(f"do_work/{self.sid}")
+            resp = self._http.post(url, json={"param": param})
+            self._raise(resp, f"do_work({param!r})")
+            return resp.json()
+
+**Key Points:**
+
+- ``self.sid`` is set after ``register_session()``
+- ``self._url(path)`` builds the full URL with namespace
+- ``self._http`` is the HTTP client (``httpx.Client``)
+- ``self._raise(resp)`` raises on non-2xx status codes
 
 Advanced Patterns
 =================
 
-Per-Client Resources
---------------------
+Custom Session Creation
+-----------------------
 
-Each client can have its own resources (default pattern):
-
-.. code-block:: python
-
-    class MyClient(PluginClient):
-        def __init__(self, cid: str):
-            super().__init__(cid)
-            self._session = MySession()  # Per-client resource
-
-Custom Client Creation
-----------------------
-
-Override ``_create_client()`` for custom initialization:
+Override ``_create_session()`` for custom initialization:
 
 .. code-block:: python
 
-    class PluginMyService(ClientManagedPlugin):
-        client_class = MyServiceClient
+    class PluginMyService(Plugin):
+        session_class = MySession
 
-        def __init__(self, app: FastAPI, config_path=None):
-            super().__init__(app, 'myservice')
-            self._config_path = config_path
+        def _create_session(self, sid: str, **kwargs) -> MySession:
+            """Pass extra config to sessions."""
+            return self.session_class(sid, config=self._config)
 
-        def _create_client(self, cid: str, **kwargs):
-            """Pass configuration to each client."""
-            return self.client_class(cid, config_path=self._config_path)
+Custom Session Registration
+----------------------------
 
-Custom Client IDs
------------------
-
-Override ``register_client()`` for custom ID generation:
+Override ``register_session()`` for custom registration logic:
 
 .. code-block:: python
 
-    import uuid
+    async def register_session(self, request: Request) -> JSONResponse:
+        """Register with custom parameters."""
+        import uuid as _uuid
 
-    async def register_client(self, request: Request) -> JSONResponse:
-        async with self._id_lock:
-            cid = f"custom-{uuid.uuid4()}"  # Custom format
+        data     = await request.json()
+        backends = data.get('backends', ['default'])
+        sid      = f"session.{_uuid.uuid4().hex[:8]}"
 
-        self._clients[cid] = self._create_client(cid)
-        return JSONResponse({"cid": cid})
+        session = self._create_session(sid, backends=backends)
+        if hasattr(session, 'initialize'):
+            await session.initialize()
+        self._sessions[sid] = session
 
-Examples
-========
+        return JSONResponse({"sid": sid})
 
-Simple Plugin (XGFabric)
-------------------------
+Notifications
+-------------
 
-The XGFabric plugin is a minimal example (~70 lines):
-
-.. code-block:: python
-
-    class XGFabricClient(PluginClient):
-        # All functionality inherited from PluginClient
-        pass
-
-    class PluginXGFabric(ClientManagedPlugin):
-        client_class = XGFabricClient
-
-        def __init__(self, app: FastAPI):
-            super().__init__(app, 'xgfabric')
-            self._log_routes()
-
-Complex Plugin (Lucid)
-----------------------
-
-The Lucid plugin demonstrates per-client resources (~245 lines):
+Sessions send notifications via ``self._notify(topic, data)``.
+Notifications flow: Session → Plugin → Edge → Bridge → SSE clients.
 
 .. code-block:: python
 
-    class LucidClient(PluginClient):
-        def __init__(self, cid: str):
-            super().__init__(cid)
-            self._session = rp.Session()
-            self._pmgr = rp.PilotManager(session=self._session)
-            self._tmgr = rp.TaskManager(session=self._session)
+    # In your session method:
+    if self._notify:
+        self._notify("job_status", {
+            "job_id": "abc123",
+            "state":  "RUNNING"
+        })
 
-        async def close(self) -> dict:
-            await asyncio.to_thread(self._session.close)
-            return await super().close()
+Clients receive notifications via SSE at ``/events`` on the bridge.
+See the main CLAUDE.md for subscription examples (JavaScript, Python).
 
-        async def pilot_submit(self, description: dict) -> dict:
-            self._check_active()
-            # ... implementation
+Topology Updates
+----------------
 
-    class PluginLucid(ClientManagedPlugin):
-        client_class = LucidClient
+Override ``on_topology_change`` to react when edges connect or disconnect:
 
-        def __init__(self, app: FastAPI):
-            super().__init__(app, 'lucid')
-            self.add_route_post('pilot_submit/{cid}', self.pilot_submit)
-            # ... more routes
+.. code-block:: python
+
+    class PluginMyService(Plugin):
+        async def on_topology_change(self, edges: dict):
+            for edge_name, info in edges.items():
+                plugins = info.get('plugins', [])
+                print(f"Edge {edge_name}: {plugins}")
+
+UI Configuration
+================
+
+Plugins can provide a ``ui_config`` dict that the Explorer UI uses to
+render forms, monitors, and notification subscriptions automatically:
+
+.. code-block:: python
+
+    class PluginMyService(Plugin):
+        ui_config = {
+            "icon": "🔧",
+            "title": "My Service",
+            "description": "Does useful things.",
+            "forms": [{
+                "id": "submit",
+                "title": "Submit Work",
+                "fields": [
+                    {"name": "param", "type": "text", "label": "Parameter",
+                     "default": "hello"},
+                ],
+                "submit": {"label": "▶ Submit", "style": "success"}
+            }],
+            "monitors": [{
+                "id": "tasks",
+                "title": "Task Monitor",
+                "type": "task_list",
+                "empty_text": "No tasks yet."
+            }],
+            "notifications": {
+                "topic": "work_status",
+                "id_field": "task_id",
+                "state_field": "state"
+            }
+        }
+
+Alternatively, plugins can provide a custom JS module by setting
+``ui_module`` to the path of a ``.js`` file.  See the next section for
+the complete JS Module API reference.
+
+JS Plugin Module API
+====================
+
+When ``ui_module`` is set to a ``.js`` file path, the Explorer loads and runs
+the module. The module must be an ES module (``type="module"``) and may export
+the following functions and constants:
+
+Required Exports
+----------------
+
+.. code-block:: javascript
+
+    // Unique plugin name — used for routing and session lookup
+    export const name = 'myplugin';
+
+    // Return the HTML for the plugin page (called once per edge)
+    export function template() { return '<div>...</div>'; }
+
+    // Return plugin-scoped CSS (injected into a <style> tag)
+    export function css() { return '.my-class { ... }'; }
+
+    // Called when the plugin page is mounted; bind event listeners here
+    export function init(page, api) { ... }
+
+Optional Exports
+----------------
+
+.. code-block:: javascript
+
+    // Called when the plugin's tab is shown (page already mounted)
+    export function onShow(page, api) { ... }
+
+    // Called when an SSE notification arrives matching notificationConfig
+    export function onNotification(data, page, api) { ... }
+
+    // Declare which SSE topic this plugin subscribes to
+    export const notificationConfig = {
+        topic:   'job_status',   // SSE topic to subscribe to
+        idField: 'job_id',       // Field in data.data used as entity ID
+    };
+
+The ``api`` Object
+------------------
+
+The ``api`` object is passed to ``init()``, ``onShow()``, and
+``onNotification()``. It exposes:
+
+**Session management**
+
+``api.getSession(pluginName)``
+    Returns a Promise resolving to the active session ID for the named plugin,
+    creating one if needed.
+
+**HTTP**
+
+``api.fetch(path, options)``
+    Fetch relative to the current plugin namespace on the bridge.
+    Returns parsed JSON. Throws on HTTP errors.
+
+``api.fetchRaw(path, options)``
+    Same as ``fetch`` but returns the raw ``Response`` object.
+    Used when you need headers or streaming (e.g. file download).
+
+**UI helpers**
+
+``api.flash(message, ok=true)``
+    Show a transient status message. ``ok=false`` styles it as an error.
+
+``api.escHtml(s)``
+    HTML-escape a string for safe ``innerHTML`` insertion.
+
+``api.showOverlay(title, bodyHtml)``
+    Open the shared full-screen overlay with the given title and HTML body.
+
+**Task tracking**
+
+``api.registerTask(plugin, id, label)``
+    Register a task ID in the global task list (shown in the taskbar).
+
+**Queue data cache**
+
+``api.getQueueData()``
+    Return cached queue/allocation data for this edge (populated by
+    the ``queue_info`` plugin on load), or ``undefined`` if not available.
+
+``api.setQueueData(data)``
+    Store queue data for this edge (called by ``queue_info``).
+
+**Edge info (read-only properties)**
+
+``api.edgeName``
+    The name of the current edge (e.g. ``"hpc1"``).
+
+``api.pluginName``
+    The plugin module name.
+
+``api.bridgeUrl``
+    Full URL of the bridge (e.g. ``"https://bridge:8000"``).
+
+``api.getPluginNames()``
+    Returns an array of all plugin names registered on this edge.
+
+**Edge management**
+
+``api.disconnectEdge(event)``
+    Initiate graceful disconnection of this edge. Pass the click event
+    to prevent default and stop propagation.
+
+Notifications
+-------------
+
+SSE notifications are delivered to ``onNotification(data, page, api)`` only
+if the module exports a matching ``notificationConfig``::
+
+    export const notificationConfig = {
+        topic:   'job_status',  // Must match the server-side notify() topic
+        idField: 'job_id',      // Field in notification data used as entity key
+    };
+
+The ``data`` argument passed to ``onNotification`` has this shape::
+
+    {
+        topic: 'job_status',
+        data:  { job_id: '...', state: 'RUNNING', ... }
+    }
+
+**Buffering pattern**: Notifications may arrive before the entity row exists
+in the DOM (e.g. a status update arrives before ``submit`` returns). Buffer
+them in a module-level dict keyed by entity ID, then drain the buffer after
+adding the row:
+
+.. code-block:: javascript
+
+    const pending = {};  // id -> notification data
+
+    export function onNotification(data, page, api) {
+        const id = data.data?.job_id;
+        const row = page.querySelector(`[data-job-id="${CSS.escape(id)}"]`);
+        if (row) {
+            updateRow(page, id, data.data.state);
+        } else if (id) {
+            pending[id] = data.data;  // buffer for later
+        }
+    }
+
+    // After creating the row:
+    if (pending[id]) {
+        updateRow(page, id, pending[id].state);
+        delete pending[id];
+    }
+
+See ``psij.js`` and ``rhapsody.js`` for complete examples of this pattern.
+
+Session Lifecycle
+=================
+
+Sessions are created on the first ``api.getSession()`` call and persist until:
+
+- The browser tab is closed or navigated away
+- The edge disconnects (all sessions are lost; the edge has no persistence)
+- The session TTL expires (default 1 hour of inactivity)
+- The client calls ``unregister_session/{sid}``
+
+When ``close()`` is called on a ``PluginSession``:
+
+- The session should release all resources (threads, backend connections, file handles)
+- Any background polling or watchers must be cancelled
+- The base ``super().close()`` sets the session status to inactive
+
+Sessions are **not persisted** across edge restarts. Clients must re-register
+after an edge reconnects.
+
+Async / Sync Guidelines
+=======================
+
+All plugin route handlers **must** be ``async def``.  Blocking operations
+(file I/O, subprocess calls, network requests) must be offloaded to a thread
+pool using ``asyncio.to_thread``::
+
+    async def my_handler(self, param: str) -> dict:
+        # Blocking call — run in thread to avoid blocking the event loop
+        result = await asyncio.to_thread(subprocess.check_output, ['cmd', param])
+        return {'output': result.decode()}
+
+Callbacks from external libraries (e.g. PsiJ status callbacks, Rhapsody
+backend callbacks) run in background threads, not the event loop.  Use
+``self._notify(topic, data)`` from those callbacks — it is thread-safe and
+schedules the SSE send on the main event loop automatically.
 
 Testing Your Plugin
 ===================
-
-Create tests for your plugin-specific functionality:
 
 .. code-block:: python
 
     import pytest
     from fastapi import FastAPI
-    from unittest.mock import Mock
+    from starlette.testclient import TestClient
 
     @pytest.mark.asyncio
-    async def test_my_service_client():
-        client = MyServiceClient("test_001")
-        result = await client.my_operation("test_param")
-        assert result["result"] == expected_value
-        await client.close()
-
-    def test_my_service_plugin():
-        app = FastAPI()
+    async def test_my_plugin():
+        app    = FastAPI()
         plugin = PluginMyService(app)
-        assert plugin.instance_name == "myservice"
-        assert plugin.client_class == MyServiceClient
+        client = TestClient(app)
 
-Base class functionality is already tested, so focus on your specific logic!
+        # Register session
+        resp = client.post(f"{plugin.namespace}/register_session")
+        assert resp.status_code == 200
+        sid = resp.json()['sid']
 
-Best Practices
-==============
-
-1. **Always validate session state** - Use ``self._check_active()`` before operations
-2. **Clean up resources** - Override ``close()`` to release resources
-3. **Use async/await** - All client methods should be async
-4. **Document your API** - Add docstrings to all public methods
-5. **Test thoroughly** - Test both happy paths and error cases
-6. **Log appropriately** - Use the provided logging infrastructure
+        # Call plugin endpoint
+        resp = client.post(
+            f"{plugin.namespace}/do_work/{sid}",
+            json={"param": "test"}
+        )
+        assert resp.status_code == 200
+        assert resp.json()['result'] == "processed: test"
 
 Summary
 =======
 
 To create a new plugin:
 
-1. Create client class inheriting from ``PluginClient``
-2. Create plugin class inheriting from ``ClientManagedPlugin``
-3. Set ``client_class`` attribute
-4. Add plugin-specific routes in ``__init__``
-5. Done! Client management is automatic.
+1. Create a session class inheriting from ``PluginSession``
+2. Create a plugin class inheriting from ``Plugin``
+3. Set ``plugin_name`` and ``session_class``
+4. Add routes in ``__init__`` using ``add_route_post`` / ``add_route_get``
+5. Optionally create a ``PluginClient`` subclass for Python clients
+6. Optionally provide ``ui_config`` for the Explorer UI
 
-**Benefits:**
-
-- No boilerplate code
-- Consistent behavior across plugins
-- Built-in error handling
-- Automatic client lifecycle management
-- Easy to test
-- Fast development
-
-See the ``plugin_api`` documentation for complete API reference.
-
+See the existing plugins (``plugin_sysinfo.py``, ``plugin_psij.py``,
+``plugin_rhapsody.py``) for real-world examples.

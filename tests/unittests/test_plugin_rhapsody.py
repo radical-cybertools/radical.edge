@@ -166,16 +166,6 @@ def test_unregister_unknown_session():
     assert exc_info.value.status_code == 404
 
 
-def test_echo():
-    _, plugin, client = _make_plugin()
-    sid = _register(client, plugin)
-
-    resp = client.get(f"{plugin.namespace}/echo/{sid}?q=ping")
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data['echo'] == 'ping'
-
-
 def test_list_sessions():
     _, plugin, client = _make_plugin()
     sid1 = _register(client, plugin)
@@ -354,6 +344,100 @@ async def test_session_close():
     assert result == {}
     assert session._active is False
     mock_rh_session.close.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# RhapsodyClient — HTTP wrapper tests (Tier 2)
+# ---------------------------------------------------------------------------
+
+def _make_rhapsody_client(json_resp=None, status_code=200):
+    """Return a RhapsodyClient backed by a mock httpx.Client."""
+    if json_resp is None:
+        json_resp = {}
+    mock_resp = MagicMock()
+    mock_resp.is_error = (status_code >= 400)
+    mock_resp.status_code = status_code
+    mock_resp.json = MagicMock(return_value=json_resp)
+    mock_http = MagicMock()
+    mock_http.get = MagicMock(return_value=mock_resp)
+    mock_http.post = MagicMock(return_value=mock_resp)
+    client = RhapsodyClient(mock_http, "/rhapsody")
+    client._sid = "sid-rh"
+    return client
+
+
+def test_rhapsody_client_submit_tasks():
+    tasks = [{"executable": "/bin/echo", "arguments": ["hi"]}]
+    client = _make_rhapsody_client([{"uid": "t.001", "state": "SUBMITTED"}])
+    result = client.submit_tasks(tasks)
+    assert isinstance(result, list)
+    mock_call = client._http.post.call_args
+    assert "tasks" in mock_call[1]["json"]
+
+
+def test_rhapsody_client_wait_tasks():
+    client = _make_rhapsody_client([{"uid": "t.001", "state": "DONE"}])
+    result = client.wait_tasks(["t.001"])
+    assert isinstance(result, list)
+    mock_call = client._http.post.call_args
+    assert "uids" in mock_call[1]["json"]
+    assert "timeout" not in mock_call[1]["json"]
+
+
+def test_rhapsody_client_wait_tasks_with_timeout():
+    client = _make_rhapsody_client([])
+    client.wait_tasks(["t.001"], timeout=30.0)
+    mock_call = client._http.post.call_args
+    assert mock_call[1]["json"].get("timeout") == 30.0
+
+
+def test_rhapsody_client_cancel_task():
+    client = _make_rhapsody_client({"uid": "t.001", "state": "CANCELED"})
+    result = client.cancel_task("t.001")
+    client._http.post.assert_called_once()
+    assert "cancel" in client._http.post.call_args[0][0]
+
+
+def test_rhapsody_client_get_statistics():
+    stats = {"total": 5, "done": 3, "failed": 1, "pending": 1}
+    client = _make_rhapsody_client(stats)
+    result = client.get_statistics()
+    assert result["total"] == 5
+    client._http.get.assert_called_once()
+
+
+def test_rhapsody_client_list_tasks():
+    client = _make_rhapsody_client({"tasks": []})
+    result = client.list_tasks()
+    assert "tasks" in result
+    client._http.get.assert_called_once()
+
+
+def test_rhapsody_client_get_task():
+    task = {"uid": "t.001", "state": "DONE", "stdout": "hi\n"}
+    client = _make_rhapsody_client(task)
+    result = client.get_task("t.001")
+    assert result["uid"] == "t.001"
+    client._http.get.assert_called_once()
+
+
+def test_rhapsody_client_no_session_raises():
+    """All session-requiring methods must raise if no session is active."""
+    mock_http = MagicMock()
+    client = RhapsodyClient(mock_http, "/rhapsody")
+    # sid is None by default
+
+    with pytest.raises(RuntimeError, match="session"):
+        client.submit_tasks([])
+
+    with pytest.raises(RuntimeError, match="session"):
+        client.wait_tasks(["t.001"])
+
+    with pytest.raises(RuntimeError, match="session"):
+        client.cancel_task("t.001")
+
+    with pytest.raises(RuntimeError, match="session"):
+        client.get_statistics()
 
 
 if __name__ == '__main__':

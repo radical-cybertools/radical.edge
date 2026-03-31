@@ -15,6 +15,7 @@ import copy
 import contextvars
 from typing import Optional
 
+
 # Context variable for request correlation ID
 correlation_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
     'correlation_id', default=None
@@ -87,31 +88,24 @@ class ColoredFormatter(logging.Formatter):
         return super().format(record)
 
 
-def configure_logging(level: int = logging.INFO, format_string: Optional[str] = None) -> None:
+def configure_logging(level: int = logging.INFO,
+                      format_string: Optional[str] = None) -> None:
     """
     Configure logging for radical.edge.
 
     Args:
-        level: Logging level (default: logging.INFO)
-        format_string: Custom format string (optional)
+        level:         Logging level (default: logging.INFO).
+        format_string: Custom format string (optional).
     """
     if format_string is None:
-        # Uvicorn-like default: LEVEL:     message
-        # We handle padding/color in the Formatter for levelname
         format_string = '%(levelname)s %(message)s'
 
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(ColoredFormatter(fmt=format_string))
 
-    # Configure root logger
-    logging.basicConfig(
-        level=level,
-        handlers=[handler]
-        # Note: basicConfig with handlers ignores format/stream args
-    )
+    logging.basicConfig(force=True, level=level, handlers=[handler])
 
-    logger = logging.getLogger("radical.edge")
-    logger.setLevel(level)
+    logging.getLogger("radical.edge").setLevel(level)
 
 
 # Auto-configure on import with INFO level

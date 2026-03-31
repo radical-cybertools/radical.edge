@@ -5,8 +5,11 @@ __copyright__ = 'Copyright 2024, RADICAL@Rutgers'
 __license__   = 'MIT'
 
 
+import glob
 import os
+import re
 import time
+import threading
 import psutil
 import socket
 import logging
@@ -41,8 +44,6 @@ class SysInfoProvider:
 
         This lazily fills the detection cache so later queries are faster.
         """
-        import threading
-
         def _prefetch():
             try:
                 self._ensure_detected()
@@ -74,8 +75,6 @@ class SysInfoProvider:
     def _detect_disk_type(self, device: str) -> str:
         """Detect storage type (SSD/HDD) via /sys/block on Linux."""
         try:
-            import re
-
             dev_name = os.path.basename(device)
 
             # Handle different device naming patterns
@@ -107,12 +106,25 @@ class SysInfoProvider:
 
     def _detect_gpus(self) -> List[Dict[str, Any]]:
         """
-        Detect available GPUs (NVIDIA, AMD, Intel) and static info.
+        Detect available GPUs (NVIDIA, AMD, Intel) in parallel.
+        Each detector runs in its own thread with a 5 s timeout so a
+        slow or absent tool does not block the others.
         """
-        gpus = []
-        gpus.extend(self._detect_nvidia_gpus())
-        gpus.extend(self._detect_amd_gpus())
-        gpus.extend(self._detect_intel_gpus())
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+
+        gpus: List[Dict[str, Any]] = []
+        detectors = [
+            self._detect_nvidia_gpus,
+            self._detect_amd_gpus,
+            self._detect_intel_gpus,
+        ]
+        with ThreadPoolExecutor(max_workers=3) as ex:
+            futures = [ex.submit(fn) for fn in detectors]
+            for future in futures:
+                try:
+                    gpus.extend(future.result(timeout=5))
+                except (FuturesTimeout, Exception):
+                    pass
         return gpus
 
     def _detect_nvidia_gpus(self) -> List[Dict[str, Any]]:
@@ -123,7 +135,7 @@ class SysInfoProvider:
             subprocess.run([nvidia_smi, "-L"],
                            stdout=subprocess.DEVNULL,
                            stderr=subprocess.DEVNULL,
-                           check=True)
+                           check=True, timeout=5)
 
             # Query static info
             cmd = [
@@ -131,7 +143,7 @@ class SysInfoProvider:
                 "--query-gpu=index,name,driver_version,uuid",
                 "--format=csv,noheader,nounits"
             ]
-            ret = subprocess.check_output(cmd, text=True)
+            ret = subprocess.check_output(cmd, text=True, timeout=5)
             gpus = []
             for line in ret.strip().splitlines():
                 if not line.strip(): continue
@@ -158,7 +170,7 @@ class SysInfoProvider:
             # Check availability: rocm-smi --json returns full info
             # Note: --json flag support varies by version, but modern rocm-smi has it.
             cmd = [rocm_smi, "--showproductname", "--showdriverversion", "--showuniqueid", "--json"]
-            ret = subprocess.check_output(cmd, text=True)
+            ret = subprocess.check_output(cmd, text=True, timeout=5)
             data = json.loads(ret)
 
             gpus = []
@@ -183,7 +195,6 @@ class SysInfoProvider:
     def _detect_intel_gpus(self) -> List[Dict[str, Any]]:
         """Detect Intel GPUs via sysfs."""
         try:
-            import glob
             gpus = []
 
             # Intel PCI vendor ID
@@ -236,7 +247,7 @@ class SysInfoProvider:
                         if os.path.exists(driver_path):
                             with open(driver_path, 'r') as f:
                                 driver_version = f.read().strip()
-                    except:
+                    except Exception:
                         pass
 
                     gpus.append({
@@ -314,7 +325,7 @@ class SysInfoProvider:
                     # Parse utilization
                     try:
                         util_gpu = float(info.get("GPU use (%)", 0))
-                    except:
+                    except Exception:
                         util_gpu = 0.0
 
                     # Parse memory (Assuming Bytes usually, check output carefully in prod)
@@ -331,7 +342,7 @@ class SysInfoProvider:
                             "mem_used": mem_used // (1024 * 1024),
                             "mem_free": (mem_tot - mem_used) // (1024 * 1024)
                         })
-                    except:
+                    except Exception:
                         metrics.append(g)
 
             except Exception:
@@ -511,12 +522,20 @@ class SysInfoClient(PluginClient):
     Client-side interface for the SysInfo plugin.
     """
 
+    def homedir(self) -> str:
+        """Return the home directory of the edge-side process.
+
+        No session is required.
+        """
+        resp = self._http.get(self._url('homedir'))
+        self._raise(resp, 'homedir')
+        return resp.json()['homedir']
+
     def get_metrics(self) -> dict:
         """
         Return current system metrics.
         """
-        if not self.sid:
-            raise RuntimeError("No active session")
+        self._require_session()
 
         url = self._url(f"metrics/{self.sid}")
         resp = self._http.get(url)
@@ -564,8 +583,6 @@ class PluginSysInfo(Plugin):
         # Register routes
         self.add_route_get('homedir',        self.homedir_endpoint)
         self.add_route_get('metrics/{sid}',  self.get_metrics_endpoint)
-
-        self._log_routes()
 
     def _create_session(self, sid: str, **kwargs) -> SysInfoSession:
         """

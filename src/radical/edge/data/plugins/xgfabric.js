@@ -6,6 +6,9 @@
 
 export const name = 'xgfabric';
 
+// Shared with api.escHtml — set in init()
+let escHtml = s => String(s || '');  // safe fallback until init()
+
 // Module-level state
 let currentConfig = null;
 const sessions = {};      // edgeName -> sid
@@ -92,7 +95,7 @@ export function overlayTemplate() {
       <div class="overlay-content" style="max-width:600px;">
         <div class="overlay-header">
           <h3>Edit Configuration</h3>
-          <button class="overlay-close" data-action="close-overlay">&times;</button>
+          <button class="task-cancel-btn overlay-close" data-action="close-overlay">❌</button>
         </div>
         <div class="overlay-body">
           <div class="form-group">
@@ -166,6 +169,8 @@ export function css() {
 }
 
 export function init(page, api) {
+  escHtml = api.escHtml;
+
   // Bind buttons
   page.querySelector('[data-action="api-docs"]')?.addEventListener('click', (e) => {
     e.preventDefault();
@@ -206,9 +211,10 @@ export function onNotification(data, page, api) {
 
 async function getSession(api) {
   if (!sessions[api.edgeName]) {
-    sessions[api.edgeName] = await api.getSession('xgfabric');
+    // Store promise immediately to prevent concurrent callers from racing
+    sessions[api.edgeName] = api.getSession('xgfabric');
   }
-  return sessions[api.edgeName];
+  return await sessions[api.edgeName];
 }
 
 function ensureOverlay(api) {
@@ -543,8 +549,6 @@ async function startWorkflow(page, api, btn) {
 }
 
 async function stopWorkflow(page, api, btn) {
-  if (!confirm('Stop the running workflow?')) return;
-
   btn.disabled = true;
   try {
     const sid = await getSession(api);
@@ -561,7 +565,3 @@ async function stopWorkflow(page, api, btn) {
 //  Utility functions
 // ─────────────────────────────────────────────────────────────
 
-function escHtml(s) {
-  if (!s) return '';
-  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}

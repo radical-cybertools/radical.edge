@@ -441,12 +441,15 @@
     .task-entry>summary {
       display: list-item;
       list-style-position: outside;
-      margin-left: 18px;
+      margin-left: 22px;
       cursor: pointer;
-      padding: 4px 0;
+      padding: 5px 0;
       user-select: none;
       font-size: 0.85em;
       outline: none;
+    }
+    .task-entry>summary::marker {
+      font-size: 1.4em;
     }
     .task-entry>summary>.task-summary-content {
       display: inline-flex;
@@ -456,7 +459,7 @@
       margin-left: -4px;
     }
     .task-entry>.task-log {
-      margin: 0 0 4px 18px;
+      margin: 0 0 4px 22px;
       padding: 4px 0 4px 10px;
       border-left: 2px solid var(--border);
       font-size: 0.82em;
@@ -472,18 +475,21 @@
     }
 
     .task-cancel-btn {
-      background: transparent;
+      background: none;
       border: none;
-      color: var(--muted);
       cursor: pointer;
       padding: 0 4px;
-      font-size: 12px;
-      opacity: 0.5;
-      transition: opacity 0.15s, color 0.15s;
+      font-size: 0.72em;
+      line-height: 1;
+      opacity: 0.75;
+      transition: opacity 0.15s;
+    }
+    #sidebar .task-cancel-btn {
+      font-size: 0.54em;
+      padding: 4px 6px;
     }
     .task-cancel-btn:hover {
       opacity: 1;
-      color: var(--danger);
     }
 
     .icon {
@@ -926,7 +932,7 @@
       left: 0;
       right: 0;
       bottom: 0;
-      background: rgba(0, 0, 0, 0.6);
+      background: rgba(10, 15, 25, 0.75);
       display: flex;
       align-items: center;
       justify-content: center;
@@ -949,6 +955,7 @@
       display: flex;
       flex-direction: column;
       box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+      border: 1px solid var(--border);
     }
     .overlay-header {
       display: flex;
@@ -963,15 +970,9 @@
       font-size: 1rem;
     }
     .overlay-close {
-      background: none;
-      border: none;
-      font-size: 1.3rem;
-      cursor: pointer;
-      color: var(--muted);
-      padding: 4px 8px;
-    }
-    .overlay-close:hover {
-      color: var(--danger);
+      /* fixed size to match task-cancel-btn in table rows regardless of
+         the overlay-header's own font-size context */
+      font-size: 9px;
     }
     .overlay-body {
       padding: 16px;
@@ -981,6 +982,37 @@
     .overlay-body table {
       width: 100%;
     }
+
+    /* ── Shared detail overlay styles (used by queue_info, psij, rhapsody) ── */
+    .job-detail-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 8px 16px;
+    }
+    .job-detail-item { display: flex; flex-direction: column; }
+    .job-detail-item .label {
+      font-size: 0.75rem; color: var(--muted); text-transform: uppercase;
+    }
+    .job-detail-item .value { font-weight: 500; }
+    .job-output-section { margin-top: 12px; }
+    .job-output-section h4 {
+      margin: 0 0 4px 0; font-size: 0.85rem; color: var(--muted);
+      text-transform: uppercase;
+    }
+    .job-output-section pre {
+      background: rgba(0,0,0,0.3); border: 1px solid var(--border);
+      border-radius: 4px; padding: 8px; margin: 0 0 8px 0;
+      max-height: 300px; overflow-y: auto; white-space: pre-wrap;
+      font-size: 0.8rem; font-family: 'JetBrains Mono', monospace;
+    }
+    .job-output-section pre.out-stream { color: var(--accent2); }
+    .job-output-section pre.err-stream { color: var(--danger); }
+    .job-detail-panel {
+      background: rgba(30, 35, 50, 0.5);
+      border-radius: 6px; padding: 12px 16px; margin-top: 12px;
+      font-size: 0.85rem; border: 1px solid var(--border);
+    }
+    .job-detail-panel h4 { margin: 0 0 10px 0; font-size: 0.95rem; }
   </style>
 </head>
 
@@ -1011,7 +1043,7 @@
           <span onclick="showPage('bridge')" style="display:flex; align-items:center; gap:8px; flex:1; cursor:pointer;">
             <span class="icon">🌉</span> <span id="bridgeLabel">Bridge</span>
           </span>
-          <button class="task-cancel-btn" onclick="terminateBridge(event)" title="Terminate bridge">✕</button>
+          <button class="task-cancel-btn" onclick="terminateBridge(event)" title="Terminate bridge">❌</button>
         </li>
       </ul>
       <div id="edgeTree"></div>
@@ -1120,7 +1152,7 @@
     <div class="overlay-content">
       <div class="overlay-header">
         <h3 id="jobs-overlay-title">📄 Jobs</h3>
-        <button class="overlay-close" onclick="hideJobsOverlay()">✕</button>
+        <button class="task-cancel-btn overlay-close" onclick="hideJobsOverlay()">❌</button>
       </div>
       <div class="overlay-body" id="jobs-overlay-body">
         <!-- Job list will be inserted here -->
@@ -1136,7 +1168,8 @@
     let eventSource = null;
     let sessions = {};   // key: "edgeName/pluginName" -> sid
     let edgeData = {};   // edgeName -> plugin info from /edge/list
-    let queueDataCache = {}; // edgeName -> { queues: {...}, allocations: [...] }
+    let queueDataCache      = {}; // edgeName -> { queues: {...}, allocations: [...] }
+    let jobAllocationCache  = {}; // edgeName -> allocation dict | null
 
     // Task registry: taskRegistry[edgeName][pluginName] = { id: {state, label, ...} }
     let taskRegistry = {};
@@ -1257,16 +1290,14 @@
           document.getElementById('jobs-overlay-body').innerHTML = body;
           document.getElementById('jobs-overlay').classList.add('visible');
         },
-        hideOverlay: () => hideJobsOverlay(),
-
         // Task management
         registerTask: (plugin, id, label) => registerTask(edgeName, plugin, id, label),
-        // Plugin modules handle their own notification state via onNotification
-        processPendingNotification: () => {},
 
         // Queue data cache (shared across plugins, keyed by edgeName)
-        getQueueData: ()     => queueDataCache[edgeName],
-        setQueueData: (data) => { queueDataCache[edgeName] = data; },
+        getQueueData:      ()     => queueDataCache[edgeName],
+        setQueueData:      (data) => { queueDataCache[edgeName] = data; },
+        getJobAllocation:  ()     => jobAllocationCache[edgeName],
+        setJobAllocation:  (data) => { jobAllocationCache[edgeName] = data; },
 
         // Plugin list for this edge
         getPluginNames: () => Object.keys(edgeData[edgeName]?.plugins || {}),
@@ -1571,9 +1602,9 @@
         // Add cancel button for psij and rhapsody
         let cancelBtn = '';
         if (pluginName === 'psij') {
-          cancelBtn = `<button class="task-cancel-btn" onclick="cancelPsijJob(event, '${edgeName}', '${taskId}')" title="Cancel job">✕</button>`;
+          cancelBtn = `<button class="task-cancel-btn" onclick="cancelPsijJob(event, '${edgeName}', '${taskId}')" title="Cancel job">❌</button>`;
         } else if (pluginName === 'rhapsody') {
-          cancelBtn = `<button class="task-cancel-btn" onclick="cancelRhapsodyTask(event, '${edgeName}', '${taskId}')" title="Cancel task">✕</button>`;
+          cancelBtn = `<button class="task-cancel-btn" onclick="cancelRhapsodyTask(event, '${edgeName}', '${taskId}')" title="Cancel task">❌</button>`;
         }
 
         const taskEntry = document.createElement('details');
@@ -1774,18 +1805,29 @@
     async function registerSession(edgeName, pluginName, body = {}) {
       const key = `${edgeName}/${pluginName}`;
 
-      // REUSE: If we already have a session for this edge/plugin, return it.
+      // REUSE: If we already have a session (or an in-flight registration
+      // promise) for this edge/plugin, return it.  Storing the promise
+      // immediately prevents concurrent callers from racing into multiple
+      // register_session RPCs.
       if (sessions[key]) return sessions[key];
 
       const nsData = edgeData[edgeName]?.plugins?.[pluginName];
       if (!nsData) throw new Error(`Plugin ${pluginName} not found on ${edgeName}`);
       const ns = nsData.namespace;  // e.g. /edgeName/sysinfo
-      const data = await apiFetch(`${ns}/register_session`, {
+
+      const promise = apiFetch(`${ns}/register_session`, {
         method: 'POST',
         body: JSON.stringify(body)
+      }).then(data => {
+        sessions[key] = data.sid;  // replace promise with resolved SID
+        return data.sid;
+      }).catch(err => {
+        delete sessions[key];      // allow retry on failure
+        throw err;
       });
-      sessions[key] = data.sid;
-      return data.sid;
+
+      sessions[key] = promise;     // store promise immediately
+      return promise;
     }
 
     function getNs(edgeName, pluginName) {
@@ -1908,7 +1950,8 @@
       BRIDGE = '';
       edgeData = {};
       sessions = {};
-      queueDataCache = {};
+      queueDataCache     = {};
+      jobAllocationCache = {};
       window.lastEdges = {};
       window.lastBridge = {};
 
@@ -2089,7 +2132,7 @@
               <span onclick="showPage('bridge'); event.stopPropagation();" style="display:inline-flex; align-items:center; gap:8px;">
                 <span class="icon">💻</span> ${ename}
               </span>
-              <button class="task-cancel-btn" onclick="disconnectEdge(event, '${ename}')" title="Disconnect edge">✕</button>
+              <button class="task-cancel-btn" onclick="disconnectEdge(event, '${ename}')" title="Disconnect edge">❌</button>
             </span>
           </summary>
           <ul class="tree" style="margin-top: 2px; padding-left: 8px; border-left: 1px dashed var(--border); margin-left: ${16 + indent}px;">`;
@@ -2127,9 +2170,8 @@
               for (const [tid, tinfo] of Object.entries(tasks)) {
                 const short = tid.length > 10 ? tid.slice(0, 8) + '…' : tid;
                 const badge = taskStateBadge(tinfo.state);
-                const domId = pname === 'psij' ? `psij-job-${ename}-${tid}` : `rh-task-${ename}-${tid}`;
                 html += `<li class="tree-item" style="padding-left:12px; font-size:0.8rem; opacity:0.9;"
-                         onclick="showTaskEntry('${ename}','${pname}','${domId}')">
+                         onclick="showTaskEntry('${ename}','${pname}','${tid}')">
                        ${badge} <code style="font-size:0.75rem;">${short}</code>
                      </li>`;
               }
@@ -2153,27 +2195,33 @@
         return html;
       }
 
+      // Preserve open/closed state of all <details> before re-render
+      const detailsState = new Map();
+      el.querySelectorAll('details[id]').forEach(d => detailsState.set(d.id, d.open));
+
       let html = '';
       for (const ename of topLevel) {
         html += renderEdgeSidebar(ename);
       }
       el.innerHTML = html;
+
+      // Restore state for known entries; brand-new entries keep their rendered default
+      el.querySelectorAll('details[id]').forEach(d => {
+        if (detailsState.has(d.id)) d.open = detailsState.get(d.id);
+      });
     }
 
-    function showTaskEntry(edgeName, pluginName, domId) {
+    function showTaskEntry(edgeName, pluginName, tid) {
       showPluginPage(edgeName, pluginName);
       setTimeout(() => {
-        const el = document.getElementById(domId);
-        if (el) {
-          // Toggle open/close
-          el.open = !el.open;
-          // Brief highlight without scrolling (keep left hierarchy stable)
-          if (el.open) {
-            el.style.outline = '2px solid var(--accent)';
-            setTimeout(() => el.style.outline = '', 1500);
-          }
+        let row;
+        if (pluginName === 'psij') {
+          row = document.querySelector(`.psij-job-row[data-job-id="${CSS.escape(tid)}"]`);
+        } else {
+          row = document.querySelector(`.rh-task-row[data-uid="${CSS.escape(tid)}"]`);
         }
-      }, 100);
+        if (row) row.click();
+      }, 150);
     }
 
     function pluginIcon(p, edgeName) {
@@ -2377,7 +2425,7 @@
       row.innerHTML = `
         <input class="p-attr-key" type="text" placeholder="Key (e.g. slurm.constraint)" style="flex:1;" />
         <input class="p-attr-val" type="text" placeholder="Value (e.g. cpu_gen_1)" style="flex:2;" />
-        <button class="btn btn-secondary btn-sm" onclick="this.parentElement.remove()" style="padding: 4px 10px;">❌</button>
+        <button class="task-cancel-btn" onclick="this.parentElement.remove()">❌</button>
       `;
       container.appendChild(row);
     }
@@ -2389,7 +2437,7 @@
 
       try {
         const key = `${edgeName}/psij`;
-        const sid = sessions[key];
+        const sid = await sessions[key];
         if (!sid) {
           flash('No active session for PsiJ', false);
           return;
@@ -2420,7 +2468,7 @@
 
       try {
         const key = `${edgeName}/rhapsody`;
-        const sid = sessions[key];
+        const sid = await sessions[key];
         if (!sid) {
           flash('No active session for Rhapsody', false);
           return;
@@ -2459,10 +2507,6 @@
 
     async function terminateBridge(event) {
       event.stopPropagation();
-
-      if (!confirm('Terminate the bridge?\n\nConnected edges will NOT be terminated and may reconnect to another bridge.')) {
-        return;
-      }
 
       try {
         await apiFetch('/bridge/terminate', { method: 'POST' });
@@ -2529,7 +2573,7 @@
             <td style="padding:4px 8px;">${escHtml(job.edge_name)}</td>
             <td style="padding:4px 8px;">${escHtml(job.resource)}</td>
             <td style="padding:4px 8px;">${escHtml(job.state)}</td>
-            <td style="padding:4px 8px;"><button class="btn btn-danger btn-sm" onclick="cancelEdgeJob('${escHtml(job.job_id)}')">[x]</button></td>
+            <td style="padding:4px 8px;"><button class="task-cancel-btn" onclick="cancelEdgeJob('${escHtml(job.job_id)}')">❌</button></td>
           </tr>`;
         }
         html += '</table>';
@@ -2544,7 +2588,6 @@
     }
 
     async function cancelEdgeJob(jobId) {
-      if (!confirm(`Cancel edge job "${jobId}"?`)) return;
       try {
         await apiFetch(`/edge/job/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' });
         flash(`Edge job "${jobId}" cancelled`);
@@ -2564,10 +2607,6 @@
     async function disconnectEdge(event, edgeName) {
       event.stopPropagation();
       const btn = event.target;
-
-      if (!confirm(`Disconnect edge "${edgeName}"?\n\nThis will terminate the edge service.`)) {
-        return;
-      }
 
       btn.disabled = true;
       try {

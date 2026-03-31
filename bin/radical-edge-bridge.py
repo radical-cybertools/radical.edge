@@ -5,6 +5,10 @@ import base64
 import json
 import logging
 import os
+import re
+import signal
+import socket
+import ssl
 import uuid
 
 from contextlib import asynccontextmanager
@@ -21,33 +25,37 @@ from starlette.websockets    import WebSocketState
 log = logging.getLogger("radical.edge.bridge")
 
 # Global shutdown event for graceful termination
-shutdown_event: asyncio.Event = None
+shutdown_event = asyncio.Event()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan context manager for startup/shutdown."""
-    global shutdown_event
-    shutdown_event = asyncio.Event()
-    print("[Bridge] Started")
+    shutdown_event.clear()
+
+    async def _print_url():
+        await asyncio.sleep(0.2)  # let uvicorn print its own startup line first
+        print(f"[Bridge] URL: {endpoints['bridge'].get('url', 'unknown')}", flush=True)
+
+    asyncio.ensure_future(_print_url())
     yield
     # Shutdown
-    print("[Bridge] Shutting down...")
+    log.info("[Bridge] Shutting down...")
     shutdown_event.set()
     # Wake up all SSE clients
     for q in list(clients_sse):
         try:
             await q.put(None)
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug("[Bridge] SSE queue put failed during shutdown: %s", e)
     # Close WebSocket connections
     for edge_name, ws in list(edges.items()):
         try:
             await ws.close(code=1001, reason="Server shutting down")
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug("[Bridge] WebSocket close failed during shutdown: %s", e)
     edges.clear()
-    print("[Bridge] Shutdown complete")
+    log.info("[Bridge] Shutdown complete")
 
 
 app = FastAPI(
@@ -77,13 +85,14 @@ The Bridge acts as a public-facing reverse proxy that:
     redoc_url="/redoc"
 )
 
-# LUCID needs that setting
+# LUCID needs credentials; browsers reject credentials + wildcard origin,
+# so we must list allowed origins explicitly.
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=["*"],              # or a list of URLs
-    allow_methods=["*"],              # or ["GET", "POST", ...]
-    allow_headers=["*"],              # or a list of headers
+    allow_origins=["https://dev-1.bv-brc.org"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -134,7 +143,7 @@ async def general_exception_handler(request: Request, exc: Exception) -> JSONRes
 
 
 edges: Dict[str, WebSocket] = {}
-pending: Dict[str, asyncio.Future] = dict()
+pending: Dict[str, tuple] = dict()  # req_id -> (future, edge_name)
 pending_lock: asyncio.Lock = asyncio.Lock()
 
 # {"bridge": {...},
@@ -168,7 +177,7 @@ async def broadcast_topology_to_edges():
             if ws.client_state == WebSocketState.CONNECTED:
                 await ws.send_text(msg)
         except Exception as e:
-            print(f"[Bridge] Failed to send topology to {edge_name}: {e}")
+            log.warning("[Bridge] Failed to send topology to %s: %s", edge_name, e)
 
 
 async def _send_to_edge(edge_name: str, message: dict):
@@ -189,7 +198,7 @@ async def register(ws: WebSocket):
     # Heartbeat
     async def pinger():
         elapsed = 0
-        while not (shutdown_event and shutdown_event.is_set()):
+        while not (shutdown_event.is_set()):
             try:
                 await asyncio.sleep(1.0)
                 elapsed += 1
@@ -202,7 +211,8 @@ async def register(ws: WebSocket):
                 return
             try:
                 await ws.send_text(json.dumps({"type": "ping"}))
-            except Exception:
+            except Exception as e:
+                log.exception("[Bridge] Ping failed for edge: %s", e)
                 return
 
     ping_task = None
@@ -211,12 +221,17 @@ async def register(ws: WebSocket):
         # start the ping task - it will run as long as the endpoint is connected
         ping_task = asyncio.create_task(pinger())
 
-        while not (shutdown_event and shutdown_event.is_set()):
+        while not (shutdown_event.is_set()):
             try:
                 msg = await asyncio.wait_for(ws.receive_text(), timeout=1.0)
             except asyncio.TimeoutError:
                 continue  # Check shutdown_event again
-            data = json.loads(msg)
+            try:
+                data = json.loads(msg)
+            except json.JSONDecodeError:
+                log.warning("[Bridge] Malformed JSON from edge '%s': %s",
+                            edge_name or '(unregistered)', msg[:200])
+                continue
 
             if data.get("type") == "pong":
                 pass
@@ -225,11 +240,11 @@ async def register(ws: WebSocket):
                 frame_edge_name = data.get("edge_name")
 
                 if not frame_edge_name:
-                    print("[Bridge] Registration missing edge_name")
+                    log.warning("[Bridge] Registration missing edge_name")
                     continue
 
                 if frame_edge_name in edges:
-                    print(f"[Bridge] Edge '{frame_edge_name}' already connected.")
+                    log.warning("[Bridge] Edge '%s' already connected.", frame_edge_name)
                     await ws.send_text(json.dumps({
                         "type": "error",
                         "message": f"Edge '{frame_edge_name}' already used"
@@ -238,7 +253,7 @@ async def register(ws: WebSocket):
 
                 edge_name = frame_edge_name
                 edges[edge_name] = ws
-                print(f"[Bridge] Edge '{edge_name}' connected")
+                log.info("[Bridge] Edge '%s' connected", edge_name)
                 endpoints["edges"][edge_name] = {
                     "endpoint": data.get("endpoint", {}),
                     "plugins": {},
@@ -253,7 +268,7 @@ async def register(ws: WebSocket):
                     endpoints["edges"][edge_name]["plugins"][pname] = pdata
 
                 plugin_names = list(endpoints["edges"][edge_name]["plugins"].keys())
-                print(f"[Bridge] Edge '{edge_name}' registered  plugins={plugin_names}")
+                log.info("[Bridge] Edge '%s' registered  plugins=%s", edge_name, plugin_names)
 
                 await broadcast_event("topology", endpoints)
                 await broadcast_topology_to_edges()
@@ -267,28 +282,41 @@ async def register(ws: WebSocket):
                 })
 
             elif data.get("type") == "response":
-                req_id = data["req_id"]
-                # print(f"[Bridge] Response received {req_id}")
+                req_id = data.get("req_id")
+                if not req_id:
+                    log.warning("[Bridge] Response from '%s' missing req_id: %s",
+                                edge_name, str(data)[:200])
+                    continue
                 async with pending_lock:
-                    fut = pending.pop(req_id, None)
+                    entry = pending.pop(req_id, None)
 
-                if fut and not fut.done():
-                    fut.set_result(data)
+                if entry:
+                    fut = entry[0]
+                    if not fut.done():
+                        fut.set_result(data)
 
             else:
                 # ignore unknown frames
-                print(f"[Bridge] Unknown message type received: {data}")
+                log.debug("[Bridge] Unknown message type received: %s", data)
 
 
     except WebSocketDisconnect:
         pass
 
+    except RuntimeError as e:
+        # Starlette raises RuntimeError when WS is closed during receive
+        if "not connected" in str(e).lower():
+            log.debug("[Bridge] recv interrupted on disconnected edge '%s'",
+                      edge_name or '(unknown)')
+        else:
+            log.exception("[Bridge] Edge connection error: %s", e)
+
     except Exception as e:
-        print(f"[Bridge] Edge connection error: {e}")
+        log.exception("[Bridge] Edge connection error: %s", e)
 
     finally:
 
-        print(f"[Bridge] Edge disconnected: {edge_name}")
+        log.info("[Bridge] Edge disconnected: %s", edge_name)
         if ping_task:
             ping_task.cancel()
 
@@ -296,23 +324,27 @@ async def register(ws: WebSocket):
             # Only unregister if this WS was the active one for the name
             # (Prevent rejected duplicates from killing the valid session)
             if edges.get(edge_name) == ws:
+                # Remove from edges first so topology broadcast skips this WS
+                del edges[edge_name]
+
                 if edge_name in endpoints["edges"]:
-                    print(f"[Bridge] Unregistering edge: {edge_name}")
+                    log.info("[Bridge] Unregistering edge: %s", edge_name)
                     del endpoints["edges"][edge_name]
                     await broadcast_event("topology", endpoints)
                     await broadcast_topology_to_edges()
-
-                if edge_name in edges:
-                    del edges[edge_name]
             else:
-                print(f"[Bridge] Disconnected duplicate/inactive session for: {edge_name}")
+                log.info("[Bridge] Disconnected duplicate/inactive session for: %s", edge_name)
 
-        # Fail any in-flight requests
-        async with pending_lock:
-            for _, fut in list(pending.items()):
-                if not fut.done():
-                    fut.set_exception(HTTPException(503, "Edge disconnected"))
-            pending.clear()
+        # Fail in-flight requests for this edge only
+        if edge_name:
+            async with pending_lock:
+                failed = [rid for rid, (fut, ename) in pending.items()
+                          if ename == edge_name]
+                for rid in failed:
+                    fut, _ = pending.pop(rid)
+                    if not fut.done():
+                        fut.set_exception(
+                            HTTPException(503, "Edge disconnected"))
 
 
 def _strip_headers(request: Request) -> dict:
@@ -350,7 +382,7 @@ async def sse_events(request: Request):
 
     async def event_generator():
         try:
-            while not (shutdown_event and shutdown_event.is_set()):
+            while not (shutdown_event.is_set()):
                 # Check if client disconnected
                 if await request.is_disconnected():
                     break
@@ -363,9 +395,9 @@ async def sse_events(request: Request):
                 except asyncio.TimeoutError:
                     continue  # Check shutdown_event again
         except asyncio.CancelledError:
-            pass
-        except Exception:
-            pass  # Client disconnected or other error
+            log.debug("[Bridge] SSE client cancelled")
+        except Exception as e:
+            log.exception("[Bridge] SSE client error: %s", e)
         finally:
             clients_sse.discard(q)
 
@@ -441,9 +473,6 @@ async def terminate_bridge():
     Edges will detect the disconnection and may attempt to reconnect
     (to this or another bridge).
     """
-    import os
-    import signal
-
     # Schedule shutdown after returning response
     async def delayed_shutdown():
         await asyncio.sleep(0.5)  # Give time for response to be sent
@@ -464,7 +493,7 @@ async def terminate_bridge():
 # ---------------------------------------------------------------------------
 
 @app.post("/edge/submit", tags=["Edge Submission"])
-async def submit_edge(request: Request):
+async def submit_tunneled(request: Request):
     """
     Submit a new edge service to a remote resource via PsiJ.
 
@@ -528,8 +557,6 @@ async def list_edge_jobs():
 
 @app.get("/", tags=["UI"], include_in_schema=False)
 async def root():
-    import os
-
     # Try to find edge_explorer.html via importlib.resources (works with editable installs)
     html_path = None
     try:
@@ -546,8 +573,8 @@ async def root():
             html_path = str(candidate)
         if not os.path.exists(html_path):
             html_path = None
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug("[Bridge] importlib.resources lookup failed: %s", e)
 
     # Fallback: try pkg_resources
     if not html_path:
@@ -556,8 +583,8 @@ async def root():
             html_path = pkg_resources.resource_filename('radical.edge', 'data/edge_explorer.html')
             if not os.path.exists(html_path):
                 html_path = None
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug("[Bridge] pkg_resources lookup failed: %s", e)
 
     if html_path and os.path.exists(html_path):
         # Disable caching for development - ensures latest version is served
@@ -578,7 +605,6 @@ _plugin_ui_module_js: Dict[str, str] = {}
 async def serve_plugin(filename: str):
     """Serve plugin UI modules — first from radical.edge's own plugins dir,
     then from paths declared via ui_module on registered plugin classes."""
-    import re
 
     # Validate filename (only allow .js files with safe names)
     if not re.match(r'^[a-z_]+\.js$', filename):
@@ -595,8 +621,8 @@ async def serve_plugin(filename: str):
                          else str(candidate)
         if os.path.exists(candidate_path):
             plugin_path = candidate_path
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug("[Bridge] importlib.resources plugin lookup failed: %s", e)
 
     # Fallback: pkg_resources
     if not plugin_path:
@@ -607,8 +633,8 @@ async def serve_plugin(filename: str):
             )
             if os.path.exists(candidate_path):
                 plugin_path = candidate_path
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug("[Bridge] pkg_resources plugin lookup failed: %s", e)
 
     # 2. Try JS content pushed by edges at registration time
     if not plugin_path:
@@ -701,9 +727,9 @@ async def proxy(full_path: str, request: Request):
         "body"     : body,
     }
 
-    fut = asyncio.get_event_loop().create_future()
+    fut = asyncio.get_running_loop().create_future()
     async with pending_lock:
-        pending[req_id] = fut
+        pending[req_id] = (fut, edge_name)
 
     try:
         await _send_to_edge(edge_name, message)
@@ -714,7 +740,6 @@ async def proxy(full_path: str, request: Request):
         raise
 
     try:
-        # FIXME: how do we gracefully handle long-running requests?
         resp = await asyncio.wait_for(fut, timeout=REQUEST_TIMEOUT)
 
     except asyncio.TimeoutError as exc:
@@ -729,7 +754,8 @@ async def proxy(full_path: str, request: Request):
     if resp.get("is_binary"):
         try:
             raw = base64.b64decode(resp_body or b"")
-        except Exception:
+        except Exception as e:
+            log.exception("[Bridge] Failed to decode binary response: %s", e)
             raw = b""
 
         return Response(content=raw, status_code=status, headers=headers)
@@ -746,32 +772,29 @@ async def proxy(full_path: str, request: Request):
                 return JSONResponse(content=json.loads(content),
                                     status_code=status, headers=headers)
 
-            except Exception:
-                pass
+            except Exception as e:
+                log.exception("[Bridge] Failed to parse JSON response: %s", e)
 
         return Response(content=content, status_code=status, headers=headers)
 
 
 def validate_ssl_config(certfile: str, keyfile: str) -> None:
     """Validate SSL certificate and key files. Exit on error."""
-    import ssl
 
     if not certfile:
-        print("[Bridge] ERROR: SSL certificate required.")
-        print("         Set RADICAL_BRIDGE_CERT environment variable.")
+        log.error("[Bridge] SSL certificate required. Set RADICAL_BRIDGE_CERT.")
         exit(1)
 
     if not keyfile:
-        print("[Bridge] ERROR: SSL key required.")
-        print("         Set RADICAL_BRIDGE_KEY environment variable.")
+        log.error("[Bridge] SSL key required. Set RADICAL_BRIDGE_KEY.")
         exit(1)
 
     if not os.path.exists(certfile):
-        print(f"[Bridge] ERROR: Certificate file not found: {certfile}")
+        log.error("[Bridge] Certificate file not found: %s", certfile)
         exit(1)
 
     if not os.path.exists(keyfile):
-        print(f"[Bridge] ERROR: Key file not found: {keyfile}")
+        log.error("[Bridge] Key file not found: %s", keyfile)
         exit(1)
 
     # Verify certificate and key are valid and match
@@ -779,16 +802,16 @@ def validate_ssl_config(certfile: str, keyfile: str) -> None:
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.load_cert_chain(certfile, keyfile)
     except ssl.SSLError as e:
-        print(f"[Bridge] ERROR: Invalid SSL certificate/key: {e}")
+        log.error("[Bridge] Invalid SSL certificate/key: %s", e)
         exit(1)
     except Exception as e:
-        print(f"[Bridge] ERROR: Cannot load SSL certificate/key: {e}")
+        log.error("[Bridge] Cannot load SSL certificate/key: %s", e)
         exit(1)
 
-    print(f"[Bridge] SSL certificate validated: {certfile}")
+    log.info("[Bridge] SSL certificate validated: %s", certfile)
 
 
-if __name__ == "__main__":
+def main():
 
     import uvicorn
 
@@ -819,14 +842,28 @@ if __name__ == "__main__":
     validate_ssl_config(ssl_certfile, ssl_keyfile)
 
     # Construct bridge URL based on config
-    # FIXME: get FQHN for 0.0.0.0
-    protocol = "wss" if ssl_certfile else "ws"
-    advertise_host = "localhost" if host == "0.0.0.0" else host
+    def _get_outbound_ip():
+        """Return the IP this host uses for outbound internet connections."""
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(('1.1.1.1', 80))
+            ip = s.getsockname()[0]
+            s.close()
+            return ip
+        except Exception:
+            return None
+
+    if host == "0.0.0.0":
+        fqdn = socket.getfqdn()
+        if fqdn and fqdn not in ('localhost', 'localhost.localdomain') and '.' in fqdn:
+            advertise_host = fqdn
+        else:
+            advertise_host = _get_outbound_ip() or socket.gethostname()
+    else:
+        advertise_host = host
     bridge_url = f"https://{advertise_host}:{port}/register"
 
     endpoints["bridge"]["url"] = bridge_url
-
-    print(f"[Bridge] URL: {bridge_url}")
 
     uvicorn.run(app,
                 host=host,
@@ -836,4 +873,8 @@ if __name__ == "__main__":
                 ssl_keyfile=ssl_keyfile,
                 log_level="info",
                 timeout_graceful_shutdown=3)  # Force exit after 3 seconds
+
+
+if __name__ == "__main__":
+    main()
 

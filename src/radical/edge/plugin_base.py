@@ -18,9 +18,20 @@ class Plugin(object):
     """
     Base class for Edge plugins.
 
-    Each plugin gets its own namespace and now includes built-in session
-    management. Routes can be added using the `add_route_post` and
-    `add_route_get` methods.
+    Each plugin gets its own URL namespace and built-in session management.
+    Routes are added with `add_route_post` / `add_route_get`.
+
+    **plugin_name vs instance_name**
+
+    ``plugin_name`` is a *class-level* attribute that uniquely identifies the
+    plugin type (e.g. ``"psij"``, ``"queue_info"``).  It is the key used in
+    the global ``Plugin._registry`` and in client-side lookups
+    (``edge.get_plugin("psij")``).
+
+    ``instance_name`` is set at *construction time* (defaults to
+    ``plugin_name`` when only one instance is needed) and drives the URL
+    namespace: ``/{instance_name}/…``.  Multiple instances of the same plugin
+    type on the same edge must be given distinct instance names.
 
     Subclasses that define a `plugin_name` class attribute will be
     automatically registered in the global plugin registry.
@@ -42,11 +53,11 @@ class Plugin(object):
     **Sending notifications from a session:**
 
         # In your PluginSession subclass method:
-        if self._notify:
-            self._notify("my_topic", {"key": "value", "status": "running"})
+        if self._plugin:
+            self._plugin._dispatch_notify("my_topic", {"key": "value", "status": "running"})
 
-    The `_notify` callback is automatically injected into sessions by the plugin.
-    It works from both sync and async contexts, including background threads.
+    The `_plugin` reference is automatically injected into sessions by the plugin.
+    `_dispatch_notify` works from both sync and async contexts, including background threads.
 
     **Sending notifications from a plugin:**
 
@@ -137,17 +148,17 @@ class Plugin(object):
 
         self._sessions: Dict[str, PluginSession] = {}
         self._session_last_access: Dict[str, float] = {}  # Track last access time
-        self._id_lock: asyncio.Lock = asyncio.Lock()
         self._main_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._cleanup_task: Optional[asyncio.Task] = None
 
         # Built-in session management routes
         self.add_route_post('register_session', self.register_session)
         self.add_route_post('unregister_session/{sid}', self.unregister_session)
-        self.add_route_get('echo/{sid}', self.echo)
         self.add_route_get('version', self.get_version)
         self.add_route_get('list_sessions', self.list_sessions)
         self.add_route_get('health', self.health_check)
         self.add_route_get('ui_config', self.get_ui_config)
+        self._log_routes()
 
     @property
     def namespace(self) -> str:
@@ -179,48 +190,51 @@ class Plugin(object):
     def _create_session(self, sid: str, **kwargs) -> PluginSession:
         """
         Factory method to create a session instance.
+
+        Injects a reference to this plugin so the session can call
+        `_dispatch_notify` without a per-session closure.
         """
         if self.session_class is None:
             raise RuntimeError(f"[{self.instance_name}] session_class not defined")
         session = self.session_class(sid, **kwargs)
-        plugin = self
-
-        def _notify(topic: str, data: dict) -> None:
-            """
-            Schedule a notification to be sent asynchronously.
-            Works from both sync and async contexts, including other threads.
-            """
-            async def _send():
-                try:
-                    await plugin.send_notification(topic, data)
-                except Exception as e:
-                    log.error("[%s] Notification send failed for %s: %s",
-                              plugin.instance_name, topic, e)
-
-            try:
-                # Try to get the running loop (works in async context)
-                loop = asyncio.get_running_loop()
-                # Cache the main loop for cross-thread calls
-                if plugin._main_loop is None:
-                    plugin._main_loop = loop
-                loop.create_task(_send())
-            except RuntimeError:
-                # No running loop - called from sync context or another thread
-                # Use the cached main event loop
-                if plugin._main_loop is not None:
-                    asyncio.run_coroutine_threadsafe(_send(), plugin._main_loop)
-                else:
-                    log.debug("[%s] No event loop available for notification",
-                              plugin.instance_name)
-
-        session._notify = _notify
+        session._plugin = self
         return session
+
+    def _dispatch_notify(self, topic: str, data: dict) -> None:
+        """
+        Schedule a notification to be sent asynchronously.
+
+        Called by sessions via ``self._plugin._dispatch_notify(topic, data)``.
+        Works from both async contexts and background threads.
+
+        Args:
+            topic: Notification topic string.
+            data:  Notification payload dict.
+        """
+        async def _send():
+            try:
+                await self.send_notification(topic, data)
+            except Exception as e:
+                log.error("[%s] Notification send failed for %s: %s",
+                          self.instance_name, topic, e)
+
+        try:
+            loop = asyncio.get_running_loop()
+            if self._main_loop is None:
+                self._main_loop = loop
+            loop.create_task(_send())
+        except RuntimeError:
+            # Called from a background thread — use the cached main loop
+            if self._main_loop is not None:
+                asyncio.run_coroutine_threadsafe(_send(), self._main_loop)
+            else:
+                log.debug("[%s] No event loop available for notification",
+                          self.instance_name)
 
     async def register_session(self, request: Request) -> JSONResponse:
         """Register a new session and return its unique session ID."""
-        async with self._id_lock:
-            sid = f"session.{uuid.uuid4().hex[:8]}"
-
+        self._ensure_cleanup_task()
+        sid = f"session.{uuid.uuid4().hex[:8]}"
         self._sessions[sid] = self._create_session(sid)
         self._session_last_access[sid] = time.time()
         log.info("[%s] Registered session %s", self.instance_name, sid)
@@ -238,13 +252,6 @@ class Plugin(object):
         await inst.close()
         log.info("[%s] Unregistered session %s", self.instance_name, sid)
         return JSONResponse({"ok": True})
-
-    async def echo(self, request: Request) -> JSONResponse:
-        """Echo service for testing/debugging."""
-        sid = request.path_params['sid']
-        q = request.query_params.get('q', 'hello')
-        # We use PluginSession.request_echo as the base implementation
-        return await self._forward(sid, PluginSession.request_echo, q=q)
 
     async def get_version(self, request: Request) -> JSONResponse:
         """Return the plugin version."""
@@ -281,10 +288,6 @@ class Plugin(object):
         """
         uptime = time.time() - self._start_time
         active_sessions = len(self._sessions)
-
-        # Clean up expired sessions while we're here
-        if self.session_ttl > 0:
-            await self._cleanup_expired_sessions()
 
         return JSONResponse({
             "status": "healthy",
@@ -342,21 +345,17 @@ class Plugin(object):
             JSONResponse with the method result.
 
         Raises:
-            HTTPException: If session not found or method fails.
+            HTTPException 404: Session ID not found.
+            HTTPException 410: Session has expired (TTL exceeded); the session
+                has already been cleaned up before this is raised.
+            HTTPException 500: Unexpected error inside the session method.
         """
-        # Check for expired session and clean up if needed
         if self.session_ttl > 0:
-            last_access = self._session_last_access.get(sid)
-            if last_access and (time.time() - last_access) > self.session_ttl:
-                # Session expired - clean it up
-                expired_session = self._sessions.pop(sid, None)
-                self._session_last_access.pop(sid, None)
-                if expired_session:
-                    try:
-                        await expired_session.close()
-                    except Exception:
-                        pass
-                log.info("[%s] Session %s expired due to TTL", self.instance_name, sid)
+            # Detect expiry of THIS session before the background cleanup removes it
+            last        = self._session_last_access.get(sid)
+            sid_expired = (last is not None and (time.time() - last) > self.session_ttl)
+            if sid_expired:
+                await self._cleanup_expired_sessions()
                 raise HTTPException(status_code=410, detail=f"session expired: {sid}")
 
         session = self._sessions.get(sid)
@@ -373,8 +372,12 @@ class Plugin(object):
         except HTTPException:
             raise  # Re-raise HTTP exceptions as-is
         except Exception as e:
-            log.exception("[%s] Error in session %s: %s", self.instance_name, sid, e)
-            raise HTTPException(status_code=500, detail=str(e)) from e
+            log.exception("[%s] Error in session %s calling %s: %s",
+                          self.instance_name, sid, func.__name__, e)
+            raise HTTPException(
+                status_code=500,
+                detail=f"[{self.instance_name}/{sid}] {func.__name__}: {e}"
+            ) from e
 
     async def _cleanup_expired_sessions(self) -> int:
         """
@@ -404,6 +407,23 @@ class Plugin(object):
             log.info("[%s] Cleaned up expired session %s", self.instance_name, sid)
 
         return len(expired_sids)
+
+    def _ensure_cleanup_task(self) -> None:
+        """Start the background session-cleanup task if not already running."""
+        if self._cleanup_task is not None and not self._cleanup_task.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+            self._cleanup_task = loop.create_task(self._cleanup_loop())
+        except RuntimeError:
+            pass  # No running loop yet; will retry on next call
+
+    async def _cleanup_loop(self) -> None:
+        """Background task: expire stale sessions every 5 seconds."""
+        while True:
+            await asyncio.sleep(5)
+            if self.session_ttl > 0:
+                await self._cleanup_expired_sessions()
 
     def _log_routes(self) -> None:
         """Log all registered routes for debugging."""

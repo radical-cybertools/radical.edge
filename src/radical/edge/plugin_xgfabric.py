@@ -11,16 +11,21 @@ The plugin runs on a local edge and communicates with remote edges
 '''
 
 import asyncio
+import csv
+import dataclasses
 import json
 import logging
 import os
 import re
 import shutil
 import subprocess
+import urllib.parse
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+import httpx
 
 from fastapi import FastAPI, HTTPException, Request
 from starlette.responses import JSONResponse
@@ -50,7 +55,7 @@ class ResourceConfig:
 
 def dict_to_resource_config(d: Dict) -> 'ResourceConfig':
     """Convert dict to ResourceConfig, ignoring unknown fields."""
-    import dataclasses
+
     valid = {f.name for f in dataclasses.fields(ResourceConfig)}
     return ResourceConfig(**{k: v for k, v in d.items() if k in valid})
 
@@ -93,7 +98,7 @@ def config_to_dict(cfg: WorkflowConfig) -> Dict:
 
 def dict_to_config(d: Dict) -> WorkflowConfig:
     """Convert dict to WorkflowConfig, filtering unknown fields."""
-    import dataclasses
+
 
     # Get valid field names from the dataclass
     valid_fields = {f.name for f in dataclasses.fields(WorkflowConfig)}
@@ -188,6 +193,20 @@ class XGFabricSession(PluginSession):
         # Active rhapsody client + pending task UIDs for the current batch (for cleanup)
         self._pending_tasks: Optional[tuple] = None  # (rhapsody_client, set[uid])
 
+    def _verify(self) -> Any:
+        """Return SSL verification argument for httpx calls."""
+        return self._bridge_cert if self._bridge_cert else False
+
+    async def _http_get(self, url: str, **kwargs) -> Any:
+        """Run httpx.get in a thread with appropriate SSL verification."""
+        verify = self._verify()
+        return await asyncio.to_thread(lambda: httpx.get(url, verify=verify, **kwargs))
+
+    async def _http_post(self, url: str, **kwargs) -> Any:
+        """Run httpx.post in a thread with appropriate SSL verification."""
+        verify = self._verify()
+        return await asyncio.to_thread(lambda: httpx.post(url, verify=verify, **kwargs))
+
     async def _resolve_path(self, edge_name: str, path: str) -> str:
         """Expand a leading '~' to the home directory on the remote edge."""
         if not path.startswith('~'):
@@ -195,10 +214,7 @@ class XGFabricSession(PluginSession):
         if edge_name not in self._homedir_cache:
             url = f"{self._bridge_url.rstrip('/')}/{edge_name}/sysinfo/homedir"
             try:
-                import httpx
-                verify: Any = self._bridge_cert if self._bridge_cert else False
-                resp = await asyncio.to_thread(
-                    lambda: httpx.get(url, verify=verify, timeout=5))
+                resp = await self._http_get(url, timeout=5)
                 self._homedir_cache[edge_name] = resp.json().get('homedir', '~')
             except Exception as e:
                 log.warning("[XGFabric] _resolve_path(%s): failed — %s", edge_name, e)
@@ -246,11 +262,18 @@ class XGFabricSession(PluginSession):
                         'modified': datetime.fromtimestamp(f.stat().st_mtime).isoformat()
                     })
             except Exception as e:
-                log.warning(f"Failed to read config {f}: {e}")
+                log.warning("Failed to read config %s: %s", f, e)
         return sorted(configs, key=lambda x: x['name'])
 
     async def load_config(self, name: str) -> Dict:
-        """Load a configuration by name or absolute/relative path."""
+        """Load a workflow config by name, path, or builtin alias ('default', 'test')."""
+        _builtins = {
+            'default': 'xgfabric_workflow_default.json',
+            'test':    'xgfabric_workflow_test.json',
+        }
+        if name in _builtins:
+            return self._load_builtin_config(_builtins[name])
+
         p = Path(name)
         if p.is_absolute() or p.exists():
             config_file = p if p.suffix else p.with_suffix('.json')
@@ -295,14 +318,6 @@ class XGFabricSession(PluginSession):
         with open(os.path.join(data_dir, filename)) as f:
             return json.load(f)
 
-    async def get_default_config(self) -> Dict:
-        """Get the default workflow configuration template."""
-        return self._load_builtin_config('xgfabric_workflow_default.json')
-
-    async def get_test_config(self) -> Dict:
-        """Get the test workflow configuration template (stub tasks, no CSPOT required)."""
-        return self._load_builtin_config('xgfabric_workflow_test.json')
-
     # -------------------------------------------------------------------------
     # Workflow Control
     # -------------------------------------------------------------------------
@@ -338,10 +353,8 @@ class XGFabricSession(PluginSession):
             return False
         url = self._bridge_url.rstrip('/') + f'/{edge_name}/queue_info/is_enabled'
         try:
-            import httpx
-            verify: Any = self._bridge_cert if self._bridge_cert else False
-            resp = await asyncio.to_thread(
-                lambda: httpx.get(url, verify=verify, timeout=5))
+
+            resp = await self._http_get(url, timeout=5)
             result = resp.json().get('available', False)
             log.info("[XGFabric] _is_enabled(%s): available=%s", edge_name, result)
             return result
@@ -393,11 +406,9 @@ class XGFabricSession(PluginSession):
             return [], []
 
         try:
-            import httpx
-            verify: Any = self._bridge_cert if self._bridge_cert else False
-            resp = await asyncio.to_thread(
-                lambda: httpx.post(f"{self._bridge_url.rstrip('/')}/edge/list",
-                                   verify=verify, timeout=5))
+
+            resp = await self._http_post(
+                f"{self._bridge_url.rstrip('/')}/edge/list", timeout=5)
             data       = resp.json().get('data', {})
             edges_info = {name: {'plugins': list(info.get('plugins', {}).keys())}
                           for name, info in data.get('edges', {}).items()}
@@ -417,12 +428,12 @@ class XGFabricSession(PluginSession):
         if self._state.status == 'running':
             raise HTTPException(status_code=409, detail="Workflow already running")
 
-        # Load workflow config
-        self._current_config = dict_to_config(await self._load_named_config(workflow, 'workflow'))
+        # Load workflow config (handles 'default', 'test', and user configs)
+        self._current_config = dict_to_config(await self.load_config(workflow))
 
         # Load resource config
         self._current_resource_config = dict_to_resource_config(
-            await self._load_named_config(resource, 'resource'))
+            await self._load_resource_config(resource))
 
         cfg = self._current_config
         self._state = WorkflowState(
@@ -443,30 +454,23 @@ class XGFabricSession(PluginSession):
 
         return {'status': 'started', 'config': cfg.name}
 
-    async def _load_named_config(self, name: str, kind: str) -> Dict:
-        """Load a workflow or resource config by name or path.
-
-        Special names ``__default__`` and ``__test__`` load the corresponding
-        built-in JSON files; otherwise the name is treated as a file path or a
-        name relative to the config directory.
-        """
-        builtin_map = {
-            ('workflow', '__default__'): 'xgfabric_workflow_default.json',
-            ('workflow', '__test__'):    'xgfabric_workflow_test.json',
-            ('resource', '__default__'): 'xgfabric_resource_default.json',
-            ('resource', '__test__'):    'xgfabric_resource_test.json',
+    async def _load_resource_config(self, name: str) -> Dict:
+        """Load a resource config by name or builtin alias ('default', 'test')."""
+        _builtins = {
+            'default':    'xgfabric_resource_default.json',
+            '__default__': 'xgfabric_resource_default.json',
+            'test':        'xgfabric_resource_test.json',
+            '__test__':    'xgfabric_resource_test.json',
         }
-        filename = builtin_map.get((kind, name))
-        if filename:
-            return self._load_builtin_config(filename)
+        if name in _builtins:
+            return self._load_builtin_config(_builtins[name])
 
         p = Path(name)
         config_file = (p if p.suffix else p.with_suffix('.json')) \
             if (p.is_absolute() or p.exists()) \
             else self._config_dir / (name if name.endswith('.json') else f'{name}.json')
         if not config_file.exists():
-            raise HTTPException(status_code=404,
-                                detail=f"{kind.capitalize()} config '{name}' not found")
+            raise HTTPException(status_code=404, detail=f"Resource config '{name}' not found")
         with open(config_file) as f:
             return json.load(f)
 
@@ -509,7 +513,7 @@ class XGFabricSession(PluginSession):
             self._notify_state()
 
         except Exception as e:
-            log.exception(f"Workflow failed: {e}")
+            log.exception("Workflow failed: %s", e)
             self._state.status = 'failed'
             self._state.error = str(e)
             self._state.end_time = datetime.now(timezone.utc).isoformat()
@@ -518,7 +522,8 @@ class XGFabricSession(PluginSession):
 
     async def _execute_workflow(self):
         """Main workflow execution logic."""
-        assert self._current_config is not None
+        if not self._current_config:
+            raise RuntimeError("No active workflow configuration")
         cfg = self._current_config
 
         rc = self._current_resource_config
@@ -644,19 +649,21 @@ class XGFabricSession(PluginSession):
                  self._state.phase, self._state.status,
                  [c['name'] for c in self._state.immediate_clusters],
                  [c['name'] for c in self._state.allocate_clusters])
-        if self._notify:
-            self._notify('workflow_status', asdict(self._state))
+        if self._plugin:
+            self._plugin._dispatch_notify('workflow_status', asdict(self._state))
 
     async def _is_edge_online(self, cluster: Dict) -> bool:
         """Check if cluster's child edge is online."""
-        assert self._bc is not None
+        if not self._bc:
+            raise RuntimeError("No active bridge connection")
         edge_name = cluster.get('child_edge_name') or cluster['edge_name']
         edges = await asyncio.to_thread(self._bc.list_edges)
         return edge_name in edges
 
     def _get_plugin(self, cluster: Dict, plugin_name: str) -> Any:
         """Get plugin client for a cluster."""
-        assert self._bc is not None
+        if not self._bc:
+            raise RuntimeError("No active bridge connection")
         edge_name = cluster.get('child_edge_name') or cluster['edge_name']
         ec = self._bc.get_edge_client(edge_name)
         return ec.get_plugin(plugin_name)
@@ -679,7 +686,8 @@ class XGFabricSession(PluginSession):
 
     async def _acquire_sensor_data(self, workspace: Path) -> Path:
         """Fetch sensor data from CSPOT (or generate mock data for testing)."""
-        assert self._current_config is not None
+        if not self._current_config:
+            raise RuntimeError("No active workflow configuration")
         cfg = self._current_config
         output_dir = workspace / "data"
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -687,9 +695,8 @@ class XGFabricSession(PluginSession):
 
         if cfg.mock_sensor_data:
             log.info("[XGFabric] _acquire_sensor_data: mock mode — writing synthetic CSV")
-            import csv as _csv
             with open(output_file, 'w', newline='') as f:
-                writer = _csv.DictWriter(f, fieldnames=['dt', 'windspeed', 'windavg', 'winddir'])
+                writer = csv.DictWriter(f, fieldnames=['dt', 'windspeed', 'windavg', 'winddir'])
                 writer.writeheader()
                 for i in range(max(cfg.num_simulations, 8)):
                     writer.writerow({'dt': f'2024-01-01T{i:02d}:00:00+00:00',
@@ -702,10 +709,15 @@ class XGFabricSession(PluginSession):
         # Find senspot-get
         senspot_path = self._find_senspot_get()
 
+        # Validate CSPOT URL
+        parsed = urllib.parse.urlparse(cfg.cspot_woof_url)
+        if parsed.scheme not in ('http', 'https', 'woof', ''):
+            raise ValueError(f"Invalid cspot_woof_url scheme: {cfg.cspot_woof_url}")
+
         # Fetch latest sequence number
-        cmd = f"{senspot_path} -W {cfg.cspot_woof_url}"
+        cmd = [senspot_path, '-W', cfg.cspot_woof_url]
         result = await asyncio.to_thread(
-            subprocess.run, cmd, shell=True, capture_output=True, text=True, timeout=30
+            subprocess.run, cmd, capture_output=True, text=True, timeout=30
         )
         if result.returncode != 0:
             raise RuntimeError(f"senspot-get failed: {result.stderr}")
@@ -728,9 +740,9 @@ class XGFabricSession(PluginSession):
             if self._cancel_requested:
                 raise asyncio.CancelledError()
 
-            cmd = f"{senspot_path} -W {cfg.cspot_woof_url} -S {current_seq}"
+            cmd = [senspot_path, '-W', cfg.cspot_woof_url, '-S', str(current_seq)]
             result = await asyncio.to_thread(
-                subprocess.run, cmd, shell=True, capture_output=True, text=True, timeout=30
+                subprocess.run, cmd, capture_output=True, text=True, timeout=30
             )
             if result.returncode == 0:
                 output = result.stdout.strip()
@@ -819,7 +831,8 @@ class XGFabricSession(PluginSession):
 
     async def _submit_pilot(self, cluster: Dict, bridge_url: str) -> str:
         """Submit pilot job to spawn child edge."""
-        assert self._bc is not None
+        if not self._bc:
+            raise RuntimeError("No active bridge connection")
         ec = self._bc.get_edge_client(cluster['edge_name'])
         psij: Any = await asyncio.to_thread(ec.get_plugin, 'psij')
 
@@ -859,7 +872,8 @@ class XGFabricSession(PluginSession):
         if not sim_results:
             return
 
-        assert self._current_config is not None
+        if not self._current_config:
+            raise RuntimeError("No active workflow configuration")
         source_staging = await asyncio.to_thread(self._get_plugin, source, 'staging')
         dest_staging   = await asyncio.to_thread(self._get_plugin, dest,   'staging')
 
@@ -895,7 +909,8 @@ class XGFabricSession(PluginSession):
         aborted and we return early so the caller can migrate.
         """
         cfg = self._current_config
-        assert cfg is not None
+        if not cfg:
+            raise RuntimeError("No active workflow configuration")
         params = self._generate_sim_params(sensor_csv, cfg.num_simulations)
 
         workflow_path  = await self._resolve_path(cluster['edge_name'], cluster['workflow_path'])
@@ -1004,7 +1019,7 @@ class XGFabricSession(PluginSession):
 
     def _generate_sim_params(self, sensor_csv: Path, num_sims: int) -> List:
         """Generate simulation parameters from sensor data."""
-        import csv
+
         wind_speeds = []
         with open(sensor_csv, 'r') as f:
             reader = csv.DictReader(f)
@@ -1027,7 +1042,8 @@ class XGFabricSession(PluginSession):
     async def _run_training(self, cluster: Dict, sim_results: List[str]):
         """Run ML training on cluster."""
         cfg = self._current_config
-        assert cfg is not None
+        if not cfg:
+            raise RuntimeError("No active workflow configuration")
         workflow_path = await self._resolve_path(cluster['edge_name'], cluster['workflow_path'])
         sensor_dir = f"{workflow_path}/data"
         sim_dir = f"{workflow_path}/simulations"
@@ -1064,7 +1080,8 @@ class XGFabricSession(PluginSession):
 
     async def _run_evaluation(self, cluster: Dict):
         """Run evaluation metrics computation."""
-        assert self._current_config is not None
+        if not self._current_config:
+            raise RuntimeError("No active workflow configuration")
         cfg = self._current_config
 
         workflow_path = await self._resolve_path(cluster['edge_name'], cluster['workflow_path'])
@@ -1110,19 +1127,21 @@ class XGFabricSession(PluginSession):
             try:
                 # Find the cluster config
                 cfg = self._current_config
-                assert cfg is not None
-                assert self._bc is not None
-                all_clusters = (self._state.immediate_clusters
-                               + self._state.allocate_clusters)
+                if not cfg:
+                    raise RuntimeError("No active workflow configuration")
+                if not self._bc:
+                    raise RuntimeError("No active bridge connection")
+                all_clusters = (self._state.immediate_clusters +
+                                self._state.allocate_clusters)
                 for c in all_clusters:
                     if c.get('name') == cluster_name:
                         ec   = self._bc.get_edge_client(c['edge_name'])
                         psij = await asyncio.to_thread(ec.get_plugin, 'psij')
                         await asyncio.to_thread(psij.cancel_job, pilot_id)
-                        log.info(f"Cancelled pilot job {pilot_id}")
+                        log.info("Cancelled pilot job %s", pilot_id)
                         break
             except Exception as e:
-                log.warning(f"Failed to cancel pilot {pilot_id}: {e}")
+                log.warning("Failed to cancel pilot %s: %s", pilot_id, e)
 
     async def close(self) -> dict:
         """Close the session."""
@@ -1132,8 +1151,8 @@ class XGFabricSession(PluginSession):
         if self._bc:
             try:
                 self._bc.close()
-            except Exception:
-                pass
+            except Exception as e:
+                log.exception("[XGFabric] Error closing bridge client: %s", e)
         return await super().close()
 
 
@@ -1260,8 +1279,6 @@ class PluginXGFabric(Plugin):
         self.add_route_post('start/{sid}', self.start_workflow)
         self.add_route_post('stop/{sid}', self.stop_workflow)
 
-        self._log_routes()
-
     def _create_session(self, sid: str, **_) -> XGFabricSession:
         """Create session with workdir, edge name, and bridge connection info."""
         edge_name = getattr(self._app.state, 'edge_name', 'local')
@@ -1278,7 +1295,8 @@ class PluginXGFabric(Plugin):
         session = super()._create_session(sid,
                       workdir=self._workdir, edge_name=edge_name,
                       bridge_url=bridge_url, bridge_cert=bridge_cert)
-        assert isinstance(session, XGFabricSession)
+        if not isinstance(session, XGFabricSession):
+            raise RuntimeError(f"Expected XGFabricSession, got {type(session).__name__}")
 
         # Seed session with current topology so get_status() classifies edges correctly
         if self._connected_edges:
@@ -1302,7 +1320,7 @@ class PluginXGFabric(Plugin):
         for session in self._sessions.values():
             if isinstance(session, XGFabricSession):
                 session.update_connected_edges(edges)
-                if session._notify:
+                if session._plugin:
                     session._notify_state()
 
     # -- Route handlers -------------------------------------------------------
@@ -1323,11 +1341,11 @@ class PluginXGFabric(Plugin):
 
     async def get_default_config(self, request: Request) -> JSONResponse:
         sid = request.path_params['sid']
-        return await self._forward(sid, XGFabricSession.get_default_config)
+        return await self._forward(sid, XGFabricSession.load_config, name='default')
 
     async def get_test_config(self, request: Request) -> JSONResponse:
         sid = request.path_params['sid']
-        return await self._forward(sid, XGFabricSession.get_test_config)
+        return await self._forward(sid, XGFabricSession.load_config, name='test')
 
     async def load_config(self, request: Request) -> JSONResponse:
         sid = request.path_params['sid']

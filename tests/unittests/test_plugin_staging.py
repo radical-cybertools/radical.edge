@@ -404,3 +404,90 @@ async def test_list_endpoint_not_a_directory(tmp_path):
     })
     assert resp.status_code == 400
     assert "Not a directory" in resp.json()['detail']
+
+
+# ---------------------------------------------------------------------------
+# _validate_path
+# ---------------------------------------------------------------------------
+
+def test_validate_path_relative_raises():
+    """Relative path must be rejected."""
+    session = StagingSession("sid-val-1")
+    with pytest.raises(ValueError, match="absolute"):
+        session._validate_path("relative/path/file.txt")
+
+
+def test_validate_path_outside_allowed_raises(tmp_path):
+    """Path not under $HOME or /tmp must be rejected."""
+    import tempfile, os
+    session = StagingSession("sid-val-2")
+    # Create a temporary dir that is NOT under HOME or /tmp
+    # We'll manipulate _ALLOWED_BASES directly to test the logic
+    original = StagingSession._ALLOWED_BASES[:]
+    StagingSession._ALLOWED_BASES = ["/nonexistent/base"]
+    try:
+        with pytest.raises(ValueError, match="escapes"):
+            session._validate_path(str(tmp_path / "file.txt"))
+    finally:
+        StagingSession._ALLOWED_BASES = original
+
+
+def test_validate_path_valid_tmp(tmp_path):
+    """Path within /tmp must be accepted."""
+    import tempfile
+    session = StagingSession("sid-val-3")
+    # tmp_path is under /tmp on most systems; if not, patch _ALLOWED_BASES
+    real_tmp = os.path.realpath('/tmp')
+    real_path = os.path.realpath(str(tmp_path))
+    if not real_path.startswith(real_tmp + os.sep) and real_path != real_tmp:
+        # Patch to allow this path
+        original = StagingSession._ALLOWED_BASES[:]
+        StagingSession._ALLOWED_BASES = [os.path.dirname(real_path)]
+        try:
+            result = session._validate_path(str(tmp_path / "file.txt"))
+            assert os.path.isabs(result)
+        finally:
+            StagingSession._ALLOWED_BASES = original
+    else:
+        result = session._validate_path(str(tmp_path / "file.txt"))
+        assert os.path.isabs(result)
+
+
+def test_check_target_not_exists_raises(tmp_path):
+    """_check_target_not_exists must raise FileExistsError if file exists."""
+    session = StagingSession("sid-val-4")
+    existing = tmp_path / "existing.txt"
+    existing.write_text("data")
+    with pytest.raises(FileExistsError, match="already exists"):
+        session._check_target_not_exists(str(existing))
+
+
+def test_check_target_not_exists_ok(tmp_path):
+    """_check_target_not_exists must not raise for a non-existent path."""
+    session = StagingSession("sid-val-5")
+    session._check_target_not_exists(str(tmp_path / "new_file.txt"))  # no raise
+
+
+# ---------------------------------------------------------------------------
+# StagingClient — no-session guard
+# ---------------------------------------------------------------------------
+
+def test_staging_client_put_no_session(tmp_path):
+    """StagingClient.put() must raise if no session is active."""
+    import httpx
+    from radical.edge.plugin_staging import StagingClient
+    http = httpx.Client(base_url="http://fake")
+    client = StagingClient(http, "/staging")
+    with pytest.raises(RuntimeError, match="session"):
+        client.put(str(tmp_path / "src.txt"), str(tmp_path / "dst.txt"))
+
+
+def test_staging_client_put_local_not_found(tmp_path):
+    """StagingClient.put() raises FileNotFoundError for missing local file."""
+    import httpx
+    from radical.edge.plugin_staging import StagingClient
+    http = httpx.Client(base_url="http://fake")
+    client = StagingClient(http, "/staging")
+    client._sid = "fake-sid"
+    with pytest.raises(FileNotFoundError):
+        client.put(str(tmp_path / "nonexistent.txt"), str(tmp_path / "dst.txt"))
