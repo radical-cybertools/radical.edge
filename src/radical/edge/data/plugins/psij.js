@@ -67,7 +67,7 @@ export function template() {
         <input type="checkbox" class="p-tunnel" style="margin-right:4px;" />
         Reverse SSH tunnel
       </label>
-      <input class="p-tunnel-port" type="text" style="width:80px; margin-left:8px; display:inline-block;" placeholder="port" title="Bridge port for reverse tunnel" />
+      <input class="p-tunnel-port" type="text" style="width:80px; margin-left:8px; display:inline-block; text-align:right;" placeholder="port" title="Bridge port for reverse tunnel" />
     </div>
     <div class="card psij-jobs-card">
       <div class="card-title">📊 Job Monitor</div>
@@ -510,14 +510,17 @@ function renderDetailOverlay(api, job) {
   body += '</div>';
 
   // stdout / stderr sections
+  const outText = job.stdout || '';
+  const errText = job.stderr || '';
+  const noOutput = '<span style="color:var(--muted);font-style:italic">(no output captured)</span>';
   body += `
     <div class="job-output-section">
       <h4>stdout</h4>
-      <pre id="psij-detail-stdout" class="out-stream">${escHtml(job.stdout || '')}</pre>
+      <pre id="psij-detail-stdout" class="out-stream">${outText ? escHtml(outText) : noOutput}</pre>
     </div>
     <div class="job-output-section">
       <h4>stderr</h4>
-      <pre id="psij-detail-stderr" class="err-stream">${escHtml(job.stderr || '')}</pre>
+      <pre id="psij-detail-stderr" class="err-stream">${errText ? escHtml(errText) : noOutput}</pre>
     </div>
   `;
 

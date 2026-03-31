@@ -21,9 +21,10 @@ import logging
 import os
 import pathlib
 import re
+import shutil
 import subprocess
-import tempfile
 import threading
+import time
 
 from datetime import timedelta
 from typing import Any, Dict
@@ -44,6 +45,12 @@ PSIJ_POLL_INTERVAL = 5.0
 
 # Where reverse-tunnel port rendezvous files are written
 _RELAY_BASE = pathlib.Path.home() / '.radical' / 'edge' / 'tunnels'
+
+# Persistent directory for job stdout/stderr capture
+_OUTPUT_BASE = pathlib.Path.home() / '.radical' / 'edge' / 'psij' / 'output'
+
+# Maximum age (days) for stale output directories cleaned up on session creation
+_OUTPUT_MAX_AGE_DAYS = 7
 
 
 def _relay_dir() -> pathlib.Path:
@@ -110,6 +117,26 @@ class PSIJSession(PluginSession):
         self._poll_interval = kwargs.get('poll_interval', self.poll_interval)
         self._poll_task = None
 
+        # Persistent output directory for this session's job stdout/stderr
+        self._output_dir = _OUTPUT_BASE / sid
+        self._cleanup_stale_output()
+        self._output_dir.mkdir(parents=True, exist_ok=True)
+
+    def _cleanup_stale_output(self) -> None:
+        """Remove output directories older than _OUTPUT_MAX_AGE_DAYS."""
+        if not _OUTPUT_BASE.exists():
+            return
+        cutoff = time.time() - _OUTPUT_MAX_AGE_DAYS * 86400
+        for entry in _OUTPUT_BASE.iterdir():
+            if not entry.is_dir() or entry == self._output_dir:
+                continue
+            try:
+                if entry.stat().st_mtime < cutoff:
+                    shutil.rmtree(entry)
+                    log.info("Cleaned up stale output dir: %s", entry)
+            except Exception as e:
+                log.debug("Failed to clean up %s: %s", entry, e)
+
     async def submit_job(self, job_spec_dict: Dict[str, Any], executor_name: str = 'local') -> Dict[str, Any]:
         '''
         Submit a job via PSIJ.
@@ -147,8 +174,8 @@ class PSIJSession(PluginSession):
 
             job = psij.Job(spec)
 
-            out_path = os.path.join(tempfile.gettempdir(), f"psij_job_{job.id}.out")
-            err_path = os.path.join(tempfile.gettempdir(), f"psij_job_{job.id}.err")
+            out_path = str(self._output_dir / f"{job.id}.out")
+            err_path = str(self._output_dir / f"{job.id}.err")
             spec.stdout_path = out_path
             spec.stderr_path = err_path
 
@@ -304,6 +331,15 @@ class PSIJSession(PluginSession):
             except asyncio.CancelledError:
                 pass
             self._poll_task = None
+
+        # Clean up this session's output directory
+        if self._output_dir.exists():
+            try:
+                shutil.rmtree(self._output_dir)
+            except Exception as e:
+                log.debug("Failed to remove output dir %s: %s",
+                          self._output_dir, e)
+
         return await super().close()
 
     def _start_polling(self):

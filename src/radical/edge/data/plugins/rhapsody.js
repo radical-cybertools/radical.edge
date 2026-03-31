@@ -187,7 +187,11 @@ async function openTaskDetail(api, uid) {
   try {
     task = await api.fetch(`task/${sid}/${uid}`);
   } catch (e) {
-    api.flash('Error loading task details: ' + e.message, false);
+    if (e.message && e.message.includes('404')) {
+      api.flash('Task details unavailable — the edge session may have been reset.', false);
+    } else {
+      api.flash('Error loading task details: ' + e.message, false);
+    }
     return;
   }
 
