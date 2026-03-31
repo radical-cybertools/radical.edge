@@ -211,9 +211,10 @@ export function onNotification(data, page, api) {
 
 async function getSession(api) {
   if (!sessions[api.edgeName]) {
-    sessions[api.edgeName] = await api.getSession('xgfabric');
+    // Store promise immediately to prevent concurrent callers from racing
+    sessions[api.edgeName] = api.getSession('xgfabric');
   }
-  return sessions[api.edgeName];
+  return await sessions[api.edgeName];
 }
 
 function ensureOverlay(api) {
