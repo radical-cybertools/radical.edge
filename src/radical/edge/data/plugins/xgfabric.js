@@ -95,7 +95,7 @@ export function overlayTemplate() {
       <div class="overlay-content" style="max-width:600px;">
         <div class="overlay-header">
           <h3>Edit Configuration</h3>
-          <button class="overlay-close" data-action="close-overlay">&times;</button>
+          <button class="task-cancel-btn overlay-close" data-action="close-overlay">❌</button>
         </div>
         <div class="overlay-body">
           <div class="form-group">
