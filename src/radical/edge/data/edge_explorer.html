@@ -441,12 +441,15 @@
     .task-entry>summary {
       display: list-item;
       list-style-position: outside;
-      margin-left: 18px;
+      margin-left: 22px;
       cursor: pointer;
-      padding: 4px 0;
+      padding: 5px 0;
       user-select: none;
       font-size: 0.85em;
       outline: none;
+    }
+    .task-entry>summary::marker {
+      font-size: 1.4em;
     }
     .task-entry>summary>.task-summary-content {
       display: inline-flex;
@@ -456,7 +459,7 @@
       margin-left: -4px;
     }
     .task-entry>.task-log {
-      margin: 0 0 4px 18px;
+      margin: 0 0 4px 22px;
       padding: 4px 0 4px 10px;
       border-left: 2px solid var(--border);
       font-size: 0.82em;

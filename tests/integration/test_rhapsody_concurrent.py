@@ -97,7 +97,10 @@ async def test_watch_task_isolation_between_sessions():
 
     async def make_rh_session(sid):
         sess = RhapsodySession(sid)
-        sess._notify = lambda topic, data: notify_calls.append((sid, topic, data['uid']))
+        mock_plugin = type('_P', (), {
+            '_dispatch_notify': lambda self_, t, d: notify_calls.append((sid, t, d['uid']))
+        })()
+        sess._plugin = mock_plugin
         b = rh.get_backend('concurrent')
         if hasattr(b, '__await__'):
             b = await b
