@@ -1803,18 +1803,29 @@
     async function registerSession(edgeName, pluginName, body = {}) {
       const key = `${edgeName}/${pluginName}`;
 
-      // REUSE: If we already have a session for this edge/plugin, return it.
+      // REUSE: If we already have a session (or an in-flight registration
+      // promise) for this edge/plugin, return it.  Storing the promise
+      // immediately prevents concurrent callers from racing into multiple
+      // register_session RPCs.
       if (sessions[key]) return sessions[key];
 
       const nsData = edgeData[edgeName]?.plugins?.[pluginName];
       if (!nsData) throw new Error(`Plugin ${pluginName} not found on ${edgeName}`);
       const ns = nsData.namespace;  // e.g. /edgeName/sysinfo
-      const data = await apiFetch(`${ns}/register_session`, {
+
+      const promise = apiFetch(`${ns}/register_session`, {
         method: 'POST',
         body: JSON.stringify(body)
+      }).then(data => {
+        sessions[key] = data.sid;  // replace promise with resolved SID
+        return data.sid;
+      }).catch(err => {
+        delete sessions[key];      // allow retry on failure
+        throw err;
       });
-      sessions[key] = data.sid;
-      return data.sid;
+
+      sessions[key] = promise;     // store promise immediately
+      return promise;
     }
 
     function getNs(edgeName, pluginName) {
@@ -2424,7 +2435,7 @@
 
       try {
         const key = `${edgeName}/psij`;
-        const sid = sessions[key];
+        const sid = await sessions[key];
         if (!sid) {
           flash('No active session for PsiJ', false);
           return;
@@ -2455,7 +2466,7 @@
 
       try {
         const key = `${edgeName}/rhapsody`;
-        const sid = sessions[key];
+        const sid = await sessions[key];
         if (!sid) {
           flash('No active session for Rhapsody', false);
           return;
