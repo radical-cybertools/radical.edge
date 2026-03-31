@@ -276,7 +276,7 @@ def main():
             print(f"\nRhapsody error: {e}")
 
     # Step 7: Run a ROSE workflow on the child edge
-    rose = None
+    rose_ep = None
 
     if 'rose' not in child_plugins:
         print("\nROSE plugin not available on child edge — skipping workflow.")
@@ -286,7 +286,7 @@ def main():
             if not workflow_file:
                 print("Skipping ROSE workflow.")
             else:
-                rose = child.get_plugin('rose')
+                rose_ep = child.get_plugin('rose')
 
                 # Track state changes via notification callback
                 done_event  = threading.Event()
@@ -322,12 +322,12 @@ def main():
                     icon    = '+' if ok else '!'
                     print(f"    [task.{tid}] {icon} {excerpt}")
 
-                rose.register_notification_callback(on_wf_state,
+                rose_ep.register_notification_callback(on_wf_state,
                                                     topic='workflow_state')
-                rose.register_notification_callback(on_task_event,
+                rose_ep.register_notification_callback(on_task_event,
                                                     topic='task_event')
 
-                result = rose.submit_workflow(workflow_file)
+                result = rose_ep.submit_workflow(workflow_file)
                 wf_id  = result['wf_id']
                 print(f"Submitted workflow: {wf_id}")
                 print("Waiting for workflow to complete...")
@@ -335,7 +335,7 @@ def main():
                 done_event.wait()
 
                 # Print final summary
-                status = rose.get_workflow_status(wf_id)
+                status = rose_ep.get_workflow_status(wf_id)
                 print(f"\nWorkflow {wf_id}: {status.get('state')}")
                 if status.get('start_time') and status.get('end_time'):
                     elapsed = status['end_time'] - status['start_time']
@@ -350,8 +350,8 @@ def main():
 
     # Step 8: Tear down
     print("\nTearing down...")
-    if rose:
-        rose.close()
+    if rose_ep:
+        rose_ep.close()
     if rh:
         rh.close()
     psij.cancel_job(job_id)
