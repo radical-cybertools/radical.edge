@@ -6,7 +6,6 @@ import logging
 import os
 import pathlib
 import random
-import re
 import ssl
 import socket
 import threading
@@ -313,11 +312,11 @@ class EdgeService:
                     f"  The parent edge's SSH reverse-tunnel watcher writes this file "
                     f"once the tunnel is active.  Bridge URL: {self._bridge_url}")
 
-            relay_port = relay_file.read_text().strip()
-            self._bridge_url = re.sub(
-                r'(https?://|wss?://)[^/:]+:\d+',
-                f'\\g<1>localhost:{relay_port}',
-                self._bridge_url)
+            relay_port = int(relay_file.read_text().strip())
+            from urllib.parse import urlparse, urlunparse
+            parsed = urlparse(self._bridge_url)
+            self._bridge_url = urlunparse(
+                parsed._replace(netloc=f'localhost:{relay_port}'))
             log.info("[Edge] Relay active; using %s", self._bridge_url)
         # ── End relay setup ───────────────────────────────────────────────────
 
@@ -456,6 +455,9 @@ class EdgeService:
                             finally:
                                 _recv_task.cancel()
                                 _stop_fut.cancel()
+                                await asyncio.gather(
+                                    _recv_task, _stop_fut,
+                                    return_exceptions=True)
 
                     except (ws_exc.ConnectionClosed, OSError) as e:
                         if self._stop_event.is_set():

@@ -36,7 +36,7 @@ def _parse_slurm_time(s: str) -> 'int | None':
     Raises:
         RuntimeError: If the string cannot be parsed.
     """
-    s = s.strip().upper()
+    orig = s = s.strip().upper()
     if s in ('UNLIMITED', 'INFINITE', 'NOT_SET', 'N/A', ''):
         return None
 
@@ -46,7 +46,7 @@ def _parse_slurm_time(s: str) -> 'int | None':
         try:
             days = int(day_part)
         except ValueError:
-            raise RuntimeError(f"Cannot parse SLURM time: {s!r}")
+            raise RuntimeError(f"Cannot parse SLURM time: {orig!r}")
 
     parts = s.split(':')
     try:

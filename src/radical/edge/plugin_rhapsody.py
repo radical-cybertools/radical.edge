@@ -8,6 +8,8 @@ and monitor compute / AI tasks on edge nodes.
 import asyncio
 import logging
 import threading
+import time
+import uuid
 
 from fastapi import FastAPI, HTTPException, Request
 from starlette.responses import JSONResponse
@@ -446,8 +448,6 @@ class PluginRhapsody(Plugin):
     }
 
     def __init__(self, app: FastAPI, instance_name: str = "rhapsody"):
-        self._pending_backends = None
-        self._last_created_sid  = None
         super().__init__(app, instance_name)
 
         self.add_route_post('submit/{sid}', self.submit_tasks)
@@ -456,11 +456,6 @@ class PluginRhapsody(Plugin):
         self.add_route_get('task/{sid}/{uid}', self.get_task)
         self.add_route_post('cancel/{sid}/{uid}', self.cancel_task)
         self.add_route_get('statistics/{sid}', self.get_statistics)
-
-    def _create_session(self, sid: str, **kwargs) -> "RhapsodySession":
-        """Create a RhapsodySession using pending backends set by register_session."""
-        self._last_created_sid = sid
-        return super()._create_session(sid, backend_names=self._pending_backends)
 
     async def register_session(self, request: Request) -> JSONResponse:
         """Register a new Rhapsody session.
@@ -472,16 +467,21 @@ class PluginRhapsody(Plugin):
         except Exception:
             data = {}
 
-        self._pending_backends = data.get('backends')
-        resp = await super().register_session(request)
-        self._pending_backends = None
+        backend_names = data.get('backends')
 
-        # Initialize the newly created session (async — can't do this in _create_session)
-        session = self._sessions.get(self._last_created_sid)
-        if session and hasattr(session, 'initialize'):
+        # Build session directly to avoid race on shared plugin state
+        self._ensure_cleanup_task()
+        sid     = f"session.{uuid.uuid4().hex[:8]}"
+        session = self.session_class(sid, backend_names=backend_names)
+        session._plugin = self
+        self._sessions[sid]            = session
+        self._session_last_access[sid] = time.time()
+        log.info("[%s] Registered session %s", self.instance_name, sid)
+
+        if hasattr(session, 'initialize'):
             await session.initialize()
 
-        return resp
+        return JSONResponse({"sid": sid})
 
     # -- route handlers -----------------------------------------------------
 

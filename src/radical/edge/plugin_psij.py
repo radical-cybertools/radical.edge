@@ -621,6 +621,8 @@ class PluginPSIJ(Plugin):
         # Ensure relay directory exists at startup
         _relay_dir()
 
+        self._app.router.on_shutdown.append(self._cleanup_tunnels)
+
         self.add_route_post('submit/{sid}',                    self.submit_job)
         self.add_route_post('submit_tunneled/{sid}',           self.submit_tunneled)
         self.add_route_get('tunnel_status/{edge_name}',        self.tunnel_status)
@@ -864,7 +866,8 @@ class PluginPSIJ(Plugin):
                 continue
 
             # --- job is RUNNING: find its nodes ---
-            nodes = QueueInfoSlurm.get_job_nodes(str(native_id))
+            nodes = await asyncio.to_thread(
+                QueueInfoSlurm.get_job_nodes, str(native_id))
             if not nodes:
                 log.warning("[psij] Job %s RUNNING but no nodes found yet, retrying",
                             native_id)
@@ -897,6 +900,24 @@ class PluginPSIJ(Plugin):
         log.warning("[psij] Watcher for edge '%s' timed out waiting for job %s to start",
                     edge_name, native_id)
 
+    async def _cleanup_tunnels(self) -> None:
+        """Terminate all SSH tunnel processes on shutdown."""
+        for name, proc in list(self._tunnel_procs.items()):
+            try:
+                proc.terminate()
+                proc.wait(timeout=5)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            log.info("[psij] Terminated tunnel process for edge '%s'", name)
+        self._tunnel_procs.clear()
+
+        for name, task in list(self._watchers.items()):
+            task.cancel()
+        self._watchers.clear()
+
     async def _spawn_tunnel(self, node: str, relay_file: pathlib.Path,
                             edge_name: str) -> None:
         """Open a reverse SSH tunnel from *this* login node to *node*.
@@ -928,6 +949,7 @@ class PluginPSIJ(Plugin):
         ssh_cmd = [
             'ssh', '-N',
             '-o', 'StrictHostKeyChecking=no',
+            '-o', 'UserKnownHostsFile=/dev/null',
             '-o', 'BatchMode=yes',
             '-o', 'ServerAliveInterval=10',
             '-o', 'ServerAliveCountMax=3',

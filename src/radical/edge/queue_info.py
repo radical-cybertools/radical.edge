@@ -295,11 +295,13 @@ class QueueInfoSlurm(QueueInfo):
 
 
     @staticmethod
-    def get_job_nodes(native_id: str) -> list:
+    def get_job_nodes(native_id: str, env: 'dict | None' = None) -> list:
         """Return hostnames of nodes allocated to a running SLURM job.
 
         Args:
             native_id: SLURM job ID (string or int).
+            env:       Environment dict (e.g. with SLURM_CONF).
+                       Defaults to inheriting the current environment.
 
         Returns:
             List of hostname strings, or empty list if not determinable.
@@ -307,7 +309,7 @@ class QueueInfoSlurm(QueueInfo):
         try:
             r = subprocess.run(
                 ['squeue', '--job', str(native_id), '--noheader', '--format=%N'],
-                capture_output=True, text=True, timeout=10)
+                capture_output=True, text=True, timeout=10, env=env)
         except (OSError, subprocess.TimeoutExpired):
             return []
 
@@ -318,13 +320,13 @@ class QueueInfoSlurm(QueueInfo):
         try:
             r2 = subprocess.run(
                 ['scontrol', 'show', 'hostnames', nodelist],
-                capture_output=True, text=True, timeout=10)
+                capture_output=True, text=True, timeout=10, env=env)
             if r2.returncode == 0 and r2.stdout.strip():
                 return [h.strip() for h in r2.stdout.splitlines() if h.strip()]
         except (OSError, subprocess.TimeoutExpired):
             pass
 
-        return [nodelist]
+        return []
 
 
     def _run(self, cmd):
