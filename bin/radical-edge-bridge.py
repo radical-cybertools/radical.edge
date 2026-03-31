@@ -303,6 +303,14 @@ async def register(ws: WebSocket):
     except WebSocketDisconnect:
         pass
 
+    except RuntimeError as e:
+        # Starlette raises RuntimeError when WS is closed during receive
+        if "not connected" in str(e).lower():
+            log.debug("[Bridge] recv interrupted on disconnected edge '%s'",
+                      edge_name or '(unknown)')
+        else:
+            log.exception("[Bridge] Edge connection error: %s", e)
+
     except Exception as e:
         log.exception("[Bridge] Edge connection error: %s", e)
 
@@ -316,14 +324,14 @@ async def register(ws: WebSocket):
             # Only unregister if this WS was the active one for the name
             # (Prevent rejected duplicates from killing the valid session)
             if edges.get(edge_name) == ws:
+                # Remove from edges first so topology broadcast skips this WS
+                del edges[edge_name]
+
                 if edge_name in endpoints["edges"]:
                     log.info("[Bridge] Unregistering edge: %s", edge_name)
                     del endpoints["edges"][edge_name]
                     await broadcast_event("topology", endpoints)
                     await broadcast_topology_to_edges()
-
-                if edge_name in edges:
-                    del edges[edge_name]
             else:
                 log.info("[Bridge] Disconnected duplicate/inactive session for: %s", edge_name)
 

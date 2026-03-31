@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Spawn a sub-edge via PsiJ, run Rhapsody tasks on it, then tear down.
+Spawn a sub-edge via PsiJ, run Rhapsody tasks and a ROSE workflow on it,
+then tear down.
 
 Supports both direct (no tunnel) and reverse-SSH-tunnel modes.  In tunnel
 mode the child edge runs on a compute node with no direct network access to
@@ -8,8 +9,17 @@ the bridge; a reverse SSH tunnel is established automatically by the parent
 edge so the child can reach the bridge through localhost.
 """
 
+import threading
 import time
+import os
+
 from radical.edge import BridgeClient
+
+# Register ROSE plugin class (lives in separate package)
+try:
+    import rose.service.api.rest                                    # noqa: F401
+except ImportError:
+    pass
 
 
 def select_edge(bc):
@@ -80,6 +90,79 @@ def wait_for_edge(bc, edge_name, timeout=300):
     raise TimeoutError(f"Edge '{edge_name}' did not appear within {timeout}s")
 
 
+def _get_workflow_file(child):
+    """Prompt for a ROSE workflow YAML, verifying or uploading as needed.
+
+    Returns the remote path on the edge, or empty string to skip.
+    """
+    staging = None
+
+    while True:
+        print("\nROSE workflow YAML:")
+        print("  [1] Use a file already on the edge (remote path)")
+        print("  [2] Upload a local file to the edge")
+        print("  [3] Skip")
+        choice = input("Choice [1]: ").strip() or "1"
+
+        if choice == '3':
+            return ''
+
+        # Lazy-init staging plugin
+        if not staging and 'staging' in child.list_plugins():
+            staging = child.get_plugin('staging')
+
+        if choice == '1':
+            path = input("Remote path on the edge: ").strip()
+            if not path:
+                continue
+
+            # Verify file exists on the edge via staging
+            if staging:
+                try:
+                    parent_dir = os.path.dirname(path)
+                    basename   = os.path.basename(path)
+                    listing    = staging.list(parent_dir)
+                    names      = [e['name'] for e in listing.get('entries', [])]
+                    if basename not in names:
+                        print(f"  File not found on edge: {path}")
+                        continue
+                except Exception as e:
+                    print(f"  Could not verify remote file: {e}")
+                    continue
+            else:
+                print("  (staging plugin not available — cannot verify file)")
+
+            return path
+
+        elif choice == '2':
+            local_path = input("Local file path: ").strip()
+            if not local_path:
+                continue
+
+            local_path = os.path.expanduser(local_path)
+            if not os.path.isfile(local_path):
+                print(f"  Local file not found: {local_path}")
+                continue
+
+            if not staging:
+                print("  Staging plugin not available on child edge — cannot upload.")
+                continue
+
+            # Upload to ~/workflows/<filename> on the edge
+            basename    = os.path.basename(local_path)
+            sysinfo     = child.get_plugin('sysinfo')
+            remote_dir  = sysinfo.homedir() + '/workflows'
+            remote_path = f"{remote_dir}/{basename}"
+
+            print(f"  Uploading {local_path} → {remote_path} ...")
+            staging.put(local_path, remote_path, overwrite=True)
+            print(f"  Uploaded ({os.path.getsize(local_path)} bytes)")
+            return remote_path
+
+        else:
+            print("  Invalid choice.")
+
+
 def main():
     bc = BridgeClient()
 
@@ -93,7 +176,7 @@ def main():
     use_tunnel = ask_tunnel()
 
     # Step 3: Build job spec and submit
-    child_name = f"{parent_eid}.x"
+    child_name = f"{parent_eid}.f{os.getpid()}"
     plugins    = ','.join(parent.list_plugins().keys())
     job_spec = {
         "executable": "radical-edge-service.py",
@@ -124,31 +207,107 @@ def main():
     child = wait_for_edge(bc, child_name)
 
     # Step 6: Run hello-world tasks via Rhapsody on the child edge
-    print("\nSubmitting Rhapsody tasks on sub-edge...")
-    rh = child.get_plugin('rhapsody')
+    child_plugins = child.list_plugins()
+    rh = None
 
-    tasks = [
-        {"executable": "/bin/echo",    "arguments": ["Hello from task 1"]},
-        {"executable": "/bin/echo",    "arguments": ["Hello from task 2"]},
-        {"executable": "/bin/hostname"},
-        {"executable": "/bin/sleep",   "arguments": ["5"]},
-    ]
+    if 'rhapsody' not in child_plugins:
+        print("\nRhapsody plugin not available on child edge — skipping tasks.")
+    else:
+        try:
+            print("\nSubmitting Rhapsody tasks on sub-edge...")
+            rh = child.get_plugin('rhapsody')
 
-    submitted = rh.submit_tasks(tasks)
-    uids = [t['uid'] for t in submitted]
-    print(f"Submitted {len(uids)} tasks")
+            tasks = [
+                {"executable": "/bin/echo",    "arguments": ["Hello from task 1"]},
+                {"executable": "/bin/echo",    "arguments": ["Hello from task 2"]},
+                {"executable": "/bin/hostname"},
+                {"executable": "/bin/sleep",   "arguments": ["5"]},
+            ]
 
-    print("Waiting for tasks to complete...")
-    results = rh.wait_tasks(uids)
+            submitted = rh.submit_tasks(tasks)
+            uids = [t['uid'] for t in submitted]
+            print(f"Submitted {len(uids)} tasks")
 
-    print("\nResults:")
-    for t in results:
-        out = (t.get('stdout') or '').strip()
-        print(f"  {t['uid'][:12]}...  state={t['state']:8s}  {out}")
+            print("Waiting for tasks to complete...")
+            results = rh.wait_tasks(uids)
 
-    # Step 7: Tear down
+            print("\nResults:")
+            for t in results:
+                out = (t.get('stdout') or '').strip()
+                print(f"  {t['uid'][:12]}...  state={t['state']:8s}  {out}")
+        except Exception as e:
+            print(f"\nRhapsody error: {e}")
+
+    # Step 7: Run a ROSE workflow on the child edge
+    rose = None
+
+    if 'rose' not in child_plugins:
+        print("\nROSE plugin not available on child edge — skipping workflow.")
+    else:
+        try:
+            workflow_file = _get_workflow_file(child)
+            if not workflow_file:
+                print("Skipping ROSE workflow.")
+            else:
+                rose = child.get_plugin('rose')
+
+                # Track state changes via notification callback
+                done_event  = threading.Event()
+                final_state = {}
+
+                def on_wf_state(edge, plugin, topic, data):
+                    state = data.get('state', '?')
+                    wf_id = data.get('wf_id', '?')
+                    stats = data.get('stats') or {}
+                    error = data.get('error')
+
+                    # Print iteration progress if stats contain learner info
+                    iteration = stats.get('iteration')
+                    metric    = stats.get('metric_value')
+                    if iteration is not None:
+                        learner = stats.get('learner_id', '?')
+                        print(f"  [{wf_id}] {state}  "
+                              f"learner={learner}  iter={iteration}  "
+                              f"metric={metric}")
+                    elif error:
+                        print(f"  [{wf_id}] {state}  error={error}")
+                    else:
+                        print(f"  [{wf_id}] {state}")
+
+                    if state in ('COMPLETED', 'FAILED', 'CANCELED'):
+                        final_state.update(data)
+                        done_event.set()
+
+                rose.register_notification_callback(on_wf_state,
+                                                    topic='workflow_state')
+
+                result = rose.submit_workflow(workflow_file)
+                wf_id  = result['wf_id']
+                print(f"Submitted workflow: {wf_id}")
+                print("Waiting for workflow to complete...")
+
+                done_event.wait()
+
+                # Print final summary
+                status = rose.get_workflow_status(wf_id)
+                print(f"\nWorkflow {wf_id}: {status.get('state')}")
+                if status.get('start_time') and status.get('end_time'):
+                    elapsed = status['end_time'] - status['start_time']
+                    print(f"  Duration: {elapsed:.1f}s")
+                if status.get('stats'):
+                    print(f"  Stats:    {status['stats']}")
+                if status.get('error'):
+                    print(f"  Error:    {status['error']}")
+
+        except Exception as e:
+            print(f"\nROSE error: {e}")
+
+    # Step 8: Tear down
     print("\nTearing down...")
-    rh.close()
+    if rose:
+        rose.close()
+    if rh:
+        rh.close()
     psij.cancel_job(job_id)
     print(f"Job {job_id} canceled.")
 
