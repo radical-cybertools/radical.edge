@@ -38,15 +38,17 @@ class StagingSession(PluginSession):
         super().__init__(sid)
 
     def _validate_path(self, path: str) -> str:
-        """Validate that path is absolute and within an allowed base directory.
+        """Validate that path is absolute (or starts with ~) and within an
+        allowed base directory.
 
         Returns the resolved (real) path.
 
         Raises:
             ValueError: If path is not absolute or escapes allowed directories.
         """
+        path = os.path.expanduser(path)
         if not os.path.isabs(path):
-            raise ValueError(f"Path must be absolute: {path}")
+            raise ValueError(f"Path must be absolute (or use ~): {path}")
         resolved = os.path.realpath(path)
         for base in self._ALLOWED_BASES:
             if resolved == base or resolved.startswith(base + os.sep):
@@ -73,7 +75,7 @@ class StagingSession(PluginSession):
         Write file content to the remote filesystem.
 
         Args:
-            filename: Absolute path on the edge filesystem
+            filename: Absolute path (or ~/...) on the edge filesystem
             content_b64: File content as base64-encoded string
             overwrite: If True, replace an existing file silently
 
@@ -111,7 +113,7 @@ class StagingSession(PluginSession):
         Read file content from the remote filesystem.
 
         Args:
-            filename: Absolute path on the edge filesystem
+            filename: Absolute path (or ~/...) on the edge filesystem
 
         Returns:
             {"path": str, "size": int, "content": str (base64-encoded)}
@@ -147,7 +149,7 @@ class StagingSession(PluginSession):
         List contents of a directory on the remote filesystem.
 
         Args:
-            path: Absolute path to the directory
+            path: Absolute path (or ~/...) to the directory
 
         Returns:
             {
@@ -215,7 +217,7 @@ class StagingClient(PluginClient):
 
         Args:
             src: Absolute path on the local (client) filesystem
-            tgt: Absolute path on the remote (edge) filesystem
+            tgt: Absolute path (or ~/...) on the remote (edge) filesystem
             overwrite: If True, replace an existing remote file silently
 
         Returns:
@@ -260,7 +262,7 @@ class StagingClient(PluginClient):
         Download a remote file to the local client filesystem.
 
         Args:
-            src: Absolute path on the remote (edge) filesystem
+            src: Absolute path (or ~/...) on the remote (edge) filesystem
             tgt: Absolute path on the local (client) filesystem
 
         Returns:
@@ -305,7 +307,7 @@ class StagingClient(PluginClient):
         List contents of a directory on the remote edge filesystem.
 
         Args:
-            path: Absolute path on the remote (edge) filesystem
+            path: Absolute path (or ~/...) on the remote (edge) filesystem
 
         Returns:
             {

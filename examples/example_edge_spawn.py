@@ -48,9 +48,10 @@ def get_job_params(ec):
                or (queues[0] if queues else 'debug')
     account  = input(f"Account [{accounts[0] if accounts else ''}]: ").strip() \
                or (accounts[0] if accounts else None)
+    nodes    = input("Number of nodes [1]: ").strip() or "1"
     duration = input("Duration in seconds [600]: ").strip() or "600"
     executor = input("Executor [slurm]: ").strip() or "slurm"
-    return queue, account, duration, executor
+    return queue, account, nodes, duration, executor
 
 
 def ask_tunnel() -> bool:
@@ -172,7 +173,7 @@ def main():
     parent = bc.get_edge_client(parent_eid)
 
     # Step 2: Get job parameters and tunnel preference
-    queue, account, duration, executor = get_job_params(parent)
+    queue, account, nodes, duration, executor = get_job_params(parent)
     use_tunnel = ask_tunnel()
 
     # Step 3: Build job spec and submit
@@ -182,9 +183,10 @@ def main():
         "executable": "radical-edge-service.py",
         "arguments": ["--url", bc._url, "--name", child_name, "-p", plugins],
         "attributes": {
-            "queue_name": queue,
-            "account":    account,
-            "duration":   duration,
+            "queue_name":    queue,
+            "account":       account,
+            "node_count":    int(nodes),
+            "duration":      duration,
         },
     }
 
@@ -206,8 +208,43 @@ def main():
     # Step 5: Wait for the child edge to register at the bridge
     child = wait_for_edge(bc, child_name)
 
-    # Step 6: Run hello-world tasks via Rhapsody on the child edge
+    # Print allocation info from the child edge
     child_plugins = child.list_plugins()
+    if 'queue_info' in child_plugins:
+        try:
+            qi    = child.get_plugin('queue_info')
+            alloc = qi.job_allocation()
+            if alloc:
+                n   = alloc.get('n_nodes', '?')
+                rt  = alloc.get('runtime')
+                rtm = f"{int(rt) // 60}m" if rt else 'unlimited'
+                print(f"\n  Allocation:  {n} node(s), {rtm} walltime")
+        except Exception:
+            pass
+    if 'sysinfo' in child_plugins:
+        try:
+            si      = child.get_plugin('sysinfo')
+            metrics = si.get_metrics()
+            host    = metrics.get('hostname', '?')
+            osname  = metrics.get('os', '?')
+            cpus    = metrics.get('cpu_count', '?')
+            mem     = metrics.get('memory', {})
+            mem_gb  = mem.get('total', 0) / (1024**3) if mem.get('total') else 0
+            gpus    = metrics.get('gpus', [])
+            n_gpus  = len(gpus) if isinstance(gpus, list) else 0
+
+            print(f"  Hostname:    {host}")
+            print(f"  OS:          {osname}")
+            print(f"  CPUs:        {cpus}")
+            if mem_gb:
+                print(f"  Memory:      {mem_gb:.1f} GB")
+            if n_gpus:
+                gpu_names = [g.get('name', '?') for g in gpus[:4]]
+                print(f"  GPUs:        {n_gpus} ({', '.join(gpu_names)})")
+        except Exception:
+            pass
+
+    # Step 6: Run hello-world tasks via Rhapsody on the child edge
     rh = None
 
     if 'rhapsody' not in child_plugins:
