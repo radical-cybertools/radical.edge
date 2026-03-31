@@ -970,7 +970,9 @@
       font-size: 1rem;
     }
     .overlay-close {
-      font-size: 0.72em;
+      /* fixed size to match task-cancel-btn in table rows regardless of
+         the overlay-header's own font-size context */
+      font-size: 9px;
     }
     .overlay-body {
       padding: 16px;

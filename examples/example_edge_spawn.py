@@ -177,7 +177,7 @@ def main():
     use_tunnel = ask_tunnel()
 
     # Step 3: Build job spec and submit
-    child_name = f"{parent_eid}.f{os.getpid()}"
+    child_name = f"{parent_eid}.{os.getpid()}"
     plugins    = ','.join(parent.list_plugins().keys())
     job_spec = {
         "executable": "radical-edge-service.py",
@@ -315,8 +315,17 @@ def main():
                         final_state.update(data)
                         done_event.set()
 
+                def on_task_event(edge, plugin, topic, data):
+                    tid     = data.get('task_id', '?')
+                    ok      = data.get('ok', False)
+                    excerpt = data.get('excerpt', '')
+                    icon    = '+' if ok else '!'
+                    print(f"    [task.{tid}] {icon} {excerpt}")
+
                 rose.register_notification_callback(on_wf_state,
                                                     topic='workflow_state')
+                rose.register_notification_callback(on_task_event,
+                                                    topic='task_event')
 
                 result = rose.submit_workflow(workflow_file)
                 wf_id  = result['wf_id']
