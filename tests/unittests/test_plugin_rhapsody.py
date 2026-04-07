@@ -309,27 +309,6 @@ async def test_cancel_task():
 
 
 # ---------------------------------------------------------------------------
-# Statistics
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_get_statistics():
-    _, plugin, client = _make_plugin()
-    sid = _register(client, plugin)
-
-    session = plugin._sessions[sid]
-    session._rh_session = MagicMock()
-    session._rh_session.get_statistics.return_value = {
-        "counts": {}, "summary": {"total_tasks": 0}
-    }
-
-    resp = client.get(f"{plugin.namespace}/statistics/{sid}")
-    assert resp.status_code == 200
-    data = resp.json()
-    assert 'summary' in data
-
-
-# ---------------------------------------------------------------------------
 # RhapsodySession direct tests
 # ---------------------------------------------------------------------------
 
@@ -398,14 +377,6 @@ def test_rhapsody_client_cancel_task():
     assert "cancel" in client._http.post.call_args[0][0]
 
 
-def test_rhapsody_client_get_statistics():
-    stats = {"total": 5, "done": 3, "failed": 1, "pending": 1}
-    client = _make_rhapsody_client(stats)
-    result = client.get_statistics()
-    assert result["total"] == 5
-    client._http.get.assert_called_once()
-
-
 def test_rhapsody_client_list_tasks():
     client = _make_rhapsody_client({"tasks": []})
     result = client.list_tasks()
@@ -435,9 +406,6 @@ def test_rhapsody_client_no_session_raises():
 
     with pytest.raises(RuntimeError, match="session"):
         client.cancel_task("t.001")
-
-    with pytest.raises(RuntimeError, match="session"):
-        client.get_statistics()
 
 
 if __name__ == '__main__':

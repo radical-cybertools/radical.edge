@@ -91,13 +91,6 @@ def main():
         if err:
             print(f"    stderr: {err}")
 
-    # ---- statistics ----
-    stats = rh.get_statistics()
-    print("\n" + "=" * 60)
-    print(" Session Statistics")
-    print("=" * 60)
-    print(json.dumps(stats, indent=2, default=str))
-
     # ---- individual task query ----
     print("\n" + "-" * 60)
     print(f" Querying individual task: {uids[0]}")

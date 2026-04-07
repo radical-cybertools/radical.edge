@@ -268,13 +268,6 @@ class RhapsodySession(PluginSession):
 
         return {"uid": uid, "status": "canceled"}
 
-    async def get_statistics(self) -> dict:
-        """
-        Return session-level statistics.
-        """
-        self._check_active()
-        return self._rh_session.get_statistics()
-
     async def close(self) -> dict:
         """
         Shutdown RHAPSODY session and clean up.
@@ -380,17 +373,6 @@ class RhapsodyClient(PluginClient):
         self._raise(resp)
         return resp.json()
 
-    def get_statistics(self) -> dict:
-        """
-        Request session statistics.
-        """
-        self._require_session()
-
-        url = self._url(f"statistics/{self.sid}")
-        resp = self._http.get(url)
-        self._raise(resp)
-        return resp.json()
-
 
 # ---------------------------------------------------------------------------
 # Server-side plugin
@@ -455,7 +437,6 @@ class PluginRhapsody(Plugin):
         self.add_route_get('list_tasks/{sid}', self.list_tasks)
         self.add_route_get('task/{sid}/{uid}', self.get_task)
         self.add_route_post('cancel/{sid}/{uid}', self.cancel_task)
-        self.add_route_get('statistics/{sid}', self.get_statistics)
 
     async def register_session(self, request: Request) -> JSONResponse:
         """Register a new Rhapsody session.
@@ -513,8 +494,4 @@ class PluginRhapsody(Plugin):
         sid = request.path_params['sid']
         uid = request.path_params['uid']
         return await self._forward(sid, RhapsodySession.cancel_task, uid=uid)
-
-    async def get_statistics(self, request: Request) -> JSONResponse:
-        sid = request.path_params['sid']
-        return await self._forward(sid, RhapsodySession.get_statistics)
 
