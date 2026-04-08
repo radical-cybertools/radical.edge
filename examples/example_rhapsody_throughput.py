@@ -3,17 +3,18 @@
 Example: Rhapsody Task Throughput Benchmark
 ===========================================
 
-Measures task throughput for different batch sizes by submitting
-minimal Python function tasks and timing the full submit-wait round-trip.
+Measures task throughput for different batch sizes using the Rhapsody
+Session/Task API with the Edge execution backend.  All bridge
+interactions are handled by the backend — no direct BridgeClient usage.
 
-Runs two passes: one with identical (homogeneous) tasks that benefit
-from template compression, and one with per-task arguments
-(heterogeneous) that exercise the regular batched submit path.
+Runs two passes: one with identical (homogeneous) tasks and one with
+per-task arguments (heterogeneous) to compare template-compressed vs
+regular batched submit paths.
 
 Prerequisites:
   - A Radical Edge bridge is running (RADICAL_BRIDGE_URL set).
   - An edge service is connected with the Rhapsody plugin loaded.
-  - The ``rhapsody`` package is installed on the edge node.
+  - The ``rhapsody`` package is installed on both client and edge.
 
 Usage:
   python examples/example_rhapsody_throughput.py [batch_sizes...]
@@ -21,14 +22,15 @@ Usage:
   Default batch sizes: 1 2 4 8 16 … 65536
 """
 
+import asyncio
+import os
 import sys
 import time
 
-import cloudpickle
-import base64
+import rhapsody
 
-from radical.edge import BridgeClient
 
+# ---- minimal task functions ------------------------------------------------
 
 def _noop():
     """Minimal function task — runs in-process, no child process."""
@@ -40,16 +42,7 @@ def _noop_arg(x):
     return x
 
 
-# Pre-serialize the functions once
-_pickled_noop = base64.b64encode(
-    cloudpickle.dumps(_noop)).decode('ascii')
-_pickled_noop_arg = base64.b64encode(
-    cloudpickle.dumps(_noop_arg)).decode('ascii')
-
-_FUNC_TASK = {
-    "function":        "cloudpickle::" + _pickled_noop,
-    "_pickled_fields": ["function"],
-}
+# ---- output helper ---------------------------------------------------------
 
 fout = open("rhapsody_throughput.out", "w")
 
@@ -61,61 +54,55 @@ def out(data=''):
     fout.flush()
 
 
-def make_hetero_task(idx):
-    """Build a heterogeneous task with a per-task argument."""
-    arg_pickled = base64.b64encode(
-        cloudpickle.dumps((idx,))).decode('ascii')
-    return {
-        "function":        "cloudpickle::" + _pickled_noop_arg,
-        "args":            "cloudpickle::" + arg_pickled,
-        "_pickled_fields": ["function", "args"],
-    }
+# ---- benchmark core --------------------------------------------------------
 
-
-def run_batch(rh, n: int, hetero: bool = False) -> dict:
+async def run_batch(session, n: int, hetero: bool = False) -> dict:
     """Submit *n* tasks in one batch, wait, return timing."""
 
     if hetero:
-        tasks = [make_hetero_task(i) for i in range(n)]
+        tasks = [rhapsody.ComputeTask(function=_noop_arg, args=(i,))
+                 for i in range(n)]
     else:
-        tasks = [dict(_FUNC_TASK) for _ in range(n)]
+        tasks = [rhapsody.ComputeTask(function=_noop)
+                 for _ in range(n)]
 
-    t0        = time.time()
-    submitted = rh.submit_tasks(tasks)
-    t_submit  = time.time() - t0
+    t0 = time.time()
+    await session.submit_tasks(tasks)
+    t_submit = time.time() - t0
 
-    uids      = [t['uid'] for t in submitted]
-    t1        = time.time()
-    rh.wait_tasks(uids)
-    t_wait    = time.time() - t1
+    t1 = time.time()
+    await session.wait_tasks(tasks)
+    t_wait = time.time() - t1
 
     t_total = t_submit + t_wait
 
     return {
-        "batch_size":     n,
-        "submit_time":    t_submit,
-        "wait_time":      t_wait,
-        "total_time":     t_total,
-        "tasks_per_sec":  n / t_total if t_total > 0 else float('inf'),
+        "batch_size":    n,
+        "submit_time":   t_submit,
+        "wait_time":     t_wait,
+        "total_time":    t_total,
+        "tasks_per_sec": n / t_total if t_total > 0 else float('inf'),
     }
 
 
-def run_pass(rh, batch_sizes, hetero=False):
+async def run_pass(session, batch_sizes, hetero=False):
     """Run one full benchmark pass, return list of result dicts."""
 
     label = "heterogeneous" if hetero else "homogeneous"
-    out(f"\n--- {label} tasks {'(per-task args)' if hetero else '(template)'} ---\n")
+    out(f"\n--- {label} tasks "
+        f"{'(per-task args)' if hetero else '(template)'} ---\n")
 
-    hdr = f"{'batch':>6}  {'submit':>8}  {'wait':>8}  {'total':>8}  {'tasks/s':>9}"
+    hdr = (f"{'batch':>6}  {'submit':>8}  {'wait':>8}  "
+           f"{'total':>8}  {'tasks/s':>9}")
     out(hdr)
     out("-" * len(hdr))
 
     # warmup
-    run_batch(rh, 1, hetero=hetero)
+    await run_batch(session, 1, hetero=hetero)
 
     results = []
     for n in batch_sizes:
-        r = run_batch(rh, n, hetero=hetero)
+        r = await run_batch(session, n, hetero=hetero)
         results.append(r)
         out(f"{r['batch_size']:>6}  "
             f"{r['submit_time']:>7.3f}s  "
@@ -131,7 +118,9 @@ def run_pass(rh, batch_sizes, hetero=False):
     return results
 
 
-def main():
+# ---- main ------------------------------------------------------------------
+
+async def main():
 
     # Parse optional batch sizes from command line
     if len(sys.argv) > 1:
@@ -140,26 +129,40 @@ def main():
         batch_sizes = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024,
                        2048, 4096, 8192, 16384, 32768, 65536]
 
-    # ---- connect ----
+    # ---- discover bridge / edge ---
+    bridge_url = os.environ.get('RADICAL_BRIDGE_URL', 'https://localhost:8000')
+
+    # Use a temporary BridgeClient just to find the first edge name
+    from radical.edge import BridgeClient
     bc   = BridgeClient()
     eids = bc.list_edges()
+    bc.close()
 
     if not eids:
         print("No edges found.")
         return
 
-    eid = eids[0]
-    ec  = bc.get_edge_client(eid)
-    rh  = ec.get_plugin('rhapsody')
+    edge_name = eids[0]
+    out(f"Bridge:  {bridge_url}")
+    out(f"Edge:    {edge_name}")
+    out(f"Batches: {batch_sizes}")
 
-    out(f"Edge: {eid}")
-    out(f"Batch sizes: {batch_sizes}")
+    # ---- set up Rhapsody session with Edge backend ---
+    backend = rhapsody.get_backend(
+        'edge',
+        bridge_url=bridge_url,
+        edge_name=edge_name,
+        backends=['concurrent'],
+    )
+    backend = await backend   # async init (registers remote session)
+
+    session = rhapsody.Session(backends=[backend])
 
     # ---- pass 1: homogeneous (template compression) ----
-    homo_results = run_pass(rh, batch_sizes, hetero=False)
+    homo_results = await run_pass(session, batch_sizes, hetero=False)
 
     # ---- pass 2: heterogeneous (regular batched submit) ----
-    hetero_results = run_pass(rh, batch_sizes, hetero=True)
+    hetero_results = await run_pass(session, batch_sizes, hetero=True)
 
     # ---- comparison ----
     out("\n--- comparison ---\n")
@@ -176,9 +179,8 @@ def main():
             f"{ratio:>5.2f}x")
 
     # ---- cleanup ----
-    rh.close()
-    bc.close()
+    await session.close()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

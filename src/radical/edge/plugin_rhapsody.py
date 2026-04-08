@@ -78,8 +78,7 @@ class RhapsodySession(PluginSession):
 
         # Notification batcher: accumulate completions and flush in bulk
         self._notify_buf: list[dict] = []
-        self._notify_lock  = threading.Lock()
-        self._notify_flush: asyncio.Task | None = None
+        self._notify_lock = threading.Lock()
 
     async def initialize(self) -> None:
         """Asynchronously initialize the session and its backends."""
@@ -229,46 +228,54 @@ class RhapsodySession(PluginSession):
         """
         self._check_initialized()
 
-        # Offload CPU-bound deserialization to a worker thread
-        tasks = await asyncio.to_thread(
-            self._prepare_batch, task_dicts)
-
-        # Async submit (backends are async)
-        await self._rh_session.submit_tasks(tasks)
-
+        # Process in sub-batches so we yield to the event loop
+        # between chunks, keeping WS pings alive.
+        _CHUNK = 4096
         results = []
-        for t in tasks:
-            uid_str = str(t.uid)
-            self._tasks[uid_str] = t
-            results.append({"uid": uid_str, "state": str(t.get("state"))})
 
-        # Start background watchers (semaphore limits concurrency)
-        if self._plugin:
+        for i in range(0, len(task_dicts), _CHUNK):
+            chunk_dicts = task_dicts[i:i + _CHUNK]
+
+            # Offload CPU-bound deserialization to a worker thread
+            tasks = await asyncio.to_thread(
+                self._prepare_batch, chunk_dicts)
+
+            # Async submit (backends are async)
+            await self._rh_session.submit_tasks(tasks)
+
             for t in tasks:
-                asyncio.ensure_future(self._watch_task(t))
+                uid_str = str(t.uid)
+                self._tasks[uid_str] = t
+                results.append({"uid": uid_str,
+                                "state": str(t.get("state"))})
 
-        # Yield so the event loop can process WS pings
-        await asyncio.sleep(0)
+            # Start background watchers
+            if self._plugin:
+                for t in tasks:
+                    asyncio.ensure_future(self._watch_task(t))
+
+            # Yield so the event loop can process WS pings
+            await asyncio.sleep(0)
 
         return results
 
     def _queue_notification(self, payload: dict) -> None:
-        """Add a task notification to the batch buffer.
+        """Add a task notification to the batch buffer and ensure a
+        flush is scheduled.
 
-        Triggers an async flush after ``NOTIFY_BATCH_WINDOW`` seconds or
-        when ``NOTIFY_BATCH_SIZE`` items are buffered, whichever comes
-        first.  Thread-safe (called from watcher coroutines which may
-        run on different threads via to_thread).
+        Thread-safe — called from watcher coroutines.
         """
-        flush_now = False
         with self._notify_lock:
             self._notify_buf.append(payload)
-            if len(self._notify_buf) >= NOTIFY_BATCH_SIZE:
-                flush_now = True
+            buf_len = len(self._notify_buf)
 
-        if flush_now:
-            self._schedule_flush()
-        elif self._notify_flush is None or self._notify_flush.done():
+        if buf_len >= NOTIFY_BATCH_SIZE:
+            # Buffer full — flush immediately (sync, from event loop)
+            self._flush_notifications()
+        else:
+            # Schedule a delayed flush so tail items aren't stranded.
+            # Always schedule — it's cheap and a no-op if buffer is
+            # empty when it fires.
             self._schedule_flush(delay=NOTIFY_BATCH_WINDOW)
 
     def _schedule_flush(self, delay: float = 0) -> None:
@@ -283,14 +290,12 @@ class RhapsodySession(PluginSession):
 
         try:
             loop = asyncio.get_running_loop()
-            self._notify_flush = loop.create_task(_do_flush())
+            loop.create_task(_do_flush())
         except RuntimeError:
-            # From a background thread — use plugin's cached loop
             if hasattr(self._plugin, '_main_loop') and \
                     self._plugin._main_loop:
-                self._notify_flush = asyncio.run_coroutine_threadsafe(
-                    _do_flush(), self._plugin._main_loop
-                )
+                asyncio.run_coroutine_threadsafe(
+                    _do_flush(), self._plugin._main_loop)
 
     def _flush_notifications(self) -> None:
         """Flush the notification buffer as a bulk message."""
@@ -574,13 +579,16 @@ class RhapsodyClient(PluginClient):
                     self._completed[uid] = t
                     newly_done.append(uid)
 
-        if newly_done:
-            with self._waiters_lock:
-                for pending, event in self._waiters:
-                    for uid in newly_done:
-                        pending.discard(uid)
-                    if not pending:
-                        event.set()
+            # Wake waiters under completed_lock so no waiter can
+            # register between adding to _completed and checking
+            # pending sets.  Lock order: completed → waiters.
+            if newly_done:
+                with self._waiters_lock:
+                    for pending, event in self._waiters:
+                        for uid in newly_done:
+                            pending.discard(uid)
+                        if not pending:
+                            event.set()
 
     def register_session(self, backends: list[str] | None = None,
                          init_timeout: float = 120):
@@ -787,10 +795,11 @@ class RhapsodyClient(PluginClient):
         """
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        # Each chunk sends template once + a slice of UIDs
-        # Estimate: template ~1KB + 20 bytes per UID
-        uids_per_chunk = max(
+        # Cap chunks by both byte size and count so the server
+        # doesn't block the event loop processing too many at once.
+        max_by_bytes = max(
             1, (WS_PAYLOAD_LIMIT - len(str(template))) // 20)
+        uids_per_chunk = min(max_by_bytes, 8192)
         chunks = [uids[i:i + uids_per_chunk]
                   for i in range(0, len(uids), uids_per_chunk)]
 
@@ -861,21 +870,21 @@ class RhapsodyClient(PluginClient):
         # SSE-based wait (preferred path)
         # ------------------------------------------------------------------
 
-        # Fast path: all already completed
+        # Build pending set and register waiter atomically so no
+        # completions slip through between the check and the
+        # registration.  Lock order matches _on_task_done:
+        # completed_lock → waiters_lock.
+        done = threading.Event()
         with self._completed_lock:
             if all(uid in self._completed for uid in uids):
                 return [self._completed[uid] for uid in uids]
 
-        # Register a waiter — _on_task_done will wake us
-        pending = set(uid for uid in uids
-                      if uid not in self._completed)
-        done = threading.Event()
-        if not pending:
-            done.set()
+            pending = set(uid for uid in uids
+                          if uid not in self._completed)
 
-        waiter = (pending, done)
-        with self._waiters_lock:
-            self._waiters.append(waiter)
+            with self._waiters_lock:
+                waiter = (pending, done)
+                self._waiters.append(waiter)
 
         try:
             done.wait(timeout=timeout)
