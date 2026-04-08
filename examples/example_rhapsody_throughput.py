@@ -127,7 +127,9 @@ async def main():
         batch_sizes = [int(x) for x in sys.argv[1:]]
     else:
         batch_sizes = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024,
-                       2048, 4096, 8192, 16384, 32768, 65536]
+                       2048, 4096, 8192,
+                       # 16384, 32768, 65536
+                       ]
 
     # ---- discover bridge / edge ---
     bridge_url = os.environ.get('RADICAL_BRIDGE_URL', 'https://localhost:8000')
@@ -152,7 +154,7 @@ async def main():
         'edge',
         bridge_url=bridge_url,
         edge_name=edge_name,
-        backends=['concurrent'],
+        backends=['dragon_v3'],
     )
     backend = await backend   # async init (registers remote session)
 

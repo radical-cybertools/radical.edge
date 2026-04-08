@@ -695,6 +695,51 @@ class RhapsodyClient(PluginClient):
         raise RuntimeError(
             f"Session init timed out after {timeout}s (poll)")
 
+    @staticmethod
+    def _serialize_task(td: dict) -> None:
+        """Prepare a task dict for JSON transport (in-place).
+
+        - Encodes callable ``function``, ``args``, ``kwargs`` via
+          cloudpickle + base64.
+        - Strips non-serializable internal fields (``future``,
+          ``_future``, ``backend``).
+        """
+        import cloudpickle as cp
+
+        pickled_fields = td.get('_pickled_fields', [])
+
+        # Serialize callable function
+        fn = td.get('function')
+        if callable(fn):
+            encoded = base64.b64encode(cp.dumps(fn)).decode('ascii')
+            td['function'] = 'cloudpickle::' + encoded
+            if 'function' not in pickled_fields:
+                pickled_fields.append('function')
+
+        # Serialize args/kwargs if not JSON-safe
+        for field in ('args', 'kwargs'):
+            val = td.get(field)
+            if val is None:
+                continue
+            if isinstance(val, str) and val.startswith('cloudpickle::'):
+                continue
+            try:
+                import json
+                json.dumps(val)
+            except (TypeError, ValueError):
+                encoded = base64.b64encode(cp.dumps(val)).decode('ascii')
+                td[field] = 'cloudpickle::' + encoded
+                if field not in pickled_fields:
+                    pickled_fields.append(field)
+
+        if pickled_fields:
+            td['_pickled_fields'] = pickled_fields
+
+        # Strip non-serializable internal fields
+        td.pop('future', None)
+        td.pop('_future', None)
+        td.pop('backend', None)
+
     def submit_tasks(self, task_dicts: list[dict]) -> list[dict]:
         """
         Submit tasks to the edge.
@@ -716,6 +761,10 @@ class RhapsodyClient(PluginClient):
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
         self._require_session()
+
+        # --- serialize callables and clean up internal fields ---
+        for td in task_dicts:
+            self._serialize_task(td)
 
         # --- assign UIDs client-side so we know them before submit ---
         for td in task_dicts:
