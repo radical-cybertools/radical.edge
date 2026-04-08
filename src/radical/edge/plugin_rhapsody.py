@@ -6,6 +6,8 @@ and monitor compute / AI tasks on edge nodes.
 '''
 
 import asyncio
+import base64
+import importlib
 import logging
 import threading
 import time
@@ -41,7 +43,8 @@ class RhapsodySession(PluginSession):
     monitoring, cancellation and statistics queries.
     """
 
-    def __init__(self, sid: str, backend_names: list[str] | None = None):
+    def __init__(self, sid: str, backend_names: list[str] | None = None,
+                 allow_pickled_tasks: bool = True):
         """
         Initialize a RhapsodySession.
 
@@ -49,14 +52,17 @@ class RhapsodySession(PluginSession):
             sid (str):  Unique session identifier.
             backend_names (list[str] | None):
                 Backends to configure.  Defaults to ``['concurrent']``.
+            allow_pickled_tasks (bool):
+                Allow cloudpickle-encoded function tasks.  Defaults to ``True``.
         """
         super().__init__(sid)
 
         if rh is None:
             raise RuntimeError("rhapsody package is not installed")
 
-        self.backend_names = backend_names or ['concurrent']
-        self._rh_session = None
+        self.backend_names       = backend_names or ['concurrent']
+        self.allow_pickled_tasks = allow_pickled_tasks
+        self._rh_session         = None
         self._tasks: dict[str, dict] = {}
 
     async def initialize(self) -> None:
@@ -109,19 +115,66 @@ class RhapsodySession(PluginSession):
                 "state": state_str,
             })
 
+    def _deserialize_task(self, td: dict) -> dict:
+        """Deserialize pickled or import-path function fields in a task dict.
+
+        Handles two formats:
+        - cloudpickle:  ``"function": "cloudpickle::<base64>"`` with
+          ``"_pickled_fields": ["function", "args", ...]``
+        - import path:  ``"function": "module.path:func_name"``
+
+        Returns the (possibly modified) task dict.
+        """
+        # --- cloudpickle-encoded fields ---
+        pickled_fields = td.pop('_pickled_fields', None)
+        if pickled_fields:
+            if not self.allow_pickled_tasks:
+                raise HTTPException(
+                    status_code=400,
+                    detail="pickled function tasks are disabled")
+            try:
+                import cloudpickle
+            except ImportError:
+                raise HTTPException(
+                    status_code=500,
+                    detail="cloudpickle is not installed on this edge")
+            for field in pickled_fields:
+                val = td.get(field)
+                if isinstance(val, str) and val.startswith('cloudpickle::'):
+                    raw = base64.b64decode(val[len('cloudpickle::'):])
+                    td[field] = cloudpickle.loads(raw)
+            return td
+
+        # --- import-path string (e.g. "mymodule.sub:func_name") ---
+        fn = td.get('function')
+        if isinstance(fn, str) and ':' in fn and \
+                not fn.startswith('cloudpickle::'):
+            mod_path, _, attr_name = fn.partition(':')
+            try:
+                mod = importlib.import_module(mod_path)
+                td['function'] = getattr(mod, attr_name)
+            except (ImportError, AttributeError) as e:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"cannot resolve function '{fn}': {e}")
+
+        return td
+
     async def submit_tasks(self, task_dicts: list[dict]) -> list[dict]:
         """
         Submit a list of tasks.
 
         Each dict is converted to a ``ComputeTask`` or ``AITask`` via
-        ``BaseTask.from_dict()``.
+        ``BaseTask.from_dict()``.  Function fields encoded as cloudpickle
+        blobs or import-path strings are deserialized first.
 
         Returns:
             list[dict]: Submitted task representations (uid, state).
         """
         self._check_active()
 
-        tasks = [rh.BaseTask.from_dict(td) for td in task_dicts]
+        task_dicts = [self._deserialize_task(td) for td in task_dicts]
+        tasks      = [rh.BaseTask.from_dict(td)  for td in task_dicts]
         await self._rh_session.submit_tasks(tasks)
 
         results = []
@@ -228,6 +281,28 @@ class RhapsodySession(PluginSession):
         if 'exception' in d and d['exception'] is not None:
             d['exception'] = str(d['exception'])
 
+        # Stringify callable function fields
+        fn = d.get('function')
+        if callable(fn):
+            d['function'] = f"{fn.__module__}.{fn.__qualname__}"
+
+        # Decode bytes stdout/stderr; join lists (multi-rank)
+        for key in ('stdout', 'stderr'):
+            val = d.get(key)
+            if isinstance(val, bytes):
+                d[key] = val.decode('utf-8', errors='replace')
+            elif isinstance(val, list):
+                d[key] = '\n'.join(str(v) for v in val)
+
+        # Ensure return_value is JSON-serializable
+        rv = d.get('return_value')
+        if rv is not None:
+            try:
+                import json
+                json.dumps(rv)
+            except (TypeError, ValueError):
+                d['return_value'] = str(rv)
+
         return d
 
     async def list_tasks(self) -> dict:
@@ -267,6 +342,28 @@ class RhapsodySession(PluginSession):
             await backend.cancel_task(uid)
 
         return {"uid": uid, "status": "canceled"}
+
+    async def cancel_all_tasks(self) -> dict:
+        """
+        Cancel all non-terminal tasks in this session.
+
+        Best-effort: Dragon V3 marks tasks as CANCELED but cannot truly
+        abort running work.  Per-task errors are swallowed.
+        """
+        self._check_active()
+
+        canceled = 0
+        for uid, task in list(self._tasks.items()):
+            state = str(self._get_attr(task, 'state', '')).upper()
+            if state in TERMINAL_STATES:
+                continue
+            try:
+                await self.cancel_task(uid)
+                canceled += 1
+            except Exception:
+                pass
+
+        return {"canceled": canceled}
 
     async def close(self) -> dict:
         """
@@ -373,6 +470,17 @@ class RhapsodyClient(PluginClient):
         self._raise(resp)
         return resp.json()
 
+    def cancel_all_tasks(self) -> dict:
+        """
+        Cancel all non-terminal tasks in this session.
+        """
+        self._require_session()
+
+        url = self._url(f"cancel_all/{self.sid}")
+        resp = self._http.post(url)
+        self._raise(resp)
+        return resp.json()
+
 
 # ---------------------------------------------------------------------------
 # Server-side plugin
@@ -388,7 +496,7 @@ class PluginRhapsody(Plugin):
     - POST  /rhapsody/wait/{sid}
     - GET   /rhapsody/task/{sid}/{uid}
     - POST  /rhapsody/cancel/{sid}/{uid}
-    - GET   /rhapsody/statistics/{sid}
+    - POST  /rhapsody/cancel_all/{sid}
     '''
 
     plugin_name = "rhapsody"
@@ -412,6 +520,15 @@ class PluginRhapsody(Plugin):
                 {"name": "backends", "type": "select", "label": "Backend",
                  "options": ["concurrent", "dragon_v3"],
                  "css_class": "rh-backends"},
+                {"name": "timeout", "type": "number", "label": "Timeout (s)",
+                 "default": "", "css_class": "rh-timeout"},
+                {"name": "ranks",   "type": "number", "label": "MPI Ranks",
+                 "default": "", "css_class": "rh-ranks"},
+                {"name": "type",    "type": "select", "label": "Task Type",
+                 "options": ["", "mpi"],
+                 "css_class": "rh-type"},
+                {"name": "cwd",     "type": "text",   "label": "Working Dir",
+                 "default": "", "css_class": "rh-cwd"},
             ],
             "submit": {"label": "▶ Submit Task", "style": "success"}
         }],
@@ -437,6 +554,7 @@ class PluginRhapsody(Plugin):
         self.add_route_get('list_tasks/{sid}', self.list_tasks)
         self.add_route_get('task/{sid}/{uid}', self.get_task)
         self.add_route_post('cancel/{sid}/{uid}', self.cancel_task)
+        self.add_route_post('cancel_all/{sid}', self.cancel_all_tasks)
 
     async def register_session(self, request: Request) -> JSONResponse:
         """Register a new Rhapsody session.
@@ -494,4 +612,8 @@ class PluginRhapsody(Plugin):
         sid = request.path_params['sid']
         uid = request.path_params['uid']
         return await self._forward(sid, RhapsodySession.cancel_task, uid=uid)
+
+    async def cancel_all_tasks(self, request: Request) -> JSONResponse:
+        sid = request.path_params['sid']
+        return await self._forward(sid, RhapsodySession.cancel_all_tasks)
 
