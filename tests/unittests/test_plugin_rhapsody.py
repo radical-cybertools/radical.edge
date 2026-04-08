@@ -97,7 +97,10 @@ def _make_plugin():
 def _register(client, plugin):
     resp = client.post(f"{plugin.namespace}/register_session")
     assert resp.status_code == 200
-    return resp.json()['sid']
+    sid = resp.json()['sid']
+    # Mark session as initialized — tests mock _rh_session directly
+    plugin._sessions[sid]._init_ready.set()
+    return sid
 
 
 # ---------------------------------------------------------------------------

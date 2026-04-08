@@ -355,7 +355,10 @@ class EdgeService:
                                                       ssl=ssl_ctx,
                                                       ping_interval=PING_INTERVAL,
                                                       ping_timeout=PING_TIMEOUT,
-                                                      close_timeout=2) as ws:
+                                                      close_timeout=2,
+                                                      max_size=10 * 1024 * 1024,
+                                                      compression='deflate',
+                                                      ) as ws:
 
                             self._ws = ws
                             log.info("[Edge] Connected to %s", self._bridge_url)

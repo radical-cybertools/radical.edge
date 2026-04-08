@@ -22,7 +22,11 @@ from .client import PluginClient
 
 log = logging.getLogger("radical.edge")
 
-TERMINAL_STATES = {'DONE', 'FAILED', 'CANCELED', 'COMPLETED'}
+TERMINAL_STATES    = {'DONE', 'FAILED', 'CANCELED', 'COMPLETED'}
+WATCH_CONCURRENCY  = 64
+WS_PAYLOAD_LIMIT   = 8 * 1024 * 1024   # target max per batch (conservative)
+NOTIFY_BATCH_SIZE  = 256               # max tasks per bulk notification
+NOTIFY_BATCH_WINDOW = 0.1              # seconds to accumulate before flush
 
 # Guard rhapsody import — it is an optional dependency
 try:
@@ -65,30 +69,56 @@ class RhapsodySession(PluginSession):
         self._rh_session         = None
         self._tasks: dict[str, dict] = {}
 
+        # Async init tracking
+        self._init_ready = threading.Event()
+        self._init_error: str | None = None
+
+        # Limit concurrent task watchers
+        self._watch_sem: asyncio.Semaphore | None = None
+
+        # Notification batcher: accumulate completions and flush in bulk
+        self._notify_buf: list[dict] = []
+        self._notify_lock  = threading.Lock()
+        self._notify_flush: asyncio.Task | None = None
+
     async def initialize(self) -> None:
         """Asynchronously initialize the session and its backends."""
-        backends = []
-        for name in self.backend_names:
-            b = rh.get_backend(name)
-            if hasattr(b, '__await__'):
-                b = await b
-            backends.append(b)
+        try:
+            backends = []
+            for name in self.backend_names:
+                b = rh.get_backend(name)
+                if hasattr(b, '__await__'):
+                    b = await b
+                backends.append(b)
 
-        self._rh_session = rh.Session(backends=backends, uid=self._sid)
+            self._rh_session = rh.Session(backends=backends, uid=self._sid)
 
-        # Register state-change callbacks for intermediate notifications
-        self._notified_states: dict[str, str] = {}
-        self._notified_lock = threading.Lock()
-        for b in backends:
-            if hasattr(b, 'register_callback'):
-                orig = getattr(b, '_callback_func', None)
+            # Register state-change callbacks for intermediate notifications
+            self._notified_states: dict[str, str] = {}
+            self._notified_lock = threading.Lock()
+            for b in backends:
+                if hasattr(b, 'register_callback'):
+                    orig = getattr(b, '_callback_func', None)
 
-                def _on_state(task, state, _orig=orig):
-                    self._on_task_state_change(task, state)
-                    if _orig:
-                        _orig(task, state)
+                    def _on_state(task, state, _orig=orig):
+                        self._on_task_state_change(task, state)
+                        if _orig:
+                            _orig(task, state)
 
-                b.register_callback(_on_state)
+                    b.register_callback(_on_state)
+
+            # Create semaphore now that we're in an event loop
+            self._watch_sem = asyncio.Semaphore(WATCH_CONCURRENCY)
+
+            self._init_ready.set()
+            log.info("[%s] Session initialization complete", self._sid)
+
+        except Exception as e:
+            self._init_error = str(e)
+            self._init_ready.set()  # unblock waiters
+            log.error("[%s] Session initialization failed: %s",
+                      self._sid, e)
+            raise
 
     def _on_task_state_change(self, task, state):
         """Fire notification on intermediate state changes (e.g. RUNNING).
@@ -114,6 +144,23 @@ class RhapsodySession(PluginSession):
                 "uid":   uid_str,
                 "state": state_str,
             })
+
+    def _check_initialized(self) -> None:
+        """Check that the session is active and fully initialized.
+
+        Raises:
+            HTTPException 409: Session is still initializing.
+            HTTPException 500: Session initialization failed.
+            RuntimeError:      Session is closed.
+        """
+        self._check_active()
+        if not self._init_ready.is_set():
+            raise HTTPException(status_code=409,
+                                detail="session is still initializing")
+        if self._init_error:
+            raise HTTPException(
+                status_code=500,
+                detail=f"session init failed: {self._init_error}")
 
     def _deserialize_task(self, td: dict) -> dict:
         """Deserialize pickled or import-path function fields in a task dict.
@@ -160,6 +207,15 @@ class RhapsodySession(PluginSession):
 
         return td
 
+    def _prepare_batch(self, task_dicts: list[dict]) -> list:
+        """Deserialize and create task objects (runs in worker thread).
+
+        CPU-bound work (cloudpickle, from_dict) is offloaded here so the
+        event loop stays responsive for WebSocket keepalive.
+        """
+        deserialized = [self._deserialize_task(td) for td in task_dicts]
+        return [rh.BaseTask.from_dict(td) for td in deserialized]
+
     async def submit_tasks(self, task_dicts: list[dict]) -> list[dict]:
         """
         Submit a list of tasks.
@@ -169,87 +225,151 @@ class RhapsodySession(PluginSession):
         blobs or import-path strings are deserialized first.
 
         Returns:
-            list[dict]: Submitted task representations (uid, state).
+            list[dict]: Minimal ack dicts ``{uid, state}``.
         """
-        self._check_active()
+        self._check_initialized()
 
-        task_dicts = [self._deserialize_task(td) for td in task_dicts]
-        tasks      = [rh.BaseTask.from_dict(td)  for td in task_dicts]
+        # Offload CPU-bound deserialization to a worker thread
+        tasks = await asyncio.to_thread(
+            self._prepare_batch, task_dicts)
+
+        # Async submit (backends are async)
         await self._rh_session.submit_tasks(tasks)
 
         results = []
         for t in tasks:
-            self._tasks[str(t.uid)] = t
-            state = t.get("state")
-            if state is not None:
-                state = str(state)
-            results.append({"uid": t.uid, "state": state})
+            uid_str = str(t.uid)
+            self._tasks[uid_str] = t
+            results.append({"uid": uid_str, "state": str(t.get("state"))})
 
-        # Start one background watcher per task so each notifies independently
+        # Start background watchers (semaphore limits concurrency)
         if self._plugin:
             for t in tasks:
                 asyncio.ensure_future(self._watch_task(t))
 
+        # Yield so the event loop can process WS pings
+        await asyncio.sleep(0)
+
         return results
 
+    def _queue_notification(self, payload: dict) -> None:
+        """Add a task notification to the batch buffer.
+
+        Triggers an async flush after ``NOTIFY_BATCH_WINDOW`` seconds or
+        when ``NOTIFY_BATCH_SIZE`` items are buffered, whichever comes
+        first.  Thread-safe (called from watcher coroutines which may
+        run on different threads via to_thread).
+        """
+        flush_now = False
+        with self._notify_lock:
+            self._notify_buf.append(payload)
+            if len(self._notify_buf) >= NOTIFY_BATCH_SIZE:
+                flush_now = True
+
+        if flush_now:
+            self._schedule_flush()
+        elif self._notify_flush is None or self._notify_flush.done():
+            self._schedule_flush(delay=NOTIFY_BATCH_WINDOW)
+
+    def _schedule_flush(self, delay: float = 0) -> None:
+        """Schedule a notification flush on the event loop."""
+        if not self._plugin:
+            return
+
+        async def _do_flush():
+            if delay > 0:
+                await asyncio.sleep(delay)
+            self._flush_notifications()
+
+        try:
+            loop = asyncio.get_running_loop()
+            self._notify_flush = loop.create_task(_do_flush())
+        except RuntimeError:
+            # From a background thread — use plugin's cached loop
+            if hasattr(self._plugin, '_main_loop') and \
+                    self._plugin._main_loop:
+                self._notify_flush = asyncio.run_coroutine_threadsafe(
+                    _do_flush(), self._plugin._main_loop
+                )
+
+    def _flush_notifications(self) -> None:
+        """Flush the notification buffer as a bulk message."""
+        with self._notify_lock:
+            if not self._notify_buf:
+                return
+            batch = list(self._notify_buf)
+            self._notify_buf.clear()
+
+        if not self._plugin:
+            return
+
+        if len(batch) == 1:
+            self._plugin._dispatch_notify("task_status", batch[0])
+        else:
+            self._plugin._dispatch_notify("task_status_batch",
+                                          {"tasks": batch})
+
     async def _watch_task(self, task):
-        """Background watcher for a single task: notify as soon as it completes."""
+        """Background watcher for a single task: notify as soon as it completes.
+
+        Concurrency is bounded by ``self._watch_sem`` so that thousands of
+        simultaneous watchers do not overwhelm the event loop.
+        """
         uid = self._get_attr(task, 'uid')
         uid_str = str(uid) if uid else '?'
 
-        log.debug("[%s] Watcher started for task %s", self._sid, uid_str)
-        try:
-            # Check session is still valid
-            if not self._rh_session:
-                log.warning("[%s] Session closed before task %s completed", self._sid, uid_str)
-                self._send_error_notification(uid_str, "Session closed")
-                return
+        # Acquire semaphore — queues here if too many watchers are active
+        sem = self._watch_sem or asyncio.Semaphore(WATCH_CONCURRENCY)
+        async with sem:
+            log.debug("[%s] Watcher started for task %s", self._sid, uid_str)
+            try:
+                if not self._rh_session:
+                    log.warning("[%s] Session closed before task %s completed",
+                                self._sid, uid_str)
+                    self._queue_notification({
+                        "uid": uid_str, "state": "FAILED",
+                        "error": "Session closed"})
+                    return
 
-            await self._rh_session.wait_tasks([task])
+                await self._rh_session.wait_tasks([task])
 
-            # State might be in the object or the dict
-            state = self._get_attr(task, 'state')
-            log.info("[%s] Task %s completed with state: %s", self._sid, uid_str, state)
+                state = self._get_attr(task, 'state')
+                log.info("[%s] Task %s completed with state: %s",
+                         self._sid, uid_str, state)
 
-            d = self._sanitize_task(task)
-            log.debug("[%s] Sending notification for task %s: %s", self._sid, uid_str, d)
-            if self._plugin:
-                self._plugin._dispatch_notify("task_status", d)
+                d = self._notification_payload(task)
+                self._queue_notification(d)
 
-        except Exception as e:
-            log.warning("[%s] Rhapsody watch error for task %s: %s", self._sid, uid_str, e)
-            # Send error notification so UI doesn't stay stuck in SUBMITTED
-            self._send_error_notification(uid_str, str(e))
-
-    def _send_error_notification(self, uid: str, error: str) -> None:
-        """Send a FAILED notification when watcher encounters an error."""
-        if self._plugin:
-            self._plugin._dispatch_notify("task_status", {
-                "uid": uid,
-                "state": "FAILED",
-                "error": error
-            })
+            except Exception as e:
+                log.warning("[%s] Rhapsody watch error for task %s: %s",
+                            self._sid, uid_str, e)
+                self._queue_notification({
+                    "uid": uid_str, "state": "FAILED",
+                    "error": str(e)})
 
     async def wait_tasks(self, uids: list[str],
                          timeout: float | None = None) -> list[dict]:
         """
-        Wait for tasks to reach a terminal state.
+        Return current task states (non-blocking snapshot).
+
+        This method no longer blocks until tasks complete.  Clients
+        should rely on SSE ``task_status`` notifications for real-time
+        completion events, and call this endpoint only to fetch the
+        current state snapshot.
 
         Args:
-            uids (list[str]):  Task UIDs to wait for.
-            timeout (float | None):  Seconds to wait (``None`` = forever).
+            uids (list[str]):  Task UIDs to query.
+            timeout (float | None):  Ignored (kept for API compat).
 
         Returns:
-            list[dict]: Final task state dicts.
+            list[dict]: Current task state dicts.
         """
-        self._check_active()
+        self._check_initialized()
 
         tasks = [self._tasks[uid] for uid in uids if uid in self._tasks]
         if not tasks:
             raise HTTPException(status_code=404,
                                 detail="none of the requested tasks found")
-
-        await self._rh_session.wait_tasks(tasks, timeout=timeout)
 
         return [self._sanitize_task(t) for t in tasks]
 
@@ -305,9 +425,40 @@ class RhapsodySession(PluginSession):
 
         return d
 
+    def _notification_payload(self, t) -> dict:
+        """Build a minimal notification dict for a completed task.
+
+        Only essential fields are included to keep WebSocket/SSE
+        payloads small.  Clients needing the full task dict (e.g.
+        stdout/stderr) can fetch it via ``GET /task/{sid}/{uid}``.
+        """
+        d: dict = {}
+        for key in ('uid', 'state'):
+            val = self._get_attr(t, key)
+            if val is not None:
+                d[key] = str(val)
+
+        for key in ('exit_code', 'return_value', 'error', 'exception'):
+            val = self._get_attr(t, key)
+            if val is not None:
+                d[key] = val
+
+        # Ensure exception / return_value are JSON-safe
+        if 'exception' in d and d['exception'] is not None:
+            d['exception'] = str(d['exception'])
+        rv = d.get('return_value')
+        if rv is not None:
+            try:
+                import json
+                json.dumps(rv)
+            except (TypeError, ValueError):
+                d['return_value'] = str(rv)
+
+        return d
+
     async def list_tasks(self) -> dict:
         """Return all tasks in this session with current state."""
-        self._check_active()
+        self._check_initialized()
         tasks = []
         for uid, task in self._tasks.items():
             tasks.append(self._sanitize_task(task))
@@ -317,7 +468,7 @@ class RhapsodySession(PluginSession):
         """
         Return info for a single cached task.
         """
-        self._check_active()
+        self._check_initialized()
 
         task = self._tasks.get(uid)
         if not task:
@@ -329,7 +480,7 @@ class RhapsodySession(PluginSession):
         """
         Cancel a running task.
         """
-        self._check_active()
+        self._check_initialized()
 
         task = self._tasks.get(uid)
         if not task:
@@ -348,22 +499,29 @@ class RhapsodySession(PluginSession):
         Cancel all non-terminal tasks in this session.
 
         Best-effort: Dragon V3 marks tasks as CANCELED but cannot truly
-        abort running work.  Per-task errors are swallowed.
+        abort running work.  Per-task errors are swallowed.  Cancels are
+        issued concurrently via ``asyncio.gather``.
         """
-        self._check_active()
+        self._check_initialized()
 
-        canceled = 0
+        uids = []
         for uid, task in list(self._tasks.items()):
             state = str(self._get_attr(task, 'state', '')).upper()
-            if state in TERMINAL_STATES:
-                continue
+            if state not in TERMINAL_STATES:
+                uids.append(uid)
+
+        if not uids:
+            return {"canceled": 0}
+
+        async def _try_cancel(uid):
             try:
                 await self.cancel_task(uid)
-                canceled += 1
+                return True
             except Exception:
-                pass
+                return False
 
-        return {"canceled": canceled}
+        results = await asyncio.gather(*[_try_cancel(u) for u in uids])
+        return {"canceled": sum(1 for r in results if r)}
 
     async def close(self) -> dict:
         """
@@ -385,24 +543,161 @@ class RhapsodyClient(PluginClient):
     Client-side interface for the Rhapsody plugin.
     """
 
-    def register_session(self, backends: list[str] | None = None):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Session-wide accumulator for terminal task notifications.
+        # Populated by a persistent SSE callback registered after
+        # session init, so no notification is ever lost.
+        self._completed: dict[str, dict] = {}
+        self._completed_lock = threading.Lock()
+        # Waiters: list of (set_of_uids, threading.Event) for wait_tasks
+        self._waiters: list[tuple[set, threading.Event]] = []
+        self._waiters_lock = threading.Lock()
+
+    def _on_task_done(self, edge, plugin, topic, data):
+        """Persistent SSE callback: accumulate terminal task states.
+
+        Handles both single ``task_status`` and bulk
+        ``task_status_batch`` notifications.
+        """
+        if topic == 'task_status_batch':
+            tasks = data.get('tasks', [])
+        else:
+            tasks = [data]
+
+        newly_done: list[str] = []
+        with self._completed_lock:
+            for t in tasks:
+                uid   = t.get('uid')
+                state = str(t.get('state', '')).upper()
+                if uid and state in TERMINAL_STATES:
+                    self._completed[uid] = t
+                    newly_done.append(uid)
+
+        if newly_done:
+            with self._waiters_lock:
+                for pending, event in self._waiters:
+                    for uid in newly_done:
+                        pending.discard(uid)
+                    if not pending:
+                        event.set()
+
+    def register_session(self, backends: list[str] | None = None,
+                         init_timeout: float = 120):
         """
         Register a session, optionally specifying backend names.
+
+        The edge initializes the session asynchronously.  This method
+        blocks until a ``session_status`` SSE notification confirms
+        that the session is ready (or until *init_timeout* seconds).
+
+        Falls back to polling when no ``BridgeClient`` is available.
 
         Args:
             backends: List of backend names (e.g. ``['concurrent']``).
                       Defaults to ``['concurrent']`` on the server side.
+            init_timeout: Seconds to wait for session init (default 120).
         """
+        has_sse = (self._bc is not None and
+                   self._edge_id is not None and
+                   self._plugin_name is not None)
+
+        # Ensure the SSE listener is connected BEFORE we send the POST,
+        # so we never miss a fast init notification.
+        ready = threading.Event()
+        error = [None]
+
+        if has_sse:
+            self._bc.wait_for_listener(timeout=30)
+
+            def _on_session_status(edge, plugin, topic, data):
+                st = data.get('status')
+                if st == 'ready':
+                    ready.set()
+                elif st == 'failed':
+                    error[0] = data.get('error', 'unknown init error')
+                    ready.set()
+
+            self.register_notification_callback(_on_session_status,
+                                                topic="session_status")
+
         payload = {}
         if backends:
             payload['backends'] = backends
         resp = self._http.post(self._url('register_session'), json=payload)
         self._raise(resp)
-        self._sid = resp.json()['sid']
+
+        data      = resp.json()
+        self._sid = data['sid']
+        status    = data.get('status')
+
+        # Reset the session-wide task completion accumulator
+        with self._completed_lock:
+            self._completed.clear()
+
+        if status == 'ready':
+            if has_sse:
+                self.unregister_notification_callback(
+                    _on_session_status, topic="session_status")
+            self._start_task_listener()
+            return  # fast path: init was synchronous
+
+        if not has_sse:
+            self._poll_session_ready(init_timeout)
+            return
+
+        # Wait for async init to complete via SSE notification
+        try:
+            ready.wait(timeout=init_timeout)
+            if error[0]:
+                raise RuntimeError(
+                    f"Session init failed on edge: {error[0]}")
+            if not ready.is_set():
+                raise RuntimeError(
+                    f"Session init timed out after {init_timeout}s")
+        finally:
+            self.unregister_notification_callback(_on_session_status,
+                                                  topic="session_status")
+
+        self._start_task_listener()
+
+    def _start_task_listener(self):
+        """Register persistent SSE callback that accumulates completions."""
+        has_sse = (self._bc is not None and
+                   self._edge_id is not None and
+                   self._plugin_name is not None)
+        if has_sse:
+            self.register_notification_callback(self._on_task_done,
+                                                topic="task_status")
+            self.register_notification_callback(self._on_task_done,
+                                                topic="task_status_batch")
+
+    def _poll_session_ready(self, timeout: float = 120) -> None:
+        """Fallback: poll until the session is ready (no SSE available)."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                resp = self._http.get(
+                    self._url(f"list_tasks/{self.sid}"))
+                if resp.status_code != 409:
+                    return  # session is ready (or already errored)
+            except Exception:
+                pass
+            time.sleep(1.0)
+        raise RuntimeError(
+            f"Session init timed out after {timeout}s (poll)")
 
     def submit_tasks(self, task_dicts: list[dict]) -> list[dict]:
         """
         Submit tasks to the edge.
+
+        Large batches are automatically split so each payload stays
+        within the WebSocket frame limit.  Batches are submitted
+        concurrently via a thread pool so that network round-trips
+        overlap (pipelining).
+
+        UIDs are assigned client-side (if absent) so the caller can
+        start waiting for SSE notifications immediately.
 
         Args:
             task_dicts: List of task specification dicts.
@@ -410,18 +705,138 @@ class RhapsodyClient(PluginClient):
         Returns:
             list[dict]: Submitted task info (uid, state).
         """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         self._require_session()
 
+        # --- assign UIDs client-side so we know them before submit ---
+        for td in task_dicts:
+            if 'uid' not in td:
+                td['uid'] = f"task.{uuid.uuid4().hex[:8]}"
+
+        # --- try template compression for homogeneous batches ---
+        # If all tasks share the same fields (except uid), send a
+        # template + list of UIDs instead of N full copies.
         url = self._url(f"submit/{self.sid}")
-        resp = self._http.post(url, json={"tasks": task_dicts})
-        exes = [t.get('executable', '?') for t in task_dicts[:3]]
-        self._raise(resp, f"submit {len(task_dicts)} task(s): {exes}")
-        return resp.json()
+        if len(task_dicts) > 1:
+            first = {k: v for k, v in task_dicts[0].items() if k != 'uid'}
+            homogeneous = all(
+                {k: v for k, v in td.items() if k != 'uid'} == first
+                for td in task_dicts[1:])
+        else:
+            homogeneous = False
+
+        if homogeneous and len(task_dicts) > 1:
+            return self._submit_template(
+                url, first, [td['uid'] for td in task_dicts])
+
+        # --- split into size-aware batches (byte limit only) ---
+        batches: list[list[dict]] = []
+        batch: list[dict]         = []
+        batch_bytes                = 0
+
+        for td in task_dicts:
+            td_size = len(str(td)) + 2
+            if batch and batch_bytes + td_size > WS_PAYLOAD_LIMIT:
+                batches.append(batch)
+                batch       = []
+                batch_bytes = 0
+            batch.append(td)
+            batch_bytes += td_size
+        if batch:
+            batches.append(batch)
+
+        # --- submit batches concurrently (pipelining) ---
+        errors: list[str] = []
+
+        def _submit_batch(b):
+            resp = self._http.post(url, json={"tasks": b})
+            self._raise(resp, f"submit {len(b)} task(s)")
+            return resp.json()
+
+        if len(batches) == 1:
+            return _submit_batch(batches[0])
+
+        results = []
+        batch_results: dict[int, list] = {}
+        with ThreadPoolExecutor(max_workers=len(batches)) as pool:
+            futures = {pool.submit(_submit_batch, b): i
+                       for i, b in enumerate(batches)}
+            for fut in as_completed(futures):
+                idx = futures[fut]
+                try:
+                    batch_results[idx] = fut.result()
+                except Exception as e:
+                    errors.append(str(e))
+
+        if errors:
+            detail = '; '.join(errors[:3])
+            raise RuntimeError(
+                f"submit failed for {len(errors)} batch(es): {detail}")
+
+        for i in sorted(batch_results):
+            results.extend(batch_results[i])
+        return results
+
+    def _submit_template(self, url: str, template: dict,
+                         uids: list[str]) -> list[dict]:
+        """Submit homogeneous tasks via template compression.
+
+        Sends one template + list of UIDs instead of N full task dicts.
+        Falls back to regular submit in WS_PAYLOAD_LIMIT-sized chunks.
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        # Each chunk sends template once + a slice of UIDs
+        # Estimate: template ~1KB + 20 bytes per UID
+        uids_per_chunk = max(
+            1, (WS_PAYLOAD_LIMIT - len(str(template))) // 20)
+        chunks = [uids[i:i + uids_per_chunk]
+                  for i in range(0, len(uids), uids_per_chunk)]
+
+        def _submit_chunk(uid_chunk):
+            payload = {"template": template, "uids": uid_chunk}
+            resp = self._http.post(url, json=payload)
+            self._raise(resp, f"submit template {len(uid_chunk)} task(s)")
+            return resp.json()
+
+        if len(chunks) == 1:
+            return _submit_chunk(chunks[0])
+
+        results = []
+        batch_results: dict[int, list] = {}
+        errors: list[str] = []
+        with ThreadPoolExecutor(max_workers=len(chunks)) as pool:
+            futures = {pool.submit(_submit_chunk, c): i
+                       for i, c in enumerate(chunks)}
+            for fut in as_completed(futures):
+                idx = futures[fut]
+                try:
+                    batch_results[idx] = fut.result()
+                except Exception as e:
+                    errors.append(str(e))
+
+        if errors:
+            detail = '; '.join(errors[:3])
+            raise RuntimeError(
+                f"submit failed for {len(errors)} chunk(s): {detail}")
+
+        for i in sorted(batch_results):
+            results.extend(batch_results[i])
+        return results
 
     def wait_tasks(self, uids: list[str],
                    timeout: float | None = None) -> list[dict]:
         """
-        Wait for tasks to complete.
+        Wait for tasks to reach terminal state via SSE notifications.
+
+        Purely client-side: the persistent ``_on_task_done`` callback
+        (registered at session init) accumulates completions into
+        ``self._completed``.  This method checks the accumulator and
+        blocks only until every requested UID appears there.
+
+        Falls back to periodic polling when no ``BridgeClient`` is
+        available (e.g. direct construction in tests).
 
         Args:
             uids: Task UIDs to wait for.
@@ -432,13 +847,77 @@ class RhapsodyClient(PluginClient):
         """
         self._require_session()
 
-        url = self._url(f"wait/{self.sid}")
+        # ------------------------------------------------------------------
+        # Check if SSE notifications are available
+        # ------------------------------------------------------------------
+        has_sse = (self._bc is not None and
+                   self._edge_id is not None and
+                   self._plugin_name is not None)
+
+        if not has_sse:
+            return self._wait_tasks_poll(uids, timeout)
+
+        # ------------------------------------------------------------------
+        # SSE-based wait (preferred path)
+        # ------------------------------------------------------------------
+
+        # Fast path: all already completed
+        with self._completed_lock:
+            if all(uid in self._completed for uid in uids):
+                return [self._completed[uid] for uid in uids]
+
+        # Register a waiter — _on_task_done will wake us
+        pending = set(uid for uid in uids
+                      if uid not in self._completed)
+        done = threading.Event()
+        if not pending:
+            done.set()
+
+        waiter = (pending, done)
+        with self._waiters_lock:
+            self._waiters.append(waiter)
+
+        try:
+            done.wait(timeout=timeout)
+        finally:
+            with self._waiters_lock:
+                try:
+                    self._waiters.remove(waiter)
+                except ValueError:
+                    pass
+
+        with self._completed_lock:
+            return [self._completed.get(uid, {"uid": uid,
+                                              "state": "UNKNOWN"})
+                    for uid in uids]
+
+    def _wait_tasks_poll(self, uids: list[str],
+                         timeout: float | None = None) -> list[dict]:
+        """Fallback wait via periodic polling (no SSE available)."""
+
+        url     = self._url(f"wait/{self.sid}")
         payload: dict = {"uids": uids}
         if timeout is not None:
             payload["timeout"] = timeout
-        resp = self._http.post(url, json=payload)
-        self._raise(resp, f"wait {len(uids)} task(s)")
-        return resp.json()
+
+        deadline = (time.time() + timeout) if timeout else None
+
+        while True:
+            resp = self._http.post(url, json=payload)
+            self._raise(resp, f"wait {len(uids)} task(s)")
+            tasks = resp.json()
+
+            # Check if all are terminal
+            all_done = all(
+                str(t.get('state', '')).upper() in TERMINAL_STATES
+                for t in tasks)
+            if all_done:
+                return tasks
+
+            if deadline and time.time() >= deadline:
+                return tasks  # return whatever we have
+
+            time.sleep(1.0)
 
     def list_tasks(self) -> dict:
         """List all tasks in this session."""
@@ -560,6 +1039,11 @@ class PluginRhapsody(Plugin):
         """Register a new Rhapsody session.
 
         Accepts an optional JSON body with ``{"backends": ["name", ...]}``.
+
+        Session initialization happens asynchronously in the background.
+        The SID is returned immediately.  The client should wait for a
+        ``session_status`` SSE notification (``status: "ready"``) before
+        submitting tasks, or handle HTTP 409 on early requests.
         """
         try:
             data = await request.json()
@@ -577,17 +1061,49 @@ class PluginRhapsody(Plugin):
         self._session_last_access[sid] = time.time()
         log.info("[%s] Registered session %s", self.instance_name, sid)
 
-        if hasattr(session, 'initialize'):
-            await session.initialize()
+        # Kick off initialization in the background so the HTTP response
+        # (and therefore the WebSocket slot) is released immediately.
+        asyncio.create_task(self._init_session(sid, session))
 
-        return JSONResponse({"sid": sid})
+        return JSONResponse({"sid": sid, "status": "initializing"})
+
+    async def _init_session(self, sid: str, session) -> None:
+        """Background task: initialize a session and notify via SSE."""
+        if session._init_ready.is_set():
+            return  # already initialized (e.g. by test setup)
+
+        try:
+            if hasattr(session, 'initialize'):
+                await session.initialize()
+
+            self._dispatch_notify("session_status", {
+                "sid":    sid,
+                "status": "ready",
+            })
+
+        except Exception as e:
+            log.error("[%s] Session %s init failed: %s",
+                      self.instance_name, sid, e)
+            self._dispatch_notify("session_status", {
+                "sid":    sid,
+                "status": "failed",
+                "error":  str(e),
+            })
 
     # -- route handlers -----------------------------------------------------
 
     async def submit_tasks(self, request: Request) -> JSONResponse:
-        sid = request.path_params['sid']
+        sid  = request.path_params['sid']
         data = await request.json()
-        task_dicts = data.get('tasks', [])
+
+        # Support template compression: {"template": {...}, "uids": [...]}
+        template = data.get('template')
+        if template is not None:
+            uids = data.get('uids', [])
+            task_dicts = [dict(template, uid=uid) for uid in uids]
+        else:
+            task_dicts = data.get('tasks', [])
+
         return await self._forward(sid, RhapsodySession.submit_tasks,
                                    task_dicts=task_dicts)
 

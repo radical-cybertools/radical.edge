@@ -872,7 +872,9 @@ def main():
                 ssl_certfile=ssl_certfile,
                 ssl_keyfile=ssl_keyfile,
                 log_level="info",
-                timeout_graceful_shutdown=3)  # Force exit after 3 seconds
+                ws_max_size=10 * 1024 * 1024,       # 10 MB
+                ws_per_message_deflate=True,        # compress WS frames
+                timeout_graceful_shutdown=3)         # Force exit after 3s
 
 
 if __name__ == "__main__":

@@ -182,6 +182,7 @@ class BridgeClient:
         self._topology_callbacks: List[Callable] = []
         self._listener_thread: Optional[threading.Thread] = None
         self._listener_stop: threading.Event = threading.Event()
+        self._listener_connected: threading.Event = threading.Event()
 
     def register_callback(self, edge_id: Optional[str] = None, plugin_name: Optional[str] = None,
                           topic: Optional[str] = None, callback: Callable = None) -> None:
@@ -245,8 +246,17 @@ class BridgeClient:
     def _ensure_listener(self) -> None:
         if self._listener_thread is None or not self._listener_thread.is_alive():
             self._listener_stop.clear()
+            self._listener_connected.clear()
             self._listener_thread = threading.Thread(target=self._listen_sse, daemon=True)
             self._listener_thread.start()
+
+    def wait_for_listener(self, timeout: float = 30) -> bool:
+        """Block until the SSE listener is connected.
+
+        Returns ``True`` if connected, ``False`` on timeout.
+        """
+        self._ensure_listener()
+        return self._listener_connected.wait(timeout=timeout)
 
     def _dispatch_notification(self, edge: str, plugin: str, topic: str, data: dict) -> None:
         """Dispatch a notification to matching callbacks."""
@@ -274,6 +284,7 @@ class BridgeClient:
         try:
             with httpx.stream("GET", f"{self._url}/events", verify=self._cert if self._cert else False, timeout=None) as response:
                 log.debug("[client] SSE stream connected: status=%s", response.status_code)
+                self._listener_connected.set()
                 for line in response.iter_lines():
                     if self._listener_stop.is_set():
                         log.debug("[client] SSE listener stopping (stop flag set)")
