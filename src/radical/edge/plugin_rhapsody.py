@@ -8,6 +8,7 @@ and monitor compute / AI tasks on edge nodes.
 import asyncio
 import base64
 import importlib
+import json
 import logging
 import threading
 import time
@@ -28,11 +29,16 @@ WS_PAYLOAD_LIMIT   = 8 * 1024 * 1024   # target max per batch (conservative)
 NOTIFY_BATCH_SIZE  = 256               # max tasks per bulk notification
 NOTIFY_BATCH_WINDOW = 0.1              # seconds to accumulate before flush
 
-# Guard rhapsody import — it is an optional dependency
+# Guard optional dependencies
 try:
     import rhapsody as rh
 except ImportError:
     rh = None
+
+try:
+    import cloudpickle as _cp
+except ImportError:
+    _cp = None
 
 
 # ---------------------------------------------------------------------------
@@ -55,7 +61,7 @@ class RhapsodySession(PluginSession):
         Args:
             sid (str):  Unique session identifier.
             backend_names (list[str] | None):
-                Backends to configure.  Defaults to ``['concurrent']``.
+                Backends to configure.  Defaults to ``['dragon_v3']``.
             allow_pickled_tasks (bool):
                 Allow cloudpickle-encoded function tasks.  Defaults to ``True``.
         """
@@ -64,7 +70,7 @@ class RhapsodySession(PluginSession):
         if rh is None:
             raise RuntimeError("rhapsody package is not installed")
 
-        self.backend_names       = backend_names or ['concurrent']
+        self.backend_names       = backend_names or ['dragon_v3']
         self.allow_pickled_tasks = allow_pickled_tasks
         self._rh_session         = None
         self._tasks: dict[str, dict] = {}
@@ -178,9 +184,7 @@ class RhapsodySession(PluginSession):
                 raise HTTPException(
                     status_code=400,
                     detail="pickled function tasks are disabled")
-            try:
-                import cloudpickle
-            except ImportError:
+            if _cp is None:
                 raise HTTPException(
                     status_code=500,
                     detail="cloudpickle is not installed on this edge")
@@ -188,7 +192,7 @@ class RhapsodySession(PluginSession):
                 val = td.get(field)
                 if isinstance(val, str) and val.startswith('cloudpickle::'):
                     raw = base64.b64decode(val[len('cloudpickle::'):])
-                    td[field] = cloudpickle.loads(raw)
+                    td[field] = _cp.loads(raw)
             return td
 
         # --- import-path string (e.g. "mymodule.sub:func_name") ---
@@ -423,12 +427,14 @@ class RhapsodySession(PluginSession):
         rv = d.get('return_value')
         if rv is not None:
             try:
-                import json
                 json.dumps(rv)
             except (TypeError, ValueError):
                 d['return_value'] = str(rv)
 
         return d
+
+    _NOTIFICATION_KEYS = {'uid', 'state', 'exit_code',
+                          'return_value', 'error', 'exception'}
 
     def _notification_payload(self, t) -> dict:
         """Build a minimal notification dict for a completed task.
@@ -437,29 +443,9 @@ class RhapsodySession(PluginSession):
         payloads small.  Clients needing the full task dict (e.g.
         stdout/stderr) can fetch it via ``GET /task/{sid}/{uid}``.
         """
-        d: dict = {}
-        for key in ('uid', 'state'):
-            val = self._get_attr(t, key)
-            if val is not None:
-                d[key] = str(val)
-
-        for key in ('exit_code', 'return_value', 'error', 'exception'):
-            val = self._get_attr(t, key)
-            if val is not None:
-                d[key] = val
-
-        # Ensure exception / return_value are JSON-safe
-        if 'exception' in d and d['exception'] is not None:
-            d['exception'] = str(d['exception'])
-        rv = d.get('return_value')
-        if rv is not None:
-            try:
-                import json
-                json.dumps(rv)
-            except (TypeError, ValueError):
-                d['return_value'] = str(rv)
-
-        return d
+        full = self._sanitize_task(t)
+        return {k: v for k, v in full.items()
+                if k in self._NOTIFICATION_KEYS}
 
     async def list_tasks(self) -> dict:
         """Return all tasks in this session with current state."""
@@ -602,8 +588,8 @@ class RhapsodyClient(PluginClient):
         Falls back to polling when no ``BridgeClient`` is available.
 
         Args:
-            backends: List of backend names (e.g. ``['concurrent']``).
-                      Defaults to ``['concurrent']`` on the server side.
+            backends: List of backend names (e.g. ``['dragon_v3']``).
+                      Defaults to ``['dragon_v3']`` on the server side.
             init_timeout: Seconds to wait for session init (default 120).
         """
         has_sse = (self._bc is not None and
@@ -704,14 +690,15 @@ class RhapsodyClient(PluginClient):
         - Strips non-serializable internal fields (``future``,
           ``_future``, ``backend``).
         """
-        import cloudpickle as cp
+        if _cp is None:
+            raise ImportError("cloudpickle is required for function tasks")
 
         pickled_fields = td.get('_pickled_fields', [])
 
         # Serialize callable function
         fn = td.get('function')
         if callable(fn):
-            encoded = base64.b64encode(cp.dumps(fn)).decode('ascii')
+            encoded = base64.b64encode(_cp.dumps(fn)).decode('ascii')
             td['function'] = 'cloudpickle::' + encoded
             if 'function' not in pickled_fields:
                 pickled_fields.append('function')
@@ -724,10 +711,9 @@ class RhapsodyClient(PluginClient):
             if isinstance(val, str) and val.startswith('cloudpickle::'):
                 continue
             try:
-                import json
                 json.dumps(val)
             except (TypeError, ValueError):
-                encoded = base64.b64encode(cp.dumps(val)).decode('ascii')
+                encoded = base64.b64encode(_cp.dumps(val)).decode('ascii')
                 td[field] = 'cloudpickle::' + encoded
                 if field not in pickled_fields:
                     pickled_fields.append(field)
@@ -776,14 +762,17 @@ class RhapsodyClient(PluginClient):
         # template + list of UIDs instead of N full copies.
         url = self._url(f"submit/{self.sid}")
         if len(task_dicts) > 1:
-            first = {k: v for k, v in task_dicts[0].items() if k != 'uid'}
+            ref      = task_dicts[0]
+            ref_keys = set(ref) - {'uid'}
             homogeneous = all(
-                {k: v for k, v in td.items() if k != 'uid'} == first
+                set(td) - {'uid'} == ref_keys and
+                all(td[k] == ref[k] for k in ref_keys)
                 for td in task_dicts[1:])
         else:
             homogeneous = False
 
         if homogeneous and len(task_dicts) > 1:
+            first = {k: v for k, v in ref.items() if k != 'uid'}
             return self._submit_template(
                 url, first, [td['uid'] for td in task_dicts])
 
@@ -1029,11 +1018,16 @@ class PluginRhapsody(Plugin):
 
     Exposes the RHAPSODY Session / Task API via REST endpoints:
 
-    - POST  /rhapsody/submit/{sid}
-    - POST  /rhapsody/wait/{sid}
-    - GET   /rhapsody/task/{sid}/{uid}
-    - POST  /rhapsody/cancel/{sid}/{uid}
-    - POST  /rhapsody/cancel_all/{sid}
+    - POST  /rhapsody/register_session      – create session
+    - POST  /rhapsody/submit/{sid}           – submit tasks
+    - POST  /rhapsody/wait/{sid}             – query task states
+    - GET   /rhapsody/list_tasks/{sid}       – list all tasks
+    - GET   /rhapsody/task/{sid}/{uid}       – get single task
+    - POST  /rhapsody/cancel/{sid}/{uid}     – cancel single task
+    - POST  /rhapsody/cancel_all/{sid}       – cancel all tasks
+
+    Notification topics: ``session_status``, ``task_status``,
+    ``task_status_batch``.
     '''
 
     plugin_name = "rhapsody"
@@ -1055,7 +1049,7 @@ class PluginRhapsody(Plugin):
                 {"name": "args", "type": "text", "label": "Arguments (space-separated)",
                  "default": "hello from rhapsody", "css_class": "rh-args"},
                 {"name": "backends", "type": "select", "label": "Backend",
-                 "options": ["concurrent", "dragon_v3"],
+                 "options": ["dragon_v3", "concurrent"],
                  "css_class": "rh-backends"},
                 {"name": "timeout", "type": "number", "label": "Timeout (s)",
                  "default": "", "css_class": "rh-timeout"},
