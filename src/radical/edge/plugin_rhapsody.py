@@ -426,15 +426,20 @@ class RhapsodySession(PluginSession):
         # Ensure return_value is JSON-serializable
         rv = d.get('return_value')
         if rv is not None:
-            try:
-                json.dumps(rv)
-            except (TypeError, ValueError):
-                d['return_value'] = str(rv)
+            if isinstance(rv, bytes):
+                d['return_value'] = base64.b64encode(rv).decode('ascii')
+                d['_return_value_encoding'] = 'base64'
+            else:
+                try:
+                    json.dumps(rv)
+                except (TypeError, ValueError):
+                    d['return_value'] = str(rv)
 
         return d
 
     _NOTIFICATION_KEYS = {'uid', 'state', 'exit_code',
-                          'return_value', 'error', 'exception'}
+                          'return_value', '_return_value_encoding',
+                          'error', 'exception'}
 
     def _notification_payload(self, t) -> dict:
         """Build a minimal notification dict for a completed task.
@@ -559,6 +564,11 @@ class RhapsodyClient(PluginClient):
         newly_done: list[str] = []
         with self._completed_lock:
             for t in tasks:
+                # Decode base64-encoded return values
+                if t.get('_return_value_encoding') == 'base64':
+                    t['return_value'] = base64.b64decode(t['return_value'])
+                    del t['_return_value_encoding']
+
                 uid   = t.get('uid')
                 state = str(t.get('state', '')).upper()
                 if uid and state in TERMINAL_STATES:
