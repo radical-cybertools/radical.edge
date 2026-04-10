@@ -32,9 +32,15 @@ REQUEST_PHASES = [
     ('rh_register',             'rh_register_done',        'rh_register'),
 ]
 
-# Per-task phase (uid = individual task UID)
+# Per-task end-to-end phases (uid = individual task UID)
 TASK_PHASES = [
-    ('rh_task_exec', 'rh_task_done', 'rh_task_exec'),
+    ('task_submit',      'task_batch_flush', 'batch_queue'),
+    ('task_batch_flush', 'rh_task_exec',     'submit_transport'),
+    ('rh_task_exec',     'rh_task_done',     'execution'),
+    ('rh_task_done',     'notify_queue',     'post_exec'),
+    ('notify_queue',     'notify_flush',     'notify_queue'),
+    ('notify_flush',     'task_complete',    'notify_transport'),
+    ('task_submit',      'task_complete',    'total_e2e'),
 ]
 
 
@@ -42,7 +48,7 @@ TASK_PHASES = [
 
 def _load_profiles(prof_dir):
     """Find and load .prof files, return combined timeline."""
-    patterns = ['client.prof', 'bridge.prof', 'edge.prof']
+    patterns = ['client.prof', 'client.task.prof', 'bridge.prof', 'edge.prof']
     prof_files = []
     for pat in patterns:
         found = glob.glob(os.path.join(prof_dir, pat))
@@ -72,6 +78,13 @@ def _build_events(combined):
       - req_events:  batch_id -> {event_name: timestamp, '_msg': {event: msg}}
       - task_events: task_uid -> {event_name: timestamp}
     """
+    # Events keyed by individual task UID (client + edge)
+    TASK_EVENT_NAMES = {
+        'task_submit', 'task_batch_flush', 'task_complete',
+        'rh_task_exec', 'rh_task_done',
+        'notify_queue', 'notify_flush',
+    }
+
     req_events  = {}
     task_events = {}
 
@@ -81,18 +94,21 @@ def _build_events(combined):
         t     = row[rprof.TIME]
         msg   = row[rprof.MSG]
 
-        if not uid or not event.startswith('rh_'):
+        if not uid:
             continue
 
-        # Task-level events use individual task UIDs
-        if event in ('rh_task_exec', 'rh_task_done'):
+        # Task-level events (client + edge)
+        if event in TASK_EVENT_NAMES:
             if uid not in task_events:
                 task_events[uid] = {}
             if event not in task_events[uid]:
                 task_events[uid][event] = t
             continue
 
-        # Request-level events use batch IDs (first task UID)
+        # Request-level events (rh_* prefix, batch IDs)
+        if not event.startswith('rh_'):
+            continue
+
         if uid not in req_events:
             req_events[uid] = {'_msg': {}}
         if event not in req_events[uid]:

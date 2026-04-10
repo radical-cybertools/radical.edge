@@ -11,10 +11,10 @@ them into a single timeline, and produces 8 plots:
     plot_conc.png   — concurrent requests per phase (step plot)
     plot_rate.png   — request throughput rate
 
-  Rhapsody plugin (rh_* events):
-    plot_rh_state.png — per-submit event timestamps
-    plot_rh_dur.png   — per-submit phase durations (log scale)
-    plot_rh_conc.png  — concurrent requests + tasks (step plot)
+  End-to-end tasks (per task UID, client + edge events):
+    plot_rh_state.png — per-task event timeline (submit → complete)
+    plot_rh_dur.png   — per-task phase durations (log scale)
+    plot_rh_conc.png  — per-phase task concurrency (step plot)
     plot_rh_rate.png  — task throughput rate
 
 Usage:
@@ -71,7 +71,7 @@ plt.rcParams.update(_STYLE)
 def load_profiles(prof_dir):
     """Find and load .prof files, return combined timeline."""
 
-    patterns = ['client.prof', 'bridge.prof', 'edge.prof']
+    patterns = ['client.prof', 'client.task.prof', 'bridge.prof', 'edge.prof']
     prof_files = []
     for pat in patterns:
         prof_files.extend(glob.glob(os.path.join(prof_dir, pat)))
@@ -115,14 +115,23 @@ def build_request_events(combined):
     return requests
 
 
-def build_rhapsody_events(combined):
-    """Index Rhapsody events by UID.
+def build_task_events(combined):
+    """Index end-to-end task events by task UID.
+
+    Collects events from both client-side (task_submit, task_batch_flush,
+    task_complete) and edge-side (rh_task_exec, rh_task_done,
+    notify_queue, notify_flush) profiles.
 
     Returns:
-        req_events:  batch_id -> {event: timestamp}
         task_events: task_uid -> {event: timestamp}
     """
-    req_events  = {}
+    # Events that are keyed by individual task UID
+    TASK_EVENTS = {
+        'task_submit', 'task_batch_flush', 'task_complete',
+        'rh_task_exec', 'rh_task_done',
+        'notify_queue', 'notify_flush',
+    }
+
     task_events = {}
 
     for row in combined:
@@ -130,21 +139,15 @@ def build_rhapsody_events(combined):
         event = row[rprof.EVENT]
         t     = row[rprof.TIME]
 
-        if not uid or not event.startswith('rh_'):
+        if not uid or event not in TASK_EVENTS:
             continue
 
-        if event in ('rh_task_exec', 'rh_task_done'):
-            if uid not in task_events:
-                task_events[uid] = {}
-            if event not in task_events[uid]:
-                task_events[uid][event] = t
-        else:
-            if uid not in req_events:
-                req_events[uid] = {}
-            if event not in req_events[uid]:
-                req_events[uid][event] = t
+        if uid not in task_events:
+            task_events[uid] = {}
+        if event not in task_events[uid]:
+            task_events[uid][event] = t
 
-    return req_events, task_events
+    return task_events
 
 
 # ============================================================================
@@ -376,34 +379,40 @@ def plot_infra_rate(requests, prof_dir):
 # Rhapsody plots
 # ============================================================================
 
-RH_EVENT_LIST = [
-    ('rh_submit',              'submit'),
-    ('rh_deser',               'deser'),
-    ('rh_deser_done',          'deser done'),
-    ('rh_backend_submit',      'backend submit'),
-    ('rh_backend_submit_done', 'backend done'),
-    ('rh_register',            'register'),
-    ('rh_register_done',       'register done'),
-    ('rh_submit_done',         'submit done'),
+# End-to-end task event list (in lifecycle order)
+TASK_EVENT_LIST = [
+    ('task_submit',      'client submit'),
+    ('task_batch_flush', 'client flush'),
+    ('rh_task_exec',     'edge exec'),
+    ('rh_task_done',     'edge done'),
+    ('notify_queue',     'notify queue'),
+    ('notify_flush',     'notify flush'),
+    ('task_complete',    'client complete'),
 ]
 
-RH_PHASES = [
-    ('rh_deser',          'rh_deser_done',          'deserialize'),
-    ('rh_backend_submit', 'rh_backend_submit_done', 'backend submit'),
-    ('rh_register',       'rh_register_done',       'register + watch'),
+# Phases derived from consecutive events
+TASK_PHASES = [
+    ('task_submit',      'task_batch_flush', 'batch queue'),
+    ('task_batch_flush', 'rh_task_exec',     'submit transport'),
+    ('rh_task_exec',     'rh_task_done',     'execution'),
+    ('rh_task_done',     'notify_queue',     'post-exec'),
+    ('notify_queue',     'notify_flush',     'notify queue'),
+    ('notify_flush',     'task_complete',    'notify transport'),
 ]
 
 
-def plot_rh_state(req_events, prof_dir):
-    """State timeline: per-submit event timestamps."""
+def plot_rh_state(task_events, prof_dir):
+    """State timeline: per-task end-to-end event timestamps."""
 
     data = []
-    for uid in req_events:
-        evts = req_events[uid]
-        t0 = evts.get('rh_submit')
+    for uid in task_events:
+        evts = task_events[uid]
+        # Use earliest available event as sort key
+        t0 = evts.get('task_submit',
+             evts.get('rh_task_exec'))
         if t0 is None:
             continue
-        tstamps = [evts.get(evt, np.nan) for evt, _ in RH_EVENT_LIST]
+        tstamps = [evts.get(evt, np.nan) for evt, _ in TASK_EVENT_LIST]
         data.append((t0, tstamps))
 
     if not data:
@@ -418,11 +427,11 @@ def plot_rh_state(req_events, prof_dir):
                          for i, row in enumerate(data)])
 
     fig, ax = plt.subplots(figsize=(14, 7))
-    for idx, (_, label) in enumerate(RH_EVENT_LIST):
+    for idx, (_, label) in enumerate(TASK_EVENT_LIST):
         ax.plot(np_data[:, 0], np_data[:, 1 + idx], '.', label=label,
                 color=_COLORS[idx % len(_COLORS)], markersize=3, alpha=0.8)
 
-    ax.set_xlabel('request (sorted by arrival)')
+    ax.set_xlabel('task (sorted by start)')
     ax.set_ylabel('time (ms)')
     ax.legend(loc='upper center', bbox_to_anchor=(0.5, 1.15),
               ncol=4, fancybox=True, shadow=True)
@@ -432,12 +441,14 @@ def plot_rh_state(req_events, prof_dir):
     print("  plot_rh_state.png")
 
 
-def plot_rh_dur(req_events, prof_dir):
-    """Per-request Rhapsody phase durations (log scale)."""
+def plot_rh_dur(task_events, prof_dir):
+    """Per-task phase durations (log scale)."""
 
     items = []
-    for uid in req_events:
-        t_end = req_events[uid].get('rh_submit_done')
+    for uid in task_events:
+        evts = task_events[uid]
+        # Need at least one phase to plot
+        t_end = evts.get('task_complete', evts.get('rh_task_done'))
         if t_end is not None:
             items.append((uid, t_end))
 
@@ -448,13 +459,15 @@ def plot_rh_dur(req_events, prof_dir):
 
     np_data = []
     for i, (uid, _) in enumerate(items):
-        evts = req_events[uid]
+        evts = task_events[uid]
         row = [i]
-        for s, e, _ in RH_PHASES:
+        for s, e, _ in TASK_PHASES:
             t0, t1 = evts.get(s), evts.get(e)
             row.append(max((t1 - t0) * 1000, 0.001)
                        if t0 is not None and t1 is not None else np.nan)
-        t0, t1 = evts.get('rh_submit'), evts.get('rh_submit_done')
+        # Total end-to-end
+        t0 = evts.get('task_submit', evts.get('rh_task_exec'))
+        t1 = evts.get('task_complete', evts.get('rh_task_done'))
         row.append(max((t1 - t0) * 1000, 0.001)
                    if t0 is not None and t1 is not None else np.nan)
         np_data.append(row)
@@ -462,75 +475,58 @@ def plot_rh_dur(req_events, prof_dir):
     np_data = np.array(np_data)
     fig, ax = plt.subplots(figsize=(14, 7))
 
-    for idx, (_, _, label) in enumerate(RH_PHASES):
-        ax.plot(np_data[:, 0], np_data[:, 1 + idx], label=label,
+    for idx, (_, _, label) in enumerate(TASK_PHASES):
+        col = np_data[:, 1 + idx]
+        if np.all(np.isnan(col)):
+            continue
+        ax.plot(np_data[:, 0], col, label=label,
                 color=_COLORS[idx % len(_COLORS)])
-    ax.plot(np_data[:, 0], np_data[:, -1], '--', label='total submit',
+    ax.plot(np_data[:, 0], np_data[:, -1], '--', label='total e2e',
             color='black', alpha=0.6)
 
     ax.set_yscale('log')
-    ax.set_xlabel('request (sorted by completion)')
+    ax.set_xlabel('task (sorted by completion)')
     ax.set_ylabel('duration (ms)')
-    ax.legend(loc='upper center', bbox_to_anchor=(0.5, 1.15),
-              ncol=5, fancybox=True, shadow=True)
+    ax.legend(loc='upper center', bbox_to_anchor=(0.5, 1.18),
+              ncol=4, fancybox=True, shadow=True)
     fig.tight_layout()
     fig.savefig(os.path.join(prof_dir, 'plot_rh_dur.png'), dpi=150)
     plt.close(fig)
     print("  plot_rh_dur.png")
 
 
-def plot_rh_conc(req_events, task_events, prof_dir):
-    """Rhapsody phase + task execution concurrency."""
+def plot_rh_conc(task_events, prof_dir):
+    """Per-phase concurrency over time."""
 
     all_events = []
 
-    for uid in req_events:
-        evts = req_events[uid]
-        for s, e, label in RH_PHASES:
+    for uid in task_events:
+        evts = task_events[uid]
+        for s, e, label in TASK_PHASES:
             t0, t1 = evts.get(s), evts.get(e)
             if t0 is not None and t1 is not None:
                 all_events.append((label, t0, +1))
                 all_events.append((label, t1, -1))
 
-    for uid in task_events:
-        evts = task_events[uid]
-        t0 = evts.get('rh_task_exec')
-        t1 = evts.get('rh_task_done')
-        if t0 is not None and t1 is not None:
-            all_events.append(('task exec', t0, +1))
-            all_events.append(('task exec', t1, -1))
-
     if not all_events:
         return
 
     global_t0 = min(t for _, t, _ in all_events)
-    fig, axes = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
+    fig, ax = plt.subplots(figsize=(14, 6))
 
-    # Top: request phases
-    for idx, (_, _, label) in enumerate(RH_PHASES):
+    for idx, (_, _, label) in enumerate(TASK_PHASES):
         phase_evts = sorted([(t, d) for lbl, t, d in all_events
                              if lbl == label])
         if not phase_evts:
             continue
         times, counts = _step_data(phase_evts, global_t0)
-        axes[0].step(times, counts, where='post', label=label,
-                     color=_COLORS[idx % len(_COLORS)], alpha=0.8)
+        ax.step(times, counts, where='post', label=label,
+                color=_COLORS[idx % len(_COLORS)], alpha=0.8)
 
-    axes[0].set_ylabel('concurrent requests')
-    axes[0].legend(loc='upper center', bbox_to_anchor=(0.5, 1.18),
-                   ncol=4, fancybox=True, shadow=True)
-
-    # Bottom: task execution
-    task_evts = sorted([(t, d) for lbl, t, d in all_events
-                        if lbl == 'task exec'])
-    if task_evts:
-        times, counts = _step_data(task_evts, global_t0)
-        axes[1].step(times, counts, where='post', label='task exec',
-                     color='#e15759', alpha=0.8)
-        axes[1].set_ylabel('concurrent tasks')
-        axes[1].legend()
-
-    axes[1].set_xlabel('time (ms)')
+    ax.set_xlabel('time (ms)')
+    ax.set_ylabel('concurrent tasks')
+    ax.legend(loc='upper center', bbox_to_anchor=(0.5, 1.15),
+              ncol=3, fancybox=True, shadow=True)
     fig.tight_layout()
     fig.savefig(os.path.join(prof_dir, 'plot_rh_conc.png'), dpi=150)
     plt.close(fig)
@@ -538,15 +534,19 @@ def plot_rh_conc(req_events, task_events, prof_dir):
 
 
 def plot_rh_rate(task_events, prof_dir):
-    """Task completion rate over time."""
+    """Task throughput rate over time."""
 
     metrics = {
-        'task start': 'rh_task_exec',
-        'task done':  'rh_task_done',
+        'client submit': 'task_submit',
+        'edge exec':     'rh_task_exec',
+        'edge done':     'rh_task_done',
+        'client done':   'task_complete',
     }
     metric_colors = {
-        'task start': '#4e79a7',
-        'task done':  '#59a14f',
+        'client submit': '#4e79a7',
+        'edge exec':     '#f28e2b',
+        'edge done':     '#59a14f',
+        'client done':   '#e15759',
     }
 
     timestamps = {m: [] for m in metrics}
@@ -580,8 +580,8 @@ def plot_rh_rate(task_events, prof_dir):
 
     ax.set_xlabel('time (ms)')
     ax.set_ylabel('rate (tasks / sec)')
-    ax.legend(loc='upper center', bbox_to_anchor=(0.5, 1.12),
-              ncol=2, fancybox=True, shadow=True)
+    ax.legend(loc='upper center', bbox_to_anchor=(0.5, 1.15),
+              ncol=4, fancybox=True, shadow=True)
     fig.tight_layout()
     fig.savefig(os.path.join(prof_dir, 'plot_rh_rate.png'), dpi=150)
     plt.close(fig)
@@ -607,14 +607,13 @@ def main():
         plot_infra_conc(requests, prof_dir)
         plot_infra_rate(requests, prof_dir)
 
-    # Rhapsody plots
-    req_events, task_events = build_rhapsody_events(combined)
-    if req_events or task_events:
-        print(f"\nRhapsody: {len(req_events)} submits, "
-              f"{len(task_events)} tasks")
-        plot_rh_state(req_events, prof_dir)
-        plot_rh_dur(req_events, prof_dir)
-        plot_rh_conc(req_events, task_events, prof_dir)
+    # End-to-end task plots
+    task_events = build_task_events(combined)
+    if task_events:
+        print(f"\nTasks: {len(task_events)}")
+        plot_rh_state(task_events, prof_dir)
+        plot_rh_dur(task_events, prof_dir)
+        plot_rh_conc(task_events, prof_dir)
         plot_rh_rate(task_events, prof_dir)
 
     print("\nDone.")

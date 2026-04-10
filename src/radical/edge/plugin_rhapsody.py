@@ -369,6 +369,9 @@ class RhapsodySession(PluginSession):
 
         Thread-safe — called from watcher coroutines.
         """
+        uid = payload.get('uid', '?')
+        self.prof.prof('notify_queue', uid=uid)
+
         with self._notify_lock:
             self._notify_buf.append(payload)
             buf_len = len(self._notify_buf)
@@ -411,6 +414,10 @@ class RhapsodySession(PluginSession):
 
         if not self._plugin:
             return
+
+        prof = self.prof
+        for item in batch:
+            prof.prof('notify_flush', uid=item.get('uid', '?'))
 
         if len(batch) == 1:
             self._plugin._dispatch_notify("task_status", batch[0])
@@ -464,50 +471,68 @@ class RhapsodySession(PluginSession):
                     "error": str(e)})
 
     async def _watch_batch(self, tasks):
-        """Watch a batch of tasks with a single wait call.
+        """Watch a batch of tasks, notifying as each completes.
 
-        Replaces per-task ``_watch_task`` coroutines — one coroutine
-        waits for all tasks at once, then sends notifications for each.
+        Uses ``asyncio.wait(FIRST_COMPLETED)`` to drain completions
+        incrementally.  Notifications are queued per-task as soon as
+        each finishes — the existing notification buffer
+        (``_queue_notification``) batches them opportunistically so
+        fast-completing tasks are grouped into single SSE messages
+        while slow tasks don't block others.
         """
         prof = self.prof
-        bid  = str(self._get_attr(tasks[0], 'uid')) if tasks else '?'
 
-        # Build uid map for quick lookup
-        uid_map = {}
+        # Build uid map and per-task futures
+        fut_to_uid: dict[asyncio.Future, str] = {}
+        uid_to_task: dict[str, object]         = {}
+
         for t in tasks:
-            uid = self._get_attr(t, 'uid')
-            uid_map[str(uid) if uid else '?'] = t
-
-        prof.prof('rh_task_exec', uid=bid,
-                  msg=str(len(tasks)))
+            uid     = self._get_attr(t, 'uid')
+            uid_str = str(uid) if uid else '?'
+            uid_to_task[uid_str] = t
+            prof.prof('rh_task_exec', uid=uid_str)
 
         if not self._rh_session:
-            for uid_str in uid_map:
+            for uid_str in uid_to_task:
                 prof.prof('rh_task_done', uid=uid_str, state='FAILED')
                 self._queue_notification({
                     "uid": uid_str, "state": "FAILED",
                     "error": "Session closed"})
             return
 
-        try:
-            await self._rh_session.wait_tasks(tasks)
-        except Exception as e:
-            log.warning("[%s] Batch watch error: %s", self._sid, e)
+        # Obtain per-task futures from the session's state manager
+        sm = self._rh_session._state_manager
+        for uid_str, t in uid_to_task.items():
+            fut = sm.get_wait_future(uid_str, t)
+            fut_to_uid[fut] = uid_str
 
-        # Process results — tasks are updated in-place by the backend
-        for uid_str, t in uid_map.items():
-            state = self._get_attr(t, 'state')
-            state_str = str(state) if state else 'UNKNOWN'
+        # Drain completions incrementally
+        pending = set(fut_to_uid.keys())
 
-            prof.prof('rh_task_done', uid=uid_str, state=state_str)
+        while pending:
+            try:
+                done, pending = await asyncio.wait(
+                    pending, return_when=asyncio.FIRST_COMPLETED)
+            except Exception as e:
+                log.warning("[%s] Batch watch error: %s", self._sid, e)
+                break
 
-            if state_str.upper() in TERMINAL_STATES:
-                d = self._notification_payload(t)
-                self._queue_notification(d)
-            else:
-                self._queue_notification({
-                    "uid": uid_str, "state": state_str,
-                    "error": f"unexpected state: {state_str}"})
+            # Notify for every task that just completed
+            for fut in done:
+                uid_str = fut_to_uid[fut]
+                t       = uid_to_task[uid_str]
+                state     = self._get_attr(t, 'state')
+                state_str = str(state) if state else 'UNKNOWN'
+
+                prof.prof('rh_task_done', uid=uid_str, state=state_str)
+
+                if state_str.upper() in TERMINAL_STATES:
+                    d = self._notification_payload(t)
+                    self._queue_notification(d)
+                else:
+                    self._queue_notification({
+                        "uid": uid_str, "state": state_str,
+                        "error": f"unexpected state: {state_str}"})
 
     async def wait_tasks(self, uids: list[str],
                          timeout: float | None = None) -> list[dict]:

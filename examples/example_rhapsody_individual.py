@@ -3,16 +3,18 @@
 Example: Rhapsody Individual Task Submission
 =============================================
 
-Submits tasks one-by-one through the Edge Rhapsody backend to measure
-per-task overhead and throughput for individual submissions.
+Submits tasks one-by-one through the Edge Rhapsody backend.  The Edge
+backend collects individually submitted tasks over a short time window
+(default 0.1 s) and flushes them as bulk HTTP requests, so single-task
+submit calls still achieve high throughput.
 
 Uses the noop backend so tasks complete instantly — pure infrastructure
 overhead measurement.
 
 Usage:
-  python examples/example_rhapsody_individual.py [n_tasks]
+  python examples/example_rhapsody_individual.py [n_tasks] [batch_window]
 
-  Default: 8192 tasks
+  Default: 8192 tasks, 0.1 s batch window (0 = no batching)
 """
 
 import asyncio
@@ -30,7 +32,8 @@ def _noop():
 
 async def main():
 
-    n_tasks = int(sys.argv[1]) if len(sys.argv) > 1 else 8192
+    n_tasks      = int(sys.argv[1])   if len(sys.argv) > 1 else 8192
+    batch_window = float(sys.argv[2]) if len(sys.argv) > 2 else 0.1
 
     # ---- discover bridge / edge ---
     bridge_url = os.environ.get('RADICAL_BRIDGE_URL',
@@ -49,6 +52,7 @@ async def main():
     print(f"Bridge:  {bridge_url}")
     print(f"Edge:    {edge_name}")
     print(f"Tasks:   {n_tasks}")
+    print(f"Batch:   {batch_window}s window")
 
     # ---- set up Rhapsody session with Edge backend ---
     backend = rhapsody.get_backend(
@@ -56,6 +60,7 @@ async def main():
         bridge_url=bridge_url,
         edge_name=edge_name,
         backends=['noop'],
+        batch_window=batch_window,
     )
     backend = await backend
     session = rhapsody.Session(backends=[backend])
