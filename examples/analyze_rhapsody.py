@@ -42,19 +42,38 @@ TASK_PHASES = [
     ('rh_task_exec', 'rh_task_done', 'rh_task_exec'),
 ]
 
-# Phase groups for plots
-REQUEST_PHASE_GROUPS = [
-    ('parse body',     ['rh_parse_body']),
-    ('template expand',['rh_template_expand']),
-    ('deserialize',    ['rh_deser']),
-    ('backend submit', ['rh_backend_submit']),
-    ('register+watch', ['rh_register']),
+# Phase groups for duration / concurrency plots (start_evt, end_evt, label)
+PHASE_GROUPS = [
+    ('rh_deser',           'rh_deser_done',           'deserialize'),
+    ('rh_backend_submit',  'rh_backend_submit_done',  'backend submit'),
+    ('rh_register',        'rh_register_done',        'register + watch'),
 ]
 
 _COLORS = [
     '#4e79a7', '#59a14f', '#f28e2b', '#e15759', '#76b7b2',
     '#edc948', '#b07aa1', '#ff9da7', '#86bcb6', '#bab0ac',
 ]
+
+# Matplotlib style — clean, academic look
+_STYLE = {
+    'font.size':        12,
+    'axes.titlesize':   14,
+    'axes.labelsize':   12,
+    'xtick.labelsize':  10,
+    'ytick.labelsize':  10,
+    'legend.fontsize':   9,
+    'figure.facecolor': 'white',
+    'axes.facecolor':   '#f8f8f8',
+    'axes.grid':        True,
+    'grid.alpha':       0.3,
+    'grid.linestyle':   '--',
+    'lines.linewidth':  1.5,
+    'lines.markersize': 4,
+}
+
+
+def _apply_style():
+    plt.rcParams.update(_STYLE)
 
 
 # -- Helpers ------------------------------------------------------------------
@@ -327,244 +346,281 @@ def main():
 
 
 # ============================================================================
-# Plotting
+# Plotting — RP-style: state timeline, duration, concurrency, rate
 # ============================================================================
 
-def _group_durations(uids, durations):
-    """Return {group_label: median_seconds} for request phases."""
-    result = {}
-    for glabel, phases in REQUEST_PHASE_GROUPS:
-        vals = []
-        for uid in uids:
-            d = durations.get(uid, {})
-            total = sum(abs(d.get(p, 0)) for p in phases)
-            vals.append(total)
-        result[glabel] = statistics.median(vals) if vals else 0.0
-    return result
 
+# -- Plot 1: State timeline ---------------------------------------------------
+#
+# For each submit request (y-axis, sorted by first event), plot the
+# absolute timestamp of key Rhapsody events.  Shows the temporal
+# structure of the submit pipeline.
 
-# -- Plot 1: Stacked bar of Rhapsody request phases ---------------------------
+def plot_state(req_events, prof_dir):
+    """State timeline: per-request event timestamps."""
 
-def plot_stacked_bars(rounds, req_events, req_durations, prof_dir):
-    """Stacked bar chart of median Rhapsody phase durations per round."""
+    _apply_style()
 
-    if not rounds:
+    EVENT_LIST = [
+        ('rh_submit',              'submit'),
+        ('rh_deser',               'deser'),
+        ('rh_deser_done',          'deser done'),
+        ('rh_backend_submit',      'backend submit'),
+        ('rh_backend_submit_done', 'backend done'),
+        ('rh_register',            'register'),
+        ('rh_register_done',       'register done'),
+        ('rh_submit_done',         'submit done'),
+    ]
+
+    # Collect and sort by rh_submit
+    data = []
+    for uid in req_events:
+        evts = req_events[uid]
+        t0 = evts.get('rh_submit')
+        if t0 is None:
+            continue
+        tstamps = []
+        for evt, _ in EVENT_LIST:
+            t = evts.get(evt)
+            tstamps.append(t if t is not None else np.nan)
+        data.append((uid, t0, tstamps))
+
+    if not data:
         return
 
-    fig, ax = plt.subplots(figsize=(12, 6))
-    fig.suptitle('Rhapsody request-phase breakdown by round (median, ms)',
-                 fontsize=14)
+    data.sort(key=lambda x: x[1])
+    global_t0 = data[0][1]
 
-    x_labels = []
-    for i, rnd in enumerate(rounds):
-        n_tasks = sum(_get_batch_size(uid, req_events) for uid in rnd)
-        x_labels.append(f'R{i+1}\n({len(rnd)}req\n{n_tasks}t)')
+    np_data = np.array([[i] + [(t - global_t0) * 1000 if not np.isnan(t)
+                                else np.nan for t in row[2]]
+                         for i, row in enumerate(data)])
 
-    x = np.arange(len(x_labels))
-    bottoms = np.zeros(len(x_labels))
+    fig, ax = plt.subplots(figsize=(14, 7))
 
-    for gi, (glabel, _) in enumerate(REQUEST_PHASE_GROUPS):
-        vals = []
-        for rnd in rounds:
-            gd = _group_durations(rnd, req_durations)
-            vals.append(gd.get(glabel, 0) * 1000)
-        vals = np.array(vals)
-        ax.bar(x, vals, bottom=bottoms, label=glabel,
-               color=_COLORS[gi % len(_COLORS)], width=0.6)
-        bottoms += vals
+    for idx, (_, label) in enumerate(EVENT_LIST):
+        ax.plot(np_data[:, 0], np_data[:, 1 + idx], '.', label=label,
+                color=_COLORS[idx % len(_COLORS)], markersize=3, alpha=0.8)
 
-    ax.set_xlabel('Round')
-    ax.set_ylabel('Time (ms)')
-    ax.set_xticks(x)
-    ax.set_xticklabels(x_labels, fontsize=8)
-    ax.legend(loc='upper left', fontsize=8)
-    ax.grid(True, axis='y', alpha=0.3)
+    ax.set_xlabel('request (sorted by arrival)')
+    ax.set_ylabel('time (ms)')
+    ax.legend(loc='upper center', bbox_to_anchor=(0.5, 1.15),
+              ncol=4, fancybox=True, shadow=True)
 
     fig.tight_layout()
-    path = os.path.join(prof_dir, 'plot_rh_stacked_bars.png')
+    path = os.path.join(prof_dir, 'plot_rh_state.png')
     fig.savefig(path, dpi=150)
     plt.close(fig)
     print(f"  Saved {path}")
 
 
-# -- Plot 2: Overhead pie chart -----------------------------------------------
+# -- Plot 2: Duration plot ----------------------------------------------------
+#
+# For each request (x-axis, sorted by completion), plot the duration of
+# each phase.  Log scale reveals outliers.
 
-def plot_overhead_pie(rounds, req_events, req_durations, prof_dir):
-    """Pie chart of Rhapsody overhead breakdown."""
+def plot_dur(req_events, req_durations, prof_dir):
+    """Per-request phase durations (log scale)."""
 
-    if not rounds:
+    _apply_style()
+
+    # Sort by submit_done
+    items = []
+    for uid in req_events:
+        t_end = req_events[uid].get('rh_submit_done')
+        if t_end is None:
+            continue
+        items.append((uid, t_end))
+
+    if not items:
         return
 
-    # Aggregate all requests
-    all_uids = [uid for rnd in rounds for uid in rnd]
+    items.sort(key=lambda x: x[1])
 
-    fig, ax = plt.subplots(figsize=(8, 6))
-    fig.suptitle('Rhapsody overhead breakdown (median across all requests)',
-                 fontsize=14)
+    np_data = []
+    for i, (uid, _) in enumerate(items):
+        evts = req_events[uid]
+        row = [i]
+        for start_evt, end_evt, _ in PHASE_GROUPS:
+            t0 = evts.get(start_evt)
+            t1 = evts.get(end_evt)
+            if t0 is not None and t1 is not None:
+                row.append(max((t1 - t0) * 1000, 0.001))
+            else:
+                row.append(np.nan)
+        # Overall submit total
+        t0 = evts.get('rh_submit')
+        t1 = evts.get('rh_submit_done')
+        if t0 is not None and t1 is not None:
+            row.append(max((t1 - t0) * 1000, 0.001))
+        else:
+            row.append(np.nan)
+        np_data.append(row)
 
-    sizes  = []
-    labels = []
-    colors = []
-    for ci, (glabel, phases) in enumerate(REQUEST_PHASE_GROUPS):
-        vals = []
-        for uid in all_uids:
-            d = req_durations.get(uid, {})
-            vals.append(sum(abs(d.get(p, 0)) for p in phases))
-        med = statistics.median(vals) if vals else 0
-        if med > 0:
-            sizes.append(med * 1000)
-            labels.append(glabel)
-            colors.append(_COLORS[ci % len(_COLORS)])
+    np_data = np.array(np_data)
 
-    if sizes:
-        wedges, texts, autotexts = ax.pie(
-            sizes, labels=labels, colors=colors, autopct='%1.1f%%',
-            pctdistance=0.8, textprops={'fontsize': 9})
-        for t in autotexts:
-            t.set_fontsize(9)
+    fig, ax = plt.subplots(figsize=(14, 7))
 
-    fig.tight_layout()
-    path = os.path.join(prof_dir, 'plot_rh_overhead_pie.png')
-    fig.savefig(path, dpi=150)
-    plt.close(fig)
-    print(f"  Saved {path}")
+    for idx, (_, _, label) in enumerate(PHASE_GROUPS):
+        ax.plot(np_data[:, 0], np_data[:, 1 + idx], label=label,
+                color=_COLORS[idx % len(_COLORS)])
 
+    ax.plot(np_data[:, 0], np_data[:, -1], '--', label='total submit',
+            color='black', alpha=0.6)
 
-# -- Plot 3: Phase scaling line plot ------------------------------------------
-
-def plot_phase_scaling(rounds, req_events, req_durations, prof_dir):
-    """Line plot: median phase duration vs round (batch size)."""
-
-    if not rounds:
-        return
-
-    fig, ax = plt.subplots(figsize=(10, 6))
-    fig.suptitle('Rhapsody phase scaling by round', fontsize=14)
-
-    x_vals = []
-    for i, rnd in enumerate(rounds):
-        n_tasks = sum(_get_batch_size(uid, req_events) for uid in rnd)
-        x_vals.append(n_tasks if n_tasks > 0 else i + 1)
-
-    for gi, (glabel, _) in enumerate(REQUEST_PHASE_GROUPS):
-        y_vals = []
-        for rnd in rounds:
-            gd = _group_durations(rnd, req_durations)
-            v = gd.get(glabel, 0) * 1000
-            y_vals.append(max(v, 0.001))
-        ax.plot(x_vals, y_vals, 'o-', label=glabel,
-                color=_COLORS[gi % len(_COLORS)], markersize=5)
-
-    ax.set_xlabel('Tasks per round')
-    ax.set_ylabel('Median duration (ms)')
     ax.set_yscale('log')
-    ax.legend(fontsize=8)
-    ax.grid(True, alpha=0.3)
+    ax.set_xlabel('request (sorted by completion)')
+    ax.set_ylabel('duration (ms)')
+    ax.legend(loc='upper center', bbox_to_anchor=(0.5, 1.15),
+              ncol=5, fancybox=True, shadow=True)
 
     fig.tight_layout()
-    path = os.path.join(prof_dir, 'plot_rh_phase_scaling.png')
+    path = os.path.join(prof_dir, 'plot_rh_dur.png')
     fig.savefig(path, dpi=150)
     plt.close(fig)
     print(f"  Saved {path}")
 
 
-# -- Plot 4: Per-task execution histogram -------------------------------------
+# -- Plot 3: Concurrency (step plot) ------------------------------------------
+#
+# Number of concurrent requests in each Rhapsody phase over time.
+# Plus task execution concurrency.
 
-def plot_task_histogram(task_events, task_durations, prof_dir):
-    """Histogram of per-task execution durations."""
+def plot_conc(req_events, task_events, prof_dir):
+    """Phase concurrency over time (step plot)."""
 
-    exec_times = []
+    _apply_style()
+
+    all_events = []
+
+    # Request-level phase concurrency
+    for uid in req_events:
+        evts = req_events[uid]
+        for start_evt, end_evt, label in PHASE_GROUPS:
+            t0 = evts.get(start_evt)
+            t1 = evts.get(end_evt)
+            if t0 is not None and t1 is not None:
+                all_events.append((label, t0, +1))
+                all_events.append((label, t1, -1))
+
+    # Task execution concurrency
     for uid in task_events:
-        d = task_durations.get(uid, {})
-        v = d.get('rh_task_exec')
-        if v is not None:
-            exec_times.append(v * 1000)  # ms
+        evts = task_events[uid]
+        t0 = evts.get('rh_task_exec')
+        t1 = evts.get('rh_task_done')
+        if t0 is not None and t1 is not None:
+            all_events.append(('task exec', t0, +1))
+            all_events.append(('task exec', t1, -1))
 
-    if not exec_times:
+    if not all_events:
         return
 
-    fig, ax = plt.subplots(figsize=(10, 6))
-    fig.suptitle('Per-task execution duration distribution', fontsize=14)
+    global_t0 = min(t for _, t, _ in all_events)
 
-    ax.hist(exec_times, bins=min(50, max(10, len(exec_times) // 5)),
-            color='#4e79a7', edgecolor='white', alpha=0.85)
+    fig, axes = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
 
-    avg = statistics.mean(exec_times)
-    med = statistics.median(exec_times)
-    ax.axvline(avg, color='#e15759', linestyle='--', linewidth=1.5,
-               label=f'mean={avg:.2f}ms')
-    ax.axvline(med, color='#59a14f', linestyle='--', linewidth=1.5,
-               label=f'median={med:.2f}ms')
+    # Top: request phases
+    labels_req = [label for _, _, label in PHASE_GROUPS]
+    for idx, label in enumerate(labels_req):
+        phase_evts = sorted([(t, delta) for lbl, t, delta in all_events
+                             if lbl == label])
+        if not phase_evts:
+            continue
 
-    ax.set_xlabel('Execution duration (ms)')
-    ax.set_ylabel('Count')
-    ax.legend(fontsize=9)
-    ax.grid(True, axis='y', alpha=0.3)
+        times  = [(phase_evts[0][0] - global_t0) * 1000]
+        counts = [0]
+        current = 0
+        for t, delta in phase_evts:
+            current += delta
+            times.append((t - global_t0) * 1000)
+            counts.append(current)
+
+        axes[0].step(times, counts, where='post', label=label,
+                     color=_COLORS[idx % len(_COLORS)], alpha=0.8)
+
+    axes[0].set_ylabel('concurrent requests')
+    axes[0].legend(loc='upper center', bbox_to_anchor=(0.5, 1.18),
+                   ncol=4, fancybox=True, shadow=True)
+
+    # Bottom: task execution concurrency
+    task_evts = sorted([(t, delta) for lbl, t, delta in all_events
+                        if lbl == 'task exec'])
+    if task_evts:
+        times  = [(task_evts[0][0] - global_t0) * 1000]
+        counts = [0]
+        current = 0
+        for t, delta in task_evts:
+            current += delta
+            times.append((t - global_t0) * 1000)
+            counts.append(current)
+
+        axes[1].step(times, counts, where='post', label='task exec',
+                     color='#e15759', alpha=0.8)
+        axes[1].set_ylabel('concurrent tasks')
+        axes[1].legend()
+
+    axes[1].set_xlabel('time (ms)')
 
     fig.tight_layout()
-    path = os.path.join(prof_dir, 'plot_rh_task_histogram.png')
+    path = os.path.join(prof_dir, 'plot_rh_conc.png')
     fig.savefig(path, dpi=150)
     plt.close(fig)
     print(f"  Saved {path}")
 
 
-# -- Plot 5: Submit total vs task execution scatter ----------------------------
+# -- Plot 4: Throughput rate ---------------------------------------------------
+#
+# Task completion rate over time (completions per second).
 
-def plot_submit_vs_exec(rounds, req_events, req_durations,
-                        task_events, task_durations, prof_dir):
-    """Scatter: total submit time vs avg task exec time per round."""
+def plot_rate(task_events, prof_dir):
+    """Task completion rate over time."""
 
-    if not rounds or not task_events:
+    _apply_style()
+
+    metrics = {
+        'task start': 'rh_task_exec',
+        'task done':  'rh_task_done',
+    }
+    metric_colors = {
+        'task start': '#4e79a7',
+        'task done':  '#59a14f',
+    }
+
+    timestamps = {m: [] for m in metrics}
+    for uid in task_events:
+        evts = task_events[uid]
+        for m, evt in metrics.items():
+            t = evts.get(evt)
+            if t is not None:
+                timestamps[m].append(t)
+
+    if not any(timestamps.values()):
         return
 
-    fig, ax = plt.subplots(figsize=(10, 6))
-    fig.suptitle('Submit overhead vs task execution per round', fontsize=14)
+    global_t0 = min(t for ts in timestamps.values() for t in ts)
+    global_t1 = max(t for ts in timestamps.values() for t in ts)
 
-    for i, rnd in enumerate(rounds):
-        # Submit total: median across requests in this round
-        submit_times = []
-        for uid in rnd:
-            d = req_durations.get(uid, {})
-            v = d.get('rh_submit_total')
-            if v is not None:
-                submit_times.append(v * 1000)
+    bin_width = 0.5
+    bins = np.arange(0, (global_t1 - global_t0) + bin_width, bin_width)
 
-        # Find tasks in this round's time window
-        t_min = float('inf')
-        t_max = float('-inf')
-        for uid in rnd:
-            for key, val in req_events[uid].items():
-                if key.startswith('_'):
-                    continue
-                t_min = min(t_min, val)
-                t_max = max(t_max, val)
-        t_max += 30.0
+    fig, ax = plt.subplots(figsize=(14, 6))
 
-        exec_times = []
-        for tuid, tevts in task_events.items():
-            t_exec = tevts.get('rh_task_exec', float('inf'))
-            if t_min <= t_exec <= t_max:
-                d = task_durations.get(tuid, {})
-                v = d.get('rh_task_exec')
-                if v is not None:
-                    exec_times.append(v * 1000)
+    for m in metrics:
+        ts = sorted(timestamps[m])
+        if not ts:
+            continue
+        rel = [(t - global_t0) for t in ts]
+        counts, edges = np.histogram(rel, bins=bins)
+        rate = counts / bin_width
+        centers = (edges[:-1] + edges[1:]) / 2 * 1000  # ms
+        ax.plot(centers, rate, label=m, color=metric_colors[m])
 
-        if submit_times and exec_times:
-            s_med = statistics.median(submit_times)
-            e_med = statistics.median(exec_times)
-            n_tasks = sum(_get_batch_size(uid, req_events) for uid in rnd)
-            ax.scatter(s_med, e_med, s=max(40, n_tasks * 3),
-                       color=_COLORS[i % len(_COLORS)], alpha=0.7,
-                       edgecolors='black', linewidth=0.5)
-            ax.annotate(f'R{i+1}\n({n_tasks}t)', (s_med, e_med),
-                        fontsize=7, ha='center', va='bottom')
-
-    ax.set_xlabel('Median submit overhead (ms)')
-    ax.set_ylabel('Median task execution (ms)')
-    ax.grid(True, alpha=0.3)
+    ax.set_xlabel('time (ms)')
+    ax.set_ylabel('rate (tasks / sec)')
+    ax.legend(loc='upper center', bbox_to_anchor=(0.5, 1.12),
+              ncol=2, fancybox=True, shadow=True)
 
     fig.tight_layout()
-    path = os.path.join(prof_dir, 'plot_rh_submit_vs_exec.png')
+    path = os.path.join(prof_dir, 'plot_rh_rate.png')
     fig.savefig(path, dpi=150)
     plt.close(fig)
     print(f"  Saved {path}")
@@ -577,12 +633,10 @@ def generate_plots(rounds, req_events, req_durations,
     """Generate all Rhapsody plots."""
     print("\nGenerating Rhapsody plots...")
 
-    plot_stacked_bars(rounds, req_events, req_durations, prof_dir)
-    plot_overhead_pie(rounds, req_events, req_durations, prof_dir)
-    plot_phase_scaling(rounds, req_events, req_durations, prof_dir)
-    plot_task_histogram(task_events, task_durations, prof_dir)
-    plot_submit_vs_exec(rounds, req_events, req_durations,
-                        task_events, task_durations, prof_dir)
+    plot_state(req_events, prof_dir)
+    plot_dur(req_events, req_durations, prof_dir)
+    plot_conc(req_events, task_events, prof_dir)
+    plot_rate(task_events, prof_dir)
 
     print("Done.\n")
 

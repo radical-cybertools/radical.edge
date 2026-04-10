@@ -24,7 +24,6 @@ import statistics
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
 import numpy as np
 
 import radical.prof as rprof
@@ -455,369 +454,305 @@ def main():
 
 
 # ============================================================================
-# Plotting
+# Plotting — RP-style: state timeline, duration, concurrency, rate
 # ============================================================================
 
-# Phase groups for stacked bar / pie charts.
-# Each group aggregates several fine-grained phases into one visual segment.
+# Key events in request lifecycle (ordered by typical occurrence).
+# Each entry: (event_name, label) — used across all plot types.
+EVENT_LIST = [
+    ('client_send',       'client send'),
+    ('bridge_recv',       'bridge recv'),
+    ('bridge_ws_sent',    'bridge WS sent'),
+    ('edge_recv',         'edge recv'),
+    ('edge_handler',      'edge handler'),
+    ('edge_handler_done', 'edge handler done'),
+    ('edge_ws_sent',      'edge WS sent'),
+    ('bridge_reply',      'bridge reply'),
+    ('client_recv',       'client recv'),
+]
+
+# Phases as (start, end, label) for duration / concurrency plots.
 PHASE_GROUPS = [
-    ('client HTTP',       ['bridge_http_recv', 'bridge_body_prep']),
-    ('bridge ser',        ['bridge_req_ser', 'bridge_pre_ws_send']),
-    ('bridge WS send',    ['bridge_ws_send']),
-    ('edge deser',        ['edge_ws_deser']),
-    ('edge pydantic',     ['edge_pydantic']),
-    ('edge routing',      ['edge_pre_route', 'edge_route_match', 'edge_shim_build']),
-    ('edge handler',      ['edge_handler']),
-    ('edge body ser',     ['edge_body_ser']),
-    ('edge resp ser',     ['edge_resp_model_ser']),
-    ('edge WS send',      ['edge_ws_send']),
-    ('bridge deser',      ['bridge_resp_deser']),
-    ('bridge resp ser',   ['bridge_pre_resp_ser', 'bridge_resp_ser']),
+    ('client_send',       'bridge_recv',       'client -> bridge'),
+    ('bridge_recv',       'bridge_ws_sent',    'bridge inbound'),
+    ('bridge_ws_sent',    'edge_recv',         'bridge -> edge WS'),
+    ('edge_recv',         'edge_handler',      'edge routing'),
+    ('edge_handler',      'edge_handler_done', 'edge handler'),
+    ('edge_handler_done', 'edge_ws_sent',      'edge outbound'),
+    ('edge_ws_sent',      'bridge_reply',      'bridge outbound'),
+    ('bridge_reply',      'client_recv',       'bridge -> client'),
 ]
 
-# Colours — one per group
 _COLORS = [
-    '#4e79a7', '#59a14f', '#9c755f', '#f28e2b', '#e15759',
-    '#76b7b2', '#ff9d9a', '#edc948', '#b07aa1', '#ff9da7',
-    '#86bcb6', '#bab0ac',
+    '#4e79a7', '#59a14f', '#f28e2b', '#e15759',
+    '#76b7b2', '#edc948', '#b07aa1', '#86bcb6',
+    '#ff9da7', '#bab0ac', '#9c755f', '#ff9d9a',
 ]
 
-
-def _group_durations(req_ids, durations):
-    """Return {group_label: median_seconds} for a set of requests."""
-    result = {}
-    for glabel, phases in PHASE_GROUPS:
-        vals = []
-        for rid in req_ids:
-            d = durations.get(rid, {})
-            total = sum(abs(d.get(p, 0)) for p in phases)
-            vals.append(total)
-        result[glabel] = statistics.median(vals) if vals else 0.0
-    return result
-
-
-def _get_round_rids(batch_group, requests, route='submit'):
-    """Return list of (round_index, submit_req_ids) for a batch group."""
-    out = []
-    for i, br in enumerate(batch_group):
-        rids = [rid for rid in br['req_ids']
-                if _classify_request(requests[rid])[0] == route] \
-               if route else br['req_ids']
-        out.append((i + 1, rids, br))
-    return out
+# Matplotlib style — clean, academic look
+_STYLE = {
+    'font.size':        12,
+    'axes.titlesize':   14,
+    'axes.labelsize':   12,
+    'xtick.labelsize':  10,
+    'ytick.labelsize':  10,
+    'legend.fontsize':   9,
+    'figure.facecolor': 'white',
+    'axes.facecolor':   '#f8f8f8',
+    'axes.grid':        True,
+    'grid.alpha':       0.3,
+    'grid.linestyle':   '--',
+    'lines.linewidth':  1.5,
+    'lines.markersize': 4,
+}
 
 
-# -- Plot 1: Per-phase stacked bar chart -------------------------------------
+def _apply_style():
+    plt.rcParams.update(_STYLE)
 
-def plot_stacked_bars(homo_rounds, hetero_rounds, requests, durations,
-                      prof_dir):
-    """Stacked bar chart of median phase durations per batch round."""
 
-    fig, axes = plt.subplots(1, 2, figsize=(16, 7), sharey=True)
-    fig.suptitle('Per-phase breakdown by batch round (median, ms)',
-                 fontsize=14)
+# -- Plot 1: State timeline ---------------------------------------------------
+#
+# For each request (y-axis, sorted by first event), plot the absolute
+# timestamp of key state transitions.  Analogous to RP's plot_state.py.
 
-    for ax, batch_group, title in [
-        (axes[0], homo_rounds,   'Homogeneous (template)'),
-        (axes[1], hetero_rounds, 'Heterogeneous (per-task)'),
-    ]:
-        if not batch_group:
-            ax.set_title(f'{title}\n(no data)')
+def plot_state(requests, prof_dir):
+    """State timeline: per-request event timestamps."""
+
+    _apply_style()
+
+    # Collect timestamps per request, sorted by client_send
+    data = []
+    for rid in requests:
+        events = requests[rid]['_events']
+        t0 = events.get('client_send', events.get('bridge_recv',
+             events.get('edge_recv')))
+        if t0 is None:
             continue
+        tstamps = []
+        for evt, _ in EVENT_LIST:
+            t = events.get(evt)
+            tstamps.append(t if t is not None else np.nan)
+        data.append((rid, t0, tstamps))
 
-        rounds_data = _get_round_rids(batch_group, requests)
-        x_labels = [f'R{idx}\n({br["n_submit"]}req)' for idx, _, br in rounds_data]
-        x = np.arange(len(x_labels))
+    if not data:
+        return
 
-        bottoms = np.zeros(len(x_labels))
-        for gi, (glabel, _) in enumerate(PHASE_GROUPS):
-            vals = []
-            for _, rids, _ in rounds_data:
-                gd = _group_durations(rids, durations)
-                vals.append(gd.get(glabel, 0) * 1000)  # ms
-            vals = np.array(vals)
-            ax.bar(x, vals, bottom=bottoms, label=glabel,
-                   color=_COLORS[gi % len(_COLORS)], width=0.6)
-            bottoms += vals
+    data.sort(key=lambda x: x[1])
+    global_t0 = data[0][1]
 
-        ax.set_title(title)
-        ax.set_xlabel('Batch round')
-        ax.set_ylabel('Time (ms)')
-        ax.set_xticks(x)
-        ax.set_xticklabels(x_labels, fontsize=8)
+    np_data = np.array([[i] + [(t - global_t0) * 1000 if not np.isnan(t)
+                                else np.nan for t in row[2]]
+                         for i, row in enumerate(data)])
 
-    axes[1].legend(loc='upper left', fontsize=7, ncol=2)
+    fig, ax = plt.subplots(figsize=(14, 7))
+
+    for idx, (evt, label) in enumerate(EVENT_LIST):
+        ax.plot(np_data[:, 0], np_data[:, 1 + idx], '.', label=label,
+                color=_COLORS[idx % len(_COLORS)], markersize=3, alpha=0.8)
+
+    ax.set_xlabel('request (sorted by arrival)')
+    ax.set_ylabel('time (ms)')
+    ax.legend(loc='upper center', bbox_to_anchor=(0.5, 1.15),
+              ncol=5, fancybox=True, shadow=True)
+
     fig.tight_layout()
-    path = os.path.join(prof_dir, 'plot_stacked_bars.png')
+    path = os.path.join(prof_dir, 'plot_state.png')
     fig.savefig(path, dpi=150)
     plt.close(fig)
     print(f"  Saved {path}")
 
 
-# -- Plot 2: Phase scaling line plot ------------------------------------------
+# -- Plot 2: Duration plot ----------------------------------------------------
+#
+# For each request (x-axis, sorted by completion), plot the duration of
+# each phase as separate line series.  Analogous to RP's plot_dur.py.
 
-def plot_phase_scaling(homo_rounds, hetero_rounds, requests, durations,
-                       prof_dir):
-    """Line plot: median phase duration vs number of requests per round."""
+def plot_dur(requests, durations, prof_dir):
+    """Per-request phase durations (log scale)."""
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 6), sharey=True)
-    fig.suptitle('Phase duration scaling (median, log scale)', fontsize=14)
+    _apply_style()
 
-    for ax, batch_group, title in [
-        (axes[0], homo_rounds,   'Homogeneous'),
-        (axes[1], hetero_rounds, 'Heterogeneous'),
-    ]:
-        if not batch_group:
-            ax.set_title(f'{title}\n(no data)')
+    # Sort requests by completion time (client_recv)
+    items = []
+    for rid in requests:
+        events = requests[rid]['_events']
+        t_end = events.get('client_recv')
+        if t_end is None:
             continue
+        items.append((rid, t_end))
 
-        rounds_data = _get_round_rids(batch_group, requests)
-        x_vals = [br['n_submit'] for _, _, br in rounds_data]
+    if not items:
+        return
 
-        for gi, (glabel, _) in enumerate(PHASE_GROUPS):
-            y_vals = []
-            for _, rids, _ in rounds_data:
-                gd = _group_durations(rids, durations)
-                v = gd.get(glabel, 0) * 1000
-                y_vals.append(max(v, 0.001))  # floor for log scale
-            ax.plot(x_vals, y_vals, 'o-', label=glabel,
-                    color=_COLORS[gi % len(_COLORS)], markersize=4)
+    items.sort(key=lambda x: x[1])
 
-        ax.set_title(title)
-        ax.set_xlabel('Requests per round')
-        ax.set_ylabel('Median duration (ms)')
-        ax.set_yscale('log')
-        ax.grid(True, alpha=0.3)
-
-    axes[1].legend(loc='upper left', fontsize=7, ncol=2)
-    fig.tight_layout()
-    path = os.path.join(prof_dir, 'plot_phase_scaling.png')
-    fig.savefig(path, dpi=150)
-    plt.close(fig)
-    print(f"  Saved {path}")
-
-
-# -- Plot 3: Homo vs hetero RTT comparison -----------------------------------
-
-def plot_rtt_comparison(homo_rounds, hetero_rounds, requests, durations,
-                        prof_dir):
-    """Line plot comparing avg client RTT for homo vs hetero rounds."""
-
-    fig, ax = plt.subplots(figsize=(10, 6))
-    fig.suptitle('Client RTT: Homogeneous vs Heterogeneous', fontsize=14)
-
-    def _round_rtts(batch_group):
-        avgs, mins, maxs, x_labels = [], [], [], []
-        for i, br in enumerate(batch_group):
-            rtts = []
-            for rid in br['req_ids']:
-                events = requests[rid]['_events']
-                t0 = events.get('client_send')
-                t1 = events.get('client_recv')
-                if t0 is not None and t1 is not None:
-                    rtts.append((t1 - t0) * 1000)
-            if rtts:
-                avgs.append(statistics.mean(rtts))
-                mins.append(min(rtts))
-                maxs.append(max(rtts))
+    # Build duration matrix: one column per phase group
+    np_data = []
+    for i, (rid, _) in enumerate(items):
+        events = requests[rid]['_events']
+        row = [i]
+        for start_evt, end_evt, _ in PHASE_GROUPS:
+            t0 = events.get(start_evt)
+            t1 = events.get(end_evt)
+            if t0 is not None and t1 is not None:
+                row.append(max((t1 - t0) * 1000, 0.001))  # ms, log floor
             else:
-                avgs.append(0)
-                mins.append(0)
-                maxs.append(0)
-            x_labels.append(f'R{i+1}\n({br["n_submit"]}req)')
-        return avgs, mins, maxs, x_labels
+                row.append(np.nan)
+        # Overall RTT
+        t0 = events.get('client_send')
+        t1 = events.get('client_recv')
+        if t0 is not None and t1 is not None:
+            row.append(max((t1 - t0) * 1000, 0.001))
+        else:
+            row.append(np.nan)
+        np_data.append(row)
 
-    n_rounds = max(len(homo_rounds), len(hetero_rounds))
-    x = np.arange(n_rounds)
-    width = 0.35
+    np_data = np.array(np_data)
 
-    if homo_rounds:
-        h_avgs, h_mins, h_maxs, h_labels = _round_rtts(homo_rounds)
-        h_x = x[:len(h_avgs)]
-        h_err = [[a - mn for a, mn in zip(h_avgs, h_mins)],
-                 [mx - a for a, mx in zip(h_avgs, h_maxs)]]
-        ax.bar(h_x - width/2, h_avgs, width, yerr=h_err, capsize=3,
-               label='Homogeneous', color='#4e79a7', alpha=0.8)
+    fig, ax = plt.subplots(figsize=(14, 7))
 
-    if hetero_rounds:
-        x_avgs, x_mins, x_maxs, x_labels = _round_rtts(hetero_rounds)
-        x_x = x[:len(x_avgs)]
-        x_err = [[a - mn for a, mn in zip(x_avgs, x_mins)],
-                 [mx - a for a, mx in zip(x_avgs, x_maxs)]]
-        ax.bar(x_x + width/2, x_avgs, width, yerr=x_err, capsize=3,
-               label='Heterogeneous', color='#e15759', alpha=0.8)
+    for idx, (_, _, label) in enumerate(PHASE_GROUPS):
+        ax.plot(np_data[:, 0], np_data[:, 1 + idx], label=label,
+                color=_COLORS[idx % len(_COLORS)])
 
-    # Build x labels from whichever has more rounds
-    labels = []
-    for i in range(n_rounds):
-        parts = []
-        if i < len(homo_rounds):
-            parts.append(f'h:{homo_rounds[i]["n_submit"]}')
-        if i < len(hetero_rounds):
-            parts.append(f'x:{hetero_rounds[i]["n_submit"]}')
-        labels.append(f'R{i+1}\n({"/".join(parts)})')
+    # Overall RTT as dashed
+    ax.plot(np_data[:, 0], np_data[:, -1], '--', label='total RTT',
+            color='black', alpha=0.6)
 
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels, fontsize=8)
-    ax.set_xlabel('Batch round (requests)')
-    ax.set_ylabel('Client RTT (ms)')
-    ax.legend()
-    ax.grid(True, axis='y', alpha=0.3)
+    ax.set_yscale('log')
+    ax.set_xlabel('request (sorted by completion)')
+    ax.set_ylabel('duration (ms)')
+    ax.legend(loc='upper center', bbox_to_anchor=(0.5, 1.18),
+              ncol=5, fancybox=True, shadow=True)
 
     fig.tight_layout()
-    path = os.path.join(prof_dir, 'plot_rtt_comparison.png')
+    path = os.path.join(prof_dir, 'plot_dur.png')
     fig.savefig(path, dpi=150)
     plt.close(fig)
     print(f"  Saved {path}")
 
 
-# -- Plot 4: Infrastructure overhead pie chart --------------------------------
+# -- Plot 3: Concurrency (step plot) ------------------------------------------
+#
+# Number of concurrent requests in each phase over time.
+# Analogous to RP's plot_conc.py.
 
-def plot_overhead_pie(homo_rounds, hetero_rounds, requests, durations,
-                      prof_dir):
-    """Pie chart of infrastructure overhead (excluding handler)."""
+def plot_conc(requests, prof_dir):
+    """Phase concurrency over time (step plot)."""
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
-    fig.suptitle('Infrastructure overhead breakdown (excl. handler)',
-                 fontsize=14)
+    _apply_style()
 
-    # Groups excluding handler
-    overhead_groups = [(g, p) for g, p in PHASE_GROUPS
-                       if g != 'edge handler']
-    overhead_colors = [_COLORS[i] for i, (g, _) in enumerate(PHASE_GROUPS)
-                       if g != 'edge handler']
+    # For each phase, build a step function of concurrent requests
+    # An event enters a phase at start_evt, leaves at end_evt.
+    all_events = []
+    for rid in requests:
+        events = requests[rid]['_events']
+        for start_evt, end_evt, label in PHASE_GROUPS:
+            t0 = events.get(start_evt)
+            t1 = events.get(end_evt)
+            if t0 is not None and t1 is not None:
+                all_events.append((label, t0, +1))
+                all_events.append((label, t1, -1))
 
-    for ax, batch_group, title in [
-        (axes[0], homo_rounds,   'Homogeneous'),
-        (axes[1], hetero_rounds, 'Heterogeneous'),
-    ]:
-        if not batch_group:
-            ax.set_title(f'{title}\n(no data)')
+    if not all_events:
+        return
+
+    # Find global t0
+    global_t0 = min(t for _, t, _ in all_events)
+
+    fig, ax = plt.subplots(figsize=(14, 6))
+
+    for idx, (_, _, label) in enumerate(PHASE_GROUPS):
+        phase_evts = sorted([(t, delta) for lbl, t, delta in all_events
+                             if lbl == label])
+        if not phase_evts:
             continue
 
-        # Aggregate all submit requests across all rounds
-        all_rids = []
-        for br in batch_group:
-            for rid in br['req_ids']:
-                if _classify_request(requests[rid])[0] == 'submit':
-                    all_rids.append(rid)
+        times  = [(phase_evts[0][0] - global_t0) * 1000]
+        counts = [0]
+        current = 0
+        for t, delta in phase_evts:
+            current += delta
+            times.append((t - global_t0) * 1000)
+            counts.append(current)
 
-        sizes  = []
-        labels = []
-        colors = []
-        for ci, (glabel, phases) in enumerate(overhead_groups):
-            vals = []
-            for rid in all_rids:
-                d = durations.get(rid, {})
-                vals.append(sum(abs(d.get(p, 0)) for p in phases))
-            med = statistics.median(vals) if vals else 0
-            if med > 0:
-                sizes.append(med * 1000)
-                labels.append(glabel)
-                colors.append(overhead_colors[ci])
+        ax.step(times, counts, where='post', label=label,
+                color=_COLORS[idx % len(_COLORS)], alpha=0.8)
 
-        if sizes:
-            wedges, texts, autotexts = ax.pie(
-                sizes, labels=labels, colors=colors, autopct='%1.1f%%',
-                pctdistance=0.8, textprops={'fontsize': 7})
-            for t in autotexts:
-                t.set_fontsize(7)
-        ax.set_title(title)
+    ax.set_xlabel('time (ms)')
+    ax.set_ylabel('concurrent requests')
+    ax.legend(loc='upper center', bbox_to_anchor=(0.5, 1.18),
+              ncol=4, fancybox=True, shadow=True)
 
     fig.tight_layout()
-    path = os.path.join(prof_dir, 'plot_overhead_pie.png')
+    path = os.path.join(prof_dir, 'plot_conc.png')
     fig.savefig(path, dpi=150)
     plt.close(fig)
     print(f"  Saved {path}")
 
 
-# -- Plot 5: Per-request waterfall (swimlane) ---------------------------------
+# -- Plot 4: Throughput rate (completions / sec) -------------------------------
+#
+# Request completion rate over time, sampled in 1-second bins.
+# Analogous to RP's plot_rate.py.
 
-def plot_waterfall(homo_rounds, hetero_rounds, requests, durations,
-                   prof_dir):
-    """Swimlane chart showing per-request phase timeline for the largest round."""
+def plot_rate(requests, prof_dir):
+    """Request completion rate over time."""
 
-    # Pick the round with the most requests from each group
-    def _pick_round(batch_group):
-        if not batch_group:
-            return None
-        return max(batch_group, key=lambda br: br['n_total'])
+    _apply_style()
 
-    fig, axes = plt.subplots(2, 1, figsize=(16, 10))
-    fig.suptitle('Per-request waterfall (largest round)', fontsize=14)
+    # Collect completion timestamps per phase
+    metrics = {
+        'bridge recv':   'bridge_recv',
+        'handler start': 'edge_handler',
+        'handler done':  'edge_handler_done',
+        'client recv':   'client_recv',
+    }
+    metric_colors = {
+        'bridge recv':   '#4e79a7',
+        'handler start': '#f28e2b',
+        'handler done':  '#59a14f',
+        'client recv':   '#e15759',
+    }
 
-    for ax, batch_group, title in [
-        (axes[0], homo_rounds,   'Homogeneous'),
-        (axes[1], hetero_rounds, 'Heterogeneous'),
-    ]:
-        br = _pick_round(batch_group)
-        if not br:
-            ax.set_title(f'{title} (no data)')
+    timestamps = {m: [] for m in metrics}
+    for rid in requests:
+        events = requests[rid]['_events']
+        for m, evt in metrics.items():
+            t = events.get(evt)
+            if t is not None:
+                timestamps[m].append(t)
+
+    if not any(timestamps.values()):
+        return
+
+    global_t0 = min(t for ts in timestamps.values() for t in ts)
+    global_t1 = max(t for ts in timestamps.values() for t in ts)
+
+    # Bin into 0.5s windows
+    bin_width = 0.5
+    bins = np.arange(0, (global_t1 - global_t0) + bin_width, bin_width)
+
+    fig, ax = plt.subplots(figsize=(14, 6))
+
+    for m in metrics:
+        ts = sorted(timestamps[m])
+        if not ts:
             continue
+        rel = [(t - global_t0) for t in ts]
+        counts, edges = np.histogram(rel, bins=bins)
+        rate = counts / bin_width  # events per second
+        centers = (edges[:-1] + edges[1:]) / 2 * 1000  # ms
+        ax.plot(centers, rate, label=m, color=metric_colors[m])
 
-        rids = br['req_ids']
-
-        # Sort by earliest event time
-        def _t0(rid):
-            events = requests[rid]['_events']
-            return events.get('client_send',
-                   events.get('bridge_recv',
-                   events.get('edge_recv', float('inf'))))
-
-        rids = sorted(rids, key=_t0)
-
-        # Find global t0 for x-axis offset
-        global_t0 = min(_t0(rid) for rid in rids)
-
-        y_pos = list(range(len(rids)))
-        legend_patches = []
-
-        for gi, (glabel, phases) in enumerate(PHASE_GROUPS):
-            color = _COLORS[gi % len(_COLORS)]
-            added_legend = False
-
-            for yi, rid in enumerate(rids):
-                events = requests[rid]['_events']
-                d = durations.get(rid, {})
-
-                # Find the start time of the first phase in this group
-                start_events = [PHASES[j][0] for j, (_, _, pl) in
-                                enumerate(PHASES) if pl in phases]
-                t_starts = [events.get(e) for e in start_events
-                            if events.get(e) is not None]
-                if not t_starts:
-                    continue
-
-                t_start = min(t_starts)
-                dur = sum(abs(d.get(p, 0)) for p in phases)
-                if dur <= 0:
-                    continue
-
-                x_start = (t_start - global_t0) * 1000  # ms
-                x_dur   = dur * 1000
-
-                ax.barh(yi, x_dur, left=x_start, height=0.7,
-                        color=color, edgecolor='none', alpha=0.85)
-
-                if not added_legend:
-                    legend_patches.append(mpatches.Patch(color=color,
-                                                         label=glabel))
-                    added_legend = True
-
-        ax.set_yticks(y_pos)
-        ax.set_yticklabels([r.split('.')[-1] for r in rids], fontsize=7)
-        ax.set_xlabel('Time (ms from round start)')
-        ax.set_title(f'{title} — {len(rids)} requests '
-                     f'({br["n_submit"]} submit, {br["n_wait"]} wait)')
-        ax.invert_yaxis()
-        ax.grid(True, axis='x', alpha=0.3)
-
-        if legend_patches:
-            ax.legend(handles=legend_patches, loc='lower right',
-                      fontsize=7, ncol=3)
+    ax.set_xlabel('time (ms)')
+    ax.set_ylabel('rate (requests / sec)')
+    ax.legend(loc='upper center', bbox_to_anchor=(0.5, 1.15),
+              ncol=4, fancybox=True, shadow=True)
 
     fig.tight_layout()
-    path = os.path.join(prof_dir, 'plot_waterfall.png')
+    path = os.path.join(prof_dir, 'plot_rate.png')
     fig.savefig(path, dpi=150)
     plt.close(fig)
     print(f"  Saved {path}")
@@ -829,16 +764,10 @@ def generate_plots(homo_rounds, hetero_rounds, requests, durations, prof_dir):
     """Generate all plots and save as PNG."""
     print("\nGenerating plots...")
 
-    plot_stacked_bars(homo_rounds, hetero_rounds, requests, durations,
-                      prof_dir)
-    plot_phase_scaling(homo_rounds, hetero_rounds, requests, durations,
-                       prof_dir)
-    plot_rtt_comparison(homo_rounds, hetero_rounds, requests, durations,
-                        prof_dir)
-    plot_overhead_pie(homo_rounds, hetero_rounds, requests, durations,
-                      prof_dir)
-    plot_waterfall(homo_rounds, hetero_rounds, requests, durations,
-                   prof_dir)
+    plot_state(requests, prof_dir)
+    plot_dur(requests, durations, prof_dir)
+    plot_conc(requests, prof_dir)
+    plot_rate(requests, prof_dir)
 
     print("Done.\n")
 
