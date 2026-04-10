@@ -10,7 +10,6 @@ import re
 import signal
 import socket
 import ssl
-import uuid
 
 import msgpack
 import radical.prof as rprof
