@@ -813,7 +813,9 @@ async def proxy(full_path: str, request: Request):
             try:
                 headers = {k.lower(): v for k, v in headers.items()
                                         if  k.lower() != "content-type"}
-                parsed = json.loads(content)
+                # Body may already be parsed (raw JSON embed) or a string
+                parsed = content if isinstance(content, (dict, list)) \
+                    else json.loads(content)
                 _bridge_prof.prof('bridge_reply', uid=req_id, state=str(status))
                 return JSONResponse(content=parsed,
                                     status_code=status, headers=headers)

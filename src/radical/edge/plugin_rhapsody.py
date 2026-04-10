@@ -279,6 +279,10 @@ class RhapsodySession(PluginSession):
         ``BaseTask.from_dict()``.  Function fields encoded as cloudpickle
         blobs or import-path strings are deserialized first.
 
+        Uses a pipeline: deserialization of chunk N+1 runs concurrently
+        with backend submission of chunk N, so the two dominant costs
+        overlap.
+
         Returns:
             list[dict]: Minimal ack dicts ``{uid, state}``.
         """
@@ -289,40 +293,72 @@ class RhapsodySession(PluginSession):
         bid     = task_dicts[0].get('uid', '?') if task_dicts else '?'
         prof.prof('rh_submit', uid=bid, msg=str(batch_n))
 
-        # Process in sub-batches so we yield to the event loop
-        # between chunks, keeping WS pings alive.
-        _CHUNK = 4096
+        _CHUNK  = 4096
         results = []
+        all_tasks = []   # collect for batch watcher
 
-        for i in range(0, len(task_dicts), _CHUNK):
-            chunk_dicts = task_dicts[i:i + _CHUNK]
+        # -- pipelined deser / submit ----------------------------------------
+        # Kick off deserialization of the first chunk while we have nothing
+        # else to do; then overlap deser(N+1) with submit(N).
+
+        chunks = [task_dicts[i:i + _CHUNK]
+                  for i in range(0, len(task_dicts), _CHUNK)]
+
+        prev_submit_fut = None   # future for the previous submit
+        prev_tasks      = None   # tasks from the previous chunk
+
+        for ci, chunk_dicts in enumerate(chunks):
 
             # Offload CPU-bound deserialization to a worker thread
             prof.prof('rh_deser', uid=bid, msg=str(len(chunk_dicts)))
-            tasks = await asyncio.to_thread(
-                self._prepare_batch, chunk_dicts, pre_expanded)
+            deser_fut = asyncio.ensure_future(asyncio.to_thread(
+                self._prepare_batch, chunk_dicts, pre_expanded))
+
+            # While deser runs, await the *previous* chunk's submit
+            if prev_submit_fut is not None:
+                await prev_submit_fut
+                prof.prof('rh_backend_submit_done', uid=bid)
+
+                # Register the previously submitted tasks
+                prof.prof('rh_register', uid=bid)
+                for t in prev_tasks:
+                    uid_str = str(t.uid)
+                    self._tasks[uid_str] = t
+                    results.append({"uid": uid_str,
+                                    "state": str(t.get("state"))})
+                all_tasks.extend(prev_tasks)
+                prof.prof('rh_register_done', uid=bid)
+
+            tasks = await deser_fut
             prof.prof('rh_deser_done', uid=bid)
 
-            # Async submit (backends are async)
+            # Fire off the backend submit (will be awaited next iteration
+            # or after the loop)
             prof.prof('rh_backend_submit', uid=bid)
-            await self._rh_session.submit_tasks(tasks)
+            prev_submit_fut = asyncio.ensure_future(
+                self._rh_session.submit_tasks(tasks))
+            prev_tasks = tasks
+
+            # Yield so the event loop can process WS pings
+            await asyncio.sleep(0)
+
+        # Await the final chunk's submit
+        if prev_submit_fut is not None:
+            await prev_submit_fut
             prof.prof('rh_backend_submit_done', uid=bid)
 
             prof.prof('rh_register', uid=bid)
-            for t in tasks:
+            for t in prev_tasks:
                 uid_str = str(t.uid)
                 self._tasks[uid_str] = t
                 results.append({"uid": uid_str,
                                 "state": str(t.get("state"))})
-
-            # Start background watchers
-            if self._plugin:
-                for t in tasks:
-                    asyncio.ensure_future(self._watch_task(t))
+            all_tasks.extend(prev_tasks)
             prof.prof('rh_register_done', uid=bid)
 
-            # Yield so the event loop can process WS pings
-            await asyncio.sleep(0)
+        # Start a single batch watcher instead of per-task watchers
+        if self._plugin and all_tasks:
+            asyncio.ensure_future(self._watch_batch(all_tasks))
 
         prof.prof('rh_submit_done', uid=bid, msg=str(batch_n))
         return results
@@ -426,6 +462,52 @@ class RhapsodySession(PluginSession):
                 self._queue_notification({
                     "uid": uid_str, "state": "FAILED",
                     "error": str(e)})
+
+    async def _watch_batch(self, tasks):
+        """Watch a batch of tasks with a single wait call.
+
+        Replaces per-task ``_watch_task`` coroutines — one coroutine
+        waits for all tasks at once, then sends notifications for each.
+        """
+        prof = self.prof
+        bid  = str(self._get_attr(tasks[0], 'uid')) if tasks else '?'
+
+        # Build uid map for quick lookup
+        uid_map = {}
+        for t in tasks:
+            uid = self._get_attr(t, 'uid')
+            uid_map[str(uid) if uid else '?'] = t
+
+        prof.prof('rh_task_exec', uid=bid,
+                  msg=str(len(tasks)))
+
+        if not self._rh_session:
+            for uid_str in uid_map:
+                prof.prof('rh_task_done', uid=uid_str, state='FAILED')
+                self._queue_notification({
+                    "uid": uid_str, "state": "FAILED",
+                    "error": "Session closed"})
+            return
+
+        try:
+            await self._rh_session.wait_tasks(tasks)
+        except Exception as e:
+            log.warning("[%s] Batch watch error: %s", self._sid, e)
+
+        # Process results — tasks are updated in-place by the backend
+        for uid_str, t in uid_map.items():
+            state = self._get_attr(t, 'state')
+            state_str = str(state) if state else 'UNKNOWN'
+
+            prof.prof('rh_task_done', uid=uid_str, state=state_str)
+
+            if state_str.upper() in TERMINAL_STATES:
+                d = self._notification_payload(t)
+                self._queue_notification(d)
+            else:
+                self._queue_notification({
+                    "uid": uid_str, "state": state_str,
+                    "error": f"unexpected state: {state_str}"})
 
     async def wait_tasks(self, uids: list[str],
                          timeout: float | None = None) -> list[dict]:

@@ -311,8 +311,13 @@ class EdgeService:
                     status_code=500)
             prof.prof('edge_handler_done', uid=req_id)
 
-            # Build ResponseMessage — handlers return plain dicts/lists
-            # (fast path) or JSONResponse (error path).
+            # Build response — handlers return plain dicts/lists (fast
+            # path) or JSONResponse (error path).
+            #
+            # Fast path: serialize body with json.dumps, then build the
+            # WS frame manually so the body JSON is embedded verbatim
+            # (avoids Pydantic model_dump_json double-encoding the body
+            # string as an escaped JSON value).
             prof.prof('edge_body_ser', uid=req_id)
             if not hasattr(result, 'status_code'):
                 resp_body = json.dumps(result)
@@ -325,23 +330,26 @@ class EdgeService:
             prof.prof('edge_body_ser_done', uid=req_id,
                       msg=str(len(resp_body)))
 
-            prof.prof('edge_resp_ser', uid=req_id)
-            response = ResponseMessage(
-                req_id    = req_id,
-                status    = status,
-                headers   = headers,
-                is_binary = False,
-                body      = resp_body)
-
             log.debug("[Edge] [req:%s] Response status=%d",
                       req_id, status)
+
+            # Manual JSON construction — body is already a JSON string,
+            # embed it directly to avoid re-serialization.
+            prof.prof('edge_resp_ser', uid=req_id)
+            hdr_json  = json.dumps(headers)
+            resp_text = (
+                '{"type":"response"'
+                ',"req_id":' + json.dumps(req_id) +
+                ',"status":' + str(status) +
+                ',"headers":' + hdr_json +
+                ',"body":' + resp_body +
+                ',"is_binary":false}')
+            prof.prof('edge_resp_ser_done', uid=req_id,
+                      msg=str(len(resp_text)))
 
             prof.prof('edge_ws_send', uid=req_id)
             async with self._send_lock:
                 if self._ws:
-                    resp_text = response.model_dump_json()
-                    prof.prof('edge_resp_ser_done', uid=req_id,
-                              msg=str(len(resp_text)))
                     await self._ws.send(resp_text)
             prof.prof('edge_ws_sent', uid=req_id, state=str(status))
 
