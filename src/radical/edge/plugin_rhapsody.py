@@ -41,6 +41,26 @@ except ImportError:
     _cp = None
 
 
+def _assert_json_serializable(obj, path=""):
+    """Recursively verify that *obj* is JSON-serializable.
+
+    Raises ``TypeError`` with the exact key path on the first
+    non-serializable value encountered.
+    """
+    if isinstance(obj, dict):
+        for key, val in obj.items():
+            _assert_json_serializable(val, f"{path}.{key}" if path else key)
+    elif isinstance(obj, (list, tuple)):
+        for i, val in enumerate(obj):
+            _assert_json_serializable(val, f"{path}[{i}]")
+    elif isinstance(obj, (str, int, float, bool, type(None))):
+        return
+    else:
+        raise TypeError(
+            f"non-serializable value at '{path}': "
+            f"{type(obj).__name__} = {repr(obj)!s:.200}")
+
+
 # ---------------------------------------------------------------------------
 # Edge-side session
 # ---------------------------------------------------------------------------
@@ -439,7 +459,7 @@ class RhapsodySession(PluginSession):
 
     _NOTIFICATION_KEYS = {'uid', 'state', 'exit_code',
                           'return_value', '_return_value_encoding',
-                          'error', 'exception'}
+                          'error', 'exception', 'traceback'}
 
     def _notification_payload(self, t) -> dict:
         """Build a minimal notification dict for a completed task.
@@ -736,6 +756,14 @@ class RhapsodyClient(PluginClient):
         td.pop('_future', None)
         td.pop('backend', None)
 
+        # Strip None-valued type-discriminator fields so that
+        # BaseTask.from_dict() routes to the correct task class
+        # (it checks key existence, not truthiness).
+        for key in ('prompt', 'executable', 'function'):
+            if key in td and td[key] is None:
+                del td[key]
+
+
     def submit_tasks(self, task_dicts: list[dict]) -> list[dict]:
         """
         Submit tasks to the edge.
@@ -776,7 +804,7 @@ class RhapsodyClient(PluginClient):
             ref_keys = set(ref) - {'uid'}
             homogeneous = all(
                 set(td) - {'uid'} == ref_keys and
-                all(td[k] == ref[k] for k in ref_keys)
+                all(td[k] is ref[k] or td[k] == ref[k] for k in ref_keys)
                 for td in task_dicts[1:])
         else:
             homogeneous = False
@@ -806,7 +834,13 @@ class RhapsodyClient(PluginClient):
         errors: list[str] = []
 
         def _submit_batch(b):
-            resp = self._http.post(url, json={"tasks": b})
+            try:
+                resp = self._http.post(url, json={"tasks": b})
+            except TypeError:
+                # Pinpoint the exact non-serializable key path
+                for td in b:
+                    _assert_json_serializable(td)
+                raise
             self._raise(resp, f"submit {len(b)} task(s)")
             return resp.json()
 
@@ -853,7 +887,11 @@ class RhapsodyClient(PluginClient):
 
         def _submit_chunk(uid_chunk):
             payload = {"template": template, "uids": uid_chunk}
-            resp = self._http.post(url, json=payload)
+            try:
+                resp = self._http.post(url, json=payload)
+            except TypeError:
+                _assert_json_serializable(template)
+                raise
             self._raise(resp, f"submit template {len(uid_chunk)} task(s)")
             return resp.json()
 
