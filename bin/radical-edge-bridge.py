@@ -193,10 +193,16 @@ async def _send_to_edge(edge_name: str, message: dict, binary: bool = False):
     if not ws or ws.client_state != WebSocketState.CONNECTED:
         raise HTTPException(status_code=503, detail=f"Edge '{edge_name}' not connected")
 
+    req_id = message.get('req_id', '')
+    _bridge_prof.prof('bridge_ser', uid=req_id)
     if binary:
-        await ws.send_bytes(msgpack.packb(message, use_bin_type=True))
+        packed = msgpack.packb(message, use_bin_type=True)
+        _bridge_prof.prof('bridge_ser_done', uid=req_id, msg=str(len(packed)))
+        await ws.send_bytes(packed)
     else:
-        await ws.send_text(json.dumps(message))
+        text = json.dumps(message)
+        _bridge_prof.prof('bridge_ser_done', uid=req_id, msg=str(len(text)))
+        await ws.send_text(text)
 
 
 @app.websocket("/register")
@@ -244,9 +250,15 @@ async def register(ws: WebSocket):
             # Binary frame (msgpack) or text frame (JSON)
             try:
                 if raw.get("bytes"):
+                    _bridge_prof.prof('bridge_deser',
+                                      msg='msgpack:%d' % len(raw["bytes"]))
                     data = msgpack.unpackb(raw["bytes"], raw=False)
                 else:
+                    _bridge_prof.prof('bridge_deser',
+                                      msg='json:%d' % len(raw.get("text", "")))
                     data = json.loads(raw.get("text", "{}"))
+                _bridge_prof.prof('bridge_deser_done',
+                                  uid=data.get('req_id', ''))
             except Exception:
                 log.warning("[Bridge] Malformed message from edge '%s'",
                             edge_name or '(unregistered)')
@@ -734,6 +746,8 @@ async def proxy(full_path: str, request: Request):
 
     _bridge_prof.prof('bridge_recv', uid=req_id,
                       msg='%s %s' % (request.method, forward_path))
+    _bridge_prof.prof('bridge_body_prep', uid=req_id,
+                      msg=str(len(body_bytes)))
 
     # Query params handling
     if request.url.query:
@@ -777,6 +791,8 @@ async def proxy(full_path: str, request: Request):
     headers   = resp.get("headers") or {}
     resp_body = resp.get("body")
 
+    _bridge_prof.prof('bridge_resp_ser', uid=req_id)
+
     if resp.get("is_binary"):
         try:
             raw = base64.b64decode(resp_body or b"")
@@ -796,8 +812,9 @@ async def proxy(full_path: str, request: Request):
             try:
                 headers = {k.lower(): v for k, v in headers.items()
                                         if  k.lower() != "content-type"}
+                parsed = json.loads(content)
                 _bridge_prof.prof('bridge_reply', uid=req_id, state=str(status))
-                return JSONResponse(content=json.loads(content),
+                return JSONResponse(content=parsed,
                                     status_code=status, headers=headers)
 
             except Exception as e:

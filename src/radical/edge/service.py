@@ -313,7 +313,7 @@ class EdgeService:
 
             # Build ResponseMessage — handlers return plain dicts/lists
             # (fast path) or JSONResponse (error path).
-            prof.prof('edge_serialize', uid=req_id)
+            prof.prof('edge_body_ser', uid=req_id)
             if not hasattr(result, 'status_code'):
                 resp_body = json.dumps(result)
                 status    = 200
@@ -322,7 +322,10 @@ class EdgeService:
                 resp_body = result.body.decode('utf-8')
                 status    = result.status_code
                 headers   = dict(result.headers)
+            prof.prof('edge_body_ser_done', uid=req_id,
+                      msg=str(len(resp_body)))
 
+            prof.prof('edge_resp_ser', uid=req_id)
             response = ResponseMessage(
                 req_id    = req_id,
                 status    = status,
@@ -336,7 +339,10 @@ class EdgeService:
             prof.prof('edge_ws_send', uid=req_id)
             async with self._send_lock:
                 if self._ws:
-                    await self._ws.send(response.model_dump_json())
+                    resp_text = response.model_dump_json()
+                    prof.prof('edge_resp_ser_done', uid=req_id,
+                              msg=str(len(resp_text)))
+                    await self._ws.send(resp_text)
             prof.prof('edge_ws_sent', uid=req_id, state=str(status))
 
         except Exception as e:
@@ -533,15 +539,27 @@ class EdgeService:
                             _recv_task = asyncio.ensure_future(ws.recv())
 
                             # Binary WS frame → msgpack; text → JSON
+                            self._prof.prof('edge_deser',
+                                msg='%s:%d' % (
+                                    'msgpack' if isinstance(raw_msg, bytes)
+                                              else 'json',
+                                    len(raw_msg)))
                             if isinstance(raw_msg, bytes):
                                 data = msgpack.unpackb(raw_msg, raw=False)
                             else:
                                 data = json.loads(raw_msg)
+                            self._prof.prof('edge_deser_done',
+                                            uid=data.get('req_id', ''))
+
+                            self._prof.prof('edge_parse',
+                                            uid=data.get('req_id', ''))
                             try:
                                 msg = parse_bridge_message(data)
                             except ValueError as ve:
                                 log.warning("[Edge] Invalid message: %s", ve)
                                 continue
+                            self._prof.prof('edge_parse_done',
+                                            uid=data.get('req_id', ''))
 
                             if isinstance(msg, ErrorMessage):
                                 log.error("[Edge] Registration error: %s", msg.message)
