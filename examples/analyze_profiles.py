@@ -54,14 +54,6 @@ PHASES = [
     ('edge_shim',         'edge_handler',       'edge_shim_build'),
     ('edge_handler',      'edge_handler_done',  'edge_handler'),
 
-    # Rhapsody handler breakdown (inside edge_handler)
-    ('rh_parse_body',     'rh_parse_body_done', 'rh_parse_body'),
-    ('rh_template_expand','rh_template_expand_done', 'rh_template_expand'),
-    ('rh_submit',         'rh_submit_done',     'rh_submit_total'),
-    ('rh_deser',          'rh_deser_done',      'rh_deser'),
-    ('rh_backend_submit', 'rh_backend_submit_done', 'rh_backend_submit'),
-    ('rh_register',       'rh_register_done',   'rh_register'),
-
     # Edge outbound
     ('edge_body_ser',     'edge_body_ser_done', 'edge_body_ser'),
     ('edge_resp_ser',     'edge_resp_ser_done', 'edge_resp_model_ser'),
@@ -391,7 +383,7 @@ def main():
 
         for i, br in enumerate(batch_group):
             rids = br['req_ids']
-            stats = _aggregate_phases(rids, durations)
+            _aggregate_phases(rids, durations)
 
             # Compute total round time
             t_vals = []
@@ -426,7 +418,7 @@ def main():
     # 7. Summary comparison table
     if homo_rounds and hetero_rounds:
         print(f"\n{'='*70}")
-        print(f"  Summary: avg client RTT by batch round")
+        print("  Summary: avg client RTT by batch round")
         print(f"{'='*70}\n")
         print(f"  {'round':>5}  {'homo_n':>6}  {'homo_rtt':>10}  "
               f"{'hetero_n':>8}  {'hetero_rtt':>11}")
@@ -475,12 +467,7 @@ PHASE_GROUPS = [
     ('edge deser',        ['edge_ws_deser']),
     ('edge pydantic',     ['edge_pydantic']),
     ('edge routing',      ['edge_pre_route', 'edge_route_match', 'edge_shim_build']),
-    ('rh parse body',     ['rh_parse_body']),
-    ('rh template expand',['rh_template_expand']),
-    ('rh deser (pickle)', ['rh_deser']),
-    ('rh backend submit', ['rh_backend_submit']),
-    ('rh register+watch', ['rh_register']),
-    ('edge handler other',['edge_handler']),   # total handler minus rh sub-phases
+    ('edge handler',      ['edge_handler']),
     ('edge body ser',     ['edge_body_ser']),
     ('edge resp ser',     ['edge_resp_model_ser']),
     ('edge WS send',      ['edge_ws_send']),
@@ -492,13 +479,8 @@ PHASE_GROUPS = [
 _COLORS = [
     '#4e79a7', '#59a14f', '#9c755f', '#f28e2b', '#e15759',
     '#76b7b2', '#ff9d9a', '#edc948', '#b07aa1', '#ff9da7',
-    '#86bcb6', '#bab0ac', '#aec7e8', '#ffbb78', '#98df8a',
-    '#c5b0d5', '#c49c94',
+    '#86bcb6', '#bab0ac',
 ]
-
-
-_RH_SUB_PHASES = ['rh_parse_body', 'rh_template_expand',
-                   'rh_deser', 'rh_backend_submit', 'rh_register']
 
 
 def _group_durations(req_ids, durations):
@@ -509,10 +491,6 @@ def _group_durations(req_ids, durations):
         for rid in req_ids:
             d = durations.get(rid, {})
             total = sum(abs(d.get(p, 0)) for p in phases)
-            # For "edge handler other": subtract known rh sub-phases
-            if glabel == 'edge handler other':
-                rh_total = sum(abs(d.get(p, 0)) for p in _RH_SUB_PHASES)
-                total = max(total - rh_total, 0)
             vals.append(total)
         result[glabel] = statistics.median(vals) if vals else 0.0
     return result

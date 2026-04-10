@@ -155,33 +155,13 @@ async def main():
         'edge',
         bridge_url=bridge_url,
         edge_name=edge_name,
-        backends=['concurrent'],
+        backends=['noop'],
     )
     backend = await backend   # async init (registers remote session)
-
     session = rhapsody.Session(backends=[backend])
 
-    # ---- pass 1: homogeneous (template compression) ----
-    homo_results = await run_pass(session, batch_sizes, hetero=False)
-
-    # ---- pass 2: heterogeneous (regular batched submit) ----
-    hetero_results = await run_pass(session, batch_sizes, hetero=True)
-
-    # ---- comparison ----
-    out("\n--- comparison ---\n")
-    hdr = (f"{'batch':>6}  "
-           f"{'homo t/s':>9}  {'hetero t/s':>10}  {'ratio':>6}")
-    out(hdr)
-    out("-" * len(hdr))
-    for h, x in zip(homo_results, hetero_results):
-        ratio = (h['tasks_per_sec'] / x['tasks_per_sec']
-                 if x['tasks_per_sec'] > 0 else float('inf'))
-        out(f"{h['batch_size']:>6}  "
-            f"{h['tasks_per_sec']:>9.1f}  "
-            f"{x['tasks_per_sec']:>10.1f}  "
-            f"{ratio:>5.2f}x")
-
-    # ---- cleanup ----
+    await run_pass(session, batch_sizes, hetero=False)
+    await run_pass(session, batch_sizes, hetero=True)
     await session.close()
 
 

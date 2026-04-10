@@ -393,8 +393,10 @@ class RhapsodySession(PluginSession):
 
         # Acquire semaphore — queues here if too many watchers are active
         sem = self._watch_sem or asyncio.Semaphore(WATCH_CONCURRENCY)
+        prof = self.prof
         async with sem:
             log.debug("[%s] Watcher started for task %s", self._sid, uid_str)
+            prof.prof('rh_task_exec', uid=uid_str)
             try:
                 if not self._rh_session:
                     log.warning("[%s] Session closed before task %s completed",
@@ -402,6 +404,7 @@ class RhapsodySession(PluginSession):
                     self._queue_notification({
                         "uid": uid_str, "state": "FAILED",
                         "error": "Session closed"})
+                    prof.prof('rh_task_done', uid=uid_str, state='FAILED')
                     return
 
                 await self._rh_session.wait_tasks([task])
@@ -410,10 +413,14 @@ class RhapsodySession(PluginSession):
                 log.debug("[%s] Task %s completed with state: %s",
                           self._sid, uid_str, state)
 
+                prof.prof('rh_task_done', uid=uid_str,
+                          state=str(state))
+
                 d = self._notification_payload(task)
                 self._queue_notification(d)
 
             except Exception as e:
+                prof.prof('rh_task_done', uid=uid_str, state='FAILED')
                 log.warning("[%s] Rhapsody watch error for task %s: %s",
                             self._sid, uid_str, e)
                 self._queue_notification({
