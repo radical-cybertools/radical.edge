@@ -40,6 +40,7 @@ except ImportError:
     _cp = None
 
 import msgpack
+import radical.prof as rprof
 
 
 def _assert_json_serializable(obj, path=""):
@@ -110,6 +111,19 @@ class RhapsodySession(PluginSession):
         # Cache for deserialized cloudpickle payloads — avoids decoding the
         # same encoded string N times for template-expanded homogeneous batches.
         self._pickle_cache: dict[str, object] = {}
+
+        # Profiler — resolved lazily via the injected _plugin reference
+        self._prof: rprof.Profiler | None = None
+
+    @property
+    def prof(self) -> rprof.Profiler:
+        if self._prof is None:
+            svc = getattr(getattr(self._plugin, '_app', None),
+                          'state', None)
+            svc = getattr(svc, 'edge_service', None) if svc else None
+            self._prof = getattr(svc, '_prof', None) or \
+                         rprof.Profiler('rhapsody', ns='radical.edge')
+        return self._prof
 
     async def initialize(self) -> None:
         """Asynchronously initialize the session and its backends."""
@@ -270,6 +284,11 @@ class RhapsodySession(PluginSession):
         """
         self._check_initialized()
 
+        prof    = self.prof
+        batch_n = len(task_dicts)
+        bid     = task_dicts[0].get('uid', '?') if task_dicts else '?'
+        prof.prof('rh_submit', uid=bid, msg=str(batch_n))
+
         # Process in sub-batches so we yield to the event loop
         # between chunks, keeping WS pings alive.
         _CHUNK = 4096
@@ -279,12 +298,17 @@ class RhapsodySession(PluginSession):
             chunk_dicts = task_dicts[i:i + _CHUNK]
 
             # Offload CPU-bound deserialization to a worker thread
+            prof.prof('rh_deser', uid=bid, msg=str(len(chunk_dicts)))
             tasks = await asyncio.to_thread(
                 self._prepare_batch, chunk_dicts, pre_expanded)
+            prof.prof('rh_deser_done', uid=bid)
 
             # Async submit (backends are async)
+            prof.prof('rh_backend_submit', uid=bid)
             await self._rh_session.submit_tasks(tasks)
+            prof.prof('rh_backend_submit_done', uid=bid)
 
+            prof.prof('rh_register', uid=bid)
             for t in tasks:
                 uid_str = str(t.uid)
                 self._tasks[uid_str] = t
@@ -295,10 +319,12 @@ class RhapsodySession(PluginSession):
             if self._plugin:
                 for t in tasks:
                     asyncio.ensure_future(self._watch_task(t))
+            prof.prof('rh_register_done', uid=bid)
 
             # Yield so the event loop can process WS pings
             await asyncio.sleep(0)
 
+        prof.prof('rh_submit_done', uid=bid, msg=str(batch_n))
         return results
 
     def _queue_notification(self, payload: dict) -> None:
@@ -1208,19 +1234,22 @@ class PluginRhapsody(Plugin):
 
     async def submit_tasks(self, request: Request) -> dict:
         sid  = request.path_params['sid']
+
+        prof = getattr(getattr(self._app.state, 'edge_service', None),
+                       '_prof', None)
+
+        if prof: prof.prof('rh_parse_body', msg=sid)
         data = await request.json()
+        if prof: prof.prof('rh_parse_body_done', msg=sid)
 
         # Support template compression: {"template": {...}, "uids": [...]}
         template = data.get('template')
         if template is not None:
             uids = data.get('uids', [])
-            # Expand template into N dicts sharing the same field values
-            # by reference (shallow copy).  Values like the deserialized
-            # cloudpickle callable will be identical objects across all
-            # tasks thanks to the pickle cache in _deserialize_task.
+            if prof: prof.prof('rh_template_expand',
+                               msg='%d tasks' % len(uids))
             task_dicts = [dict(template, uid=uid) for uid in uids]
-            # Mark as pre-expanded so _prepare_batch can skip per-task
-            # deserialization (template fields are already shared).
+            if prof: prof.prof('rh_template_expand_done')
             pre_expanded = True
         else:
             task_dicts = data.get('tasks', [])
