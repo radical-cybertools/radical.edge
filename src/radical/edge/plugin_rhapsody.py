@@ -381,8 +381,8 @@ class RhapsodySession(PluginSession):
                 await self._rh_session.wait_tasks([task])
 
                 state = self._get_attr(task, 'state')
-                log.info("[%s] Task %s completed with state: %s",
-                         self._sid, uid_str, state)
+                log.debug("[%s] Task %s completed with state: %s",
+                          self._sid, uid_str, state)
 
                 d = self._notification_payload(task)
                 self._queue_notification(d)

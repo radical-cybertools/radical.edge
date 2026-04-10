@@ -187,22 +187,16 @@ async def broadcast_topology_to_edges():
             log.warning("[Bridge] Failed to send topology to %s: %s", edge_name, e)
 
 
-async def _send_to_edge(edge_name: str, message: dict, binary: bool = False):
+async def _send_to_edge(edge_name: str, message, binary: bool = False):
 
     ws = edges.get(edge_name)
     if not ws or ws.client_state != WebSocketState.CONNECTED:
         raise HTTPException(status_code=503, detail=f"Edge '{edge_name}' not connected")
 
-    req_id = message.get('req_id', '')
-    _bridge_prof.prof('bridge_ser', uid=req_id)
     if binary:
-        packed = msgpack.packb(message, use_bin_type=True)
-        _bridge_prof.prof('bridge_ser_done', uid=req_id, msg=str(len(packed)))
-        await ws.send_bytes(packed)
+        await ws.send_bytes(message)
     else:
-        text = json.dumps(message)
-        _bridge_prof.prof('bridge_ser_done', uid=req_id, msg=str(len(text)))
-        await ws.send_text(text)
+        await ws.send_text(message)
 
 
 @app.websocket("/register")
@@ -768,8 +762,15 @@ async def proxy(full_path: str, request: Request):
         pending[req_id] = (fut, edge_name)
 
     try:
+        _bridge_prof.prof('bridge_ser', uid=req_id)
+        if is_binary:
+            wire = msgpack.packb(message, use_bin_type=True)
+        else:
+            wire = json.dumps(message)
+        _bridge_prof.prof('bridge_ser_done', uid=req_id, msg=str(len(wire)))
+
         _bridge_prof.prof('bridge_ws_send', uid=req_id)
-        await _send_to_edge(edge_name, message, binary=is_binary)
+        await _send_to_edge(edge_name, wire, binary=is_binary)
         _bridge_prof.prof('bridge_ws_sent', uid=req_id)
 
     except HTTPException:
