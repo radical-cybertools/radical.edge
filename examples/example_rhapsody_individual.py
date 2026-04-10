@@ -5,21 +5,25 @@ Example: Rhapsody Individual Task Submission
 
 Submits tasks one-by-one through the Edge Rhapsody backend.  The Edge
 backend collects individually submitted tasks over a short time window
-(default 0.1 s) and flushes them as bulk HTTP requests, so single-task
-submit calls still achieve high throughput.
+and flushes them as bulk HTTP requests, so single-task submit calls
+still achieve high throughput.
 
 Uses the noop backend so tasks complete instantly — pure infrastructure
 overhead measurement.
 
 Usage:
-  python examples/example_rhapsody_individual.py [n_tasks] [batch_window]
+  python examples/example_rhapsody_individual.py [options]
 
-  Default: 8192 tasks, 0.05 s batch window (0 = no batching)
+  --tasks N                  Number of tasks (default 8192)
+  --batch-window SEC         Client submit batch window (default 0.05)
+  --batch-limit N            Client submit batch size limit (default 1024)
+  --notify-window SEC        Edge notification batch window (default 0.05)
+  --notify-limit N           Edge notification batch size (default 256)
 """
 
+import argparse
 import asyncio
 import os
-import sys
 import time
 
 import rhapsody
@@ -29,11 +33,25 @@ def _noop():
     """Minimal function task."""
     return True
 
+def _noop_arg(x):
+    """Minimal function task with one argument."""
+    return x
+
+
+def parse_args():
+    p = argparse.ArgumentParser(
+        description='Individual task submission benchmark')
+    p.add_argument('--tasks',         "-t", type=int,   default=8192)
+    p.add_argument('--batch-window',  "-w", type=float, default=0.05)
+    p.add_argument('--batch-limit',   "-l", type=int,   default=1024)
+    p.add_argument('--notify-window', "-W", type=float, default=0.05)
+    p.add_argument('--notify-limit',  "-L", type=int,   default=256)
+    return p.parse_args()
+
 
 async def main():
 
-    n_tasks      = int(sys.argv[1])   if len(sys.argv) > 1 else 8192
-    batch_window = float(sys.argv[2]) if len(sys.argv) > 2 else 0.05
+    args = parse_args()
 
     # ---- discover bridge / edge ---
     bridge_url = os.environ.get('RADICAL_BRIDGE_URL',
@@ -49,10 +67,13 @@ async def main():
         return
 
     edge_name = eids[0]
-    print(f"Bridge:  {bridge_url}")
-    print(f"Edge:    {edge_name}")
-    print(f"Tasks:   {n_tasks}")
-    print(f"Batch:   {batch_window}s window")
+    print(f"Bridge:         {bridge_url}")
+    print(f"Edge:           {edge_name}")
+    print(f"Tasks:          {args.tasks}")
+    print(f"Batch window:   {args.batch_window}s")
+    print(f"Batch limit:    {args.batch_limit}")
+    print(f"Notify window:  {args.notify_window}s")
+    print(f"Notify limit:   {args.notify_limit}")
 
     # ---- set up Rhapsody session with Edge backend ---
     backend = rhapsody.get_backend(
@@ -60,26 +81,24 @@ async def main():
         bridge_url=bridge_url,
         edge_name=edge_name,
         backends=['noop'],
-        batch_window=batch_window,
+        batch_window=args.batch_window,
+        batch_limit=args.batch_limit,
+        notify_batch_window=args.notify_window,
+        notify_batch_size=args.notify_limit,
     )
     backend = await backend
     session = rhapsody.Session(backends=[backend])
 
     # ---- submit tasks individually ---
+    n_tasks = args.tasks
     print(f"\nSubmitting {n_tasks} tasks one at a time ...")
     all_tasks = []
     t0 = time.time()
 
     for i in range(n_tasks):
-        task = rhapsody.ComputeTask(function=_noop)
+        task = rhapsody.ComputeTask(function=_noop_arg, args=(i,))
         await session.submit_tasks([task])
         all_tasks.append(task)
-
-        # Progress
-        if (i + 1) % 1000 == 0:
-            elapsed = time.time() - t0
-            rate = (i + 1) / elapsed
-            print(f"  {i+1}/{n_tasks}  ({rate:.1f} tasks/s)")
 
     t_submit = time.time() - t0
 

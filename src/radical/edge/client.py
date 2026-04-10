@@ -117,6 +117,10 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 log = logging.getLogger("radical.edge.client")
 
+# Silence per-request INFO logging from httpx/httpcore
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 
 class BridgeClient:
     """

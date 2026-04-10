@@ -22,11 +22,11 @@ from .client import PluginClient
 
 log = logging.getLogger("radical.edge")
 
-TERMINAL_STATES    = {'DONE', 'FAILED', 'CANCELED', 'COMPLETED'}
-WATCH_CONCURRENCY  = 64
-WS_PAYLOAD_LIMIT   = 8 * 1024 * 1024   # target max per batch (conservative)
-NOTIFY_BATCH_SIZE   = 256              # max tasks per bulk notification
-NOTIFY_BATCH_WINDOW = 0.05            # seconds to accumulate before flush
+TERMINAL_STATES     = {'DONE', 'FAILED', 'CANCELED', 'COMPLETED'}
+WATCH_CONCURRENCY   = 64
+WS_PAYLOAD_LIMIT    = 8 * 1024 * 1024  # target max per batch (conservative)
+NOTIFY_BATCH_SIZE   = 1024             # max tasks per bulk notification
+NOTIFY_BATCH_WINDOW = 0.25             # seconds to accumulate before flush
 
 # Guard optional dependencies
 try:
@@ -34,11 +34,7 @@ try:
 except ImportError:
     rh = None
 
-try:
-    import cloudpickle as _cp
-except ImportError:
-    _cp = None
-
+import cloudpickle as _cp
 import msgpack
 import radical.prof as rprof
 
@@ -76,7 +72,9 @@ class RhapsodySession(PluginSession):
     """
 
     def __init__(self, sid: str, backend_names: list[str] | None = None,
-                 allow_pickled_tasks: bool = True):
+                 allow_pickled_tasks: bool = True,
+                 notify_batch_window: float = NOTIFY_BATCH_WINDOW,
+                 notify_batch_size: int = NOTIFY_BATCH_SIZE):
         """
         Initialize a RhapsodySession.
 
@@ -86,6 +84,10 @@ class RhapsodySession(PluginSession):
                 Backends to configure.  Defaults to ``['dragon_v3']``.
             allow_pickled_tasks (bool):
                 Allow cloudpickle-encoded function tasks.  Defaults to ``True``.
+            notify_batch_window (float):
+                Seconds to accumulate notifications before flushing.
+            notify_batch_size (int):
+                Max notifications per flush — triggers immediate send.
         """
         super().__init__(sid)
 
@@ -105,8 +107,10 @@ class RhapsodySession(PluginSession):
         self._watch_sem: asyncio.Semaphore | None = None
 
         # Notification batcher: accumulate completions and flush in bulk
-        self._notify_buf: list[dict] = []
-        self._notify_lock = threading.Lock()
+        self._notify_buf: list[dict]  = []
+        self._notify_lock             = threading.Lock()
+        self._notify_batch_window     = notify_batch_window
+        self._notify_batch_size       = notify_batch_size
 
         # Cache for deserialized cloudpickle payloads — avoids decoding the
         # same encoded string N times for template-expanded homogeneous batches.
@@ -223,10 +227,6 @@ class RhapsodySession(PluginSession):
                 raise HTTPException(
                     status_code=400,
                     detail="pickled function tasks are disabled")
-            if _cp is None:
-                raise HTTPException(
-                    status_code=500,
-                    detail="cloudpickle is not installed on this edge")
             for field in pickled_fields:
                 val = td.get(field)
                 if isinstance(val, str) and val.startswith('cloudpickle::'):
@@ -376,14 +376,14 @@ class RhapsodySession(PluginSession):
             self._notify_buf.append(payload)
             buf_len = len(self._notify_buf)
 
-        if buf_len >= NOTIFY_BATCH_SIZE:
+        if buf_len >= self._notify_batch_size:
             # Buffer full — flush immediately (sync, from event loop)
             self._flush_notifications()
         else:
             # Schedule a delayed flush so tail items aren't stranded.
             # Always schedule — it's cheap and a no-op if buffer is
             # empty when it fires.
-            self._schedule_flush(delay=NOTIFY_BATCH_WINDOW)
+            self._schedule_flush(delay=self._notify_batch_window)
 
     def _schedule_flush(self, delay: float = 0) -> None:
         """Schedule a notification flush on the event loop."""
@@ -765,7 +765,9 @@ class RhapsodyClient(PluginClient):
                             event.set()
 
     def register_session(self, backends: list[str] | None = None,
-                         init_timeout: float = 120):
+                         init_timeout: float = 120,
+                         notify_batch_window: float | None = None,
+                         notify_batch_size: int | None = None):
         """
         Register a session, optionally specifying backend names.
 
@@ -779,6 +781,9 @@ class RhapsodyClient(PluginClient):
             backends: List of backend names (e.g. ``['dragon_v3']``).
                       Defaults to ``['dragon_v3']`` on the server side.
             init_timeout: Seconds to wait for session init (default 120).
+            notify_batch_window: Seconds to accumulate notifications
+                      before flushing (edge-side).
+            notify_batch_size: Max notifications per flush (edge-side).
         """
         has_sse = (self._bc is not None and
                    self._edge_id is not None and
@@ -806,6 +811,10 @@ class RhapsodyClient(PluginClient):
         payload = {}
         if backends:
             payload['backends'] = backends
+        if notify_batch_window is not None:
+            payload['notify_batch_window'] = notify_batch_window
+        if notify_batch_size is not None:
+            payload['notify_batch_size'] = notify_batch_size
         resp = self._http.post(self._url('register_session'), json=payload)
         self._raise(resp)
 
@@ -878,9 +887,6 @@ class RhapsodyClient(PluginClient):
         - Strips non-serializable internal fields (``future``,
           ``_future``, ``backend``).
         """
-        if _cp is None:
-            raise ImportError("cloudpickle is required for function tasks")
-
         pickled_fields = td.get('_pickled_fields', [])
 
         # Serialize callable function
@@ -1304,12 +1310,21 @@ class PluginRhapsody(Plugin):
         except Exception:
             data = {}
 
-        backend_names = data.get('backends')
+        backend_names       = data.get('backends')
+        notify_batch_window = data.get('notify_batch_window',
+                                       NOTIFY_BATCH_WINDOW)
+        notify_batch_size   = data.get('notify_batch_size',
+                                       NOTIFY_BATCH_SIZE)
 
         # Build session directly to avoid race on shared plugin state
         self._ensure_cleanup_task()
         sid     = f"session.{uuid.uuid4().hex[:8]}"
-        session = self.session_class(sid, backend_names=backend_names)
+        session = self.session_class(
+            sid,
+            backend_names=backend_names,
+            notify_batch_window=float(notify_batch_window),
+            notify_batch_size=int(notify_batch_size),
+        )
         session._plugin = self
         self._sessions[sid]            = session
         self._session_last_access[sid] = time.time()

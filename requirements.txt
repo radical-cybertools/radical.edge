@@ -1,6 +1,7 @@
 
 httpx
 msgpack
+cloudpickle
 requests
 websockets
 websocket-client
