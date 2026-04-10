@@ -16,7 +16,6 @@ PluginPSIJ    Registers the plugin with the edge, adds URL routes, and wires
 '''
 
 import asyncio
-import json as _json
 import logging
 import os
 import pathlib
@@ -30,7 +29,6 @@ from datetime import timedelta
 from typing import Any, Dict
 
 from fastapi import FastAPI, HTTPException, Request
-from starlette.responses import JSONResponse
 
 import psij
 
@@ -57,6 +55,7 @@ def _relay_dir() -> pathlib.Path:
     """Return (and create) the relay-file directory."""
     _RELAY_BASE.mkdir(parents=True, exist_ok=True)
     return _RELAY_BASE
+
 
 # Terminal states that don't need further polling
 TERMINAL_STATES = {'COMPLETED', 'FAILED', 'CANCELED'}
@@ -630,7 +629,7 @@ class PluginPSIJ(Plugin):
         self.add_route_get('list_jobs/{sid}',                  self.list_jobs)
         self.add_route_post('cancel/{sid}/{job_id}',           self.cancel_job)
 
-    async def submit_job(self, request: Request) -> JSONResponse:
+    async def submit_job(self, request: Request) -> dict:
         sid = request.path_params['sid']
         data = await request.json()
         job_spec = data.get('job_spec', {})
@@ -640,7 +639,7 @@ class PluginPSIJ(Plugin):
                                  job_spec_dict=job_spec,
                                  executor_name=executor)
 
-    async def get_job_status(self, request: Request) -> JSONResponse:
+    async def get_job_status(self, request: Request) -> dict:
         sid    = request.path_params['sid']
         job_id = request.path_params['job_id']
         so     = int(request.query_params.get('stdout_offset', '0'))
@@ -650,11 +649,11 @@ class PluginPSIJ(Plugin):
                                    stdout_offset=so,
                                    stderr_offset=se)
 
-    async def list_jobs(self, request: Request) -> JSONResponse:
+    async def list_jobs(self, request: Request) -> dict:
         sid = request.path_params['sid']
         return await self._forward(sid, PSIJSession.list_jobs)
 
-    async def cancel_job(self, request: Request) -> JSONResponse:
+    async def cancel_job(self, request: Request) -> dict:
         sid = request.path_params['sid']
         job_id = request.path_params['job_id']
         return await self._forward(sid, PSIJSession.cancel_job, job_id=job_id)
@@ -663,7 +662,7 @@ class PluginPSIJ(Plugin):
     #  Edge-job submission with optional reverse SSH tunnel
     # ─────────────────────────────────────────────────────────────────────────
 
-    async def submit_tunneled(self, request: Request) -> JSONResponse:
+    async def submit_tunneled(self, request: Request) -> dict:
         """Submit a job that starts a new Edge service on a compute node.
 
         The job *must* pass ``-n``/``--name <edge_name>`` in its arguments so
@@ -745,10 +744,9 @@ class PluginPSIJ(Plugin):
                                    executor_name=executor)
 
         if tunnel and relay_file is not None:
-            result = _json.loads(bytes(resp.body))
-            native_id = result.get('native_id')
+            native_id = resp.get('native_id')
             log.info("[psij] submit_tunneled: edge=%s job_id=%s native_id=%s — starting tunnel watcher",
-                     edge_name, result.get('job_id'), native_id)
+                     edge_name, resp.get('job_id'), native_id)
             if native_id is None:
                 log.warning("[psij] native_id is None for edge '%s'; watcher will poll "
                             "without a SLURM job ID (PsiJ may not have assigned one yet)",
@@ -758,11 +756,10 @@ class PluginPSIJ(Plugin):
             self._watchers[edge_name] = task
 
         # Augment response with edge_name for caller convenience
-        body = _json.loads(bytes(resp.body))
-        body['edge_name'] = edge_name
-        return JSONResponse(body, status_code=resp.status_code)
+        resp['edge_name'] = edge_name
+        return resp
 
-    async def tunnel_status(self, request: Request) -> JSONResponse:
+    async def tunnel_status(self, request: Request) -> dict:
         """Return the current tunnel status for a named edge.
 
         Path param: ``edge_name``
@@ -817,10 +814,10 @@ class PluginPSIJ(Plugin):
             # Watcher still running, waiting for job to reach RUNNING state
             status = 'pending'
 
-        return JSONResponse({'edge_name': edge_name,
-                             'status':    status,
-                             'port':      port,
-                             'pid':       pid})
+        return {'edge_name': edge_name,
+                'status':    status,
+                'port':      port,
+                'pid':       pid}
 
     # ─────────────────────────────────────────────────────────────────────────
     #  Internal tunnel helpers

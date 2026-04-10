@@ -15,7 +15,6 @@ import time
 import uuid
 
 from fastapi import FastAPI, HTTPException, Request
-from starlette.responses import JSONResponse
 
 from .plugin_session_base import PluginSession
 from .plugin_base import Plugin
@@ -39,6 +38,8 @@ try:
     import cloudpickle as _cp
 except ImportError:
     _cp = None
+
+import msgpack
 
 
 def _assert_json_serializable(obj, path=""):
@@ -105,6 +106,10 @@ class RhapsodySession(PluginSession):
         # Notification batcher: accumulate completions and flush in bulk
         self._notify_buf: list[dict] = []
         self._notify_lock = threading.Lock()
+
+        # Cache for deserialized cloudpickle payloads — avoids decoding the
+        # same encoded string N times for template-expanded homogeneous batches.
+        self._pickle_cache: dict[str, object] = {}
 
     async def initialize(self) -> None:
         """Asynchronously initialize the session and its backends."""
@@ -211,8 +216,14 @@ class RhapsodySession(PluginSession):
             for field in pickled_fields:
                 val = td.get(field)
                 if isinstance(val, str) and val.startswith('cloudpickle::'):
-                    raw = base64.b64decode(val[len('cloudpickle::'):])
-                    td[field] = _cp.loads(raw)
+                    encoded = val[len('cloudpickle::'):]
+                    cached = self._pickle_cache.get(encoded)
+                    if cached is not None:
+                        td[field] = cached
+                    else:
+                        obj = _cp.loads(base64.b64decode(encoded))
+                        self._pickle_cache[encoded] = obj
+                        td[field] = obj
             return td
 
         # --- import-path string (e.g. "mymodule.sub:func_name") ---
@@ -230,16 +241,23 @@ class RhapsodySession(PluginSession):
 
         return td
 
-    def _prepare_batch(self, task_dicts: list[dict]) -> list:
+    def _prepare_batch(self, task_dicts: list[dict],
+                       pre_expanded: bool = False) -> list:
         """Deserialize and create task objects (runs in worker thread).
 
         CPU-bound work (cloudpickle, from_dict) is offloaded here so the
         event loop stays responsive for WebSocket keepalive.
+
+        When *pre_expanded* is True the batch came from template expansion:
+        all dicts already share field values by reference and the first
+        dict's cloudpickle fields seed the pickle cache so subsequent
+        dicts hit the cache.
         """
         deserialized = [self._deserialize_task(td) for td in task_dicts]
         return [rh.BaseTask.from_dict(td) for td in deserialized]
 
-    async def submit_tasks(self, task_dicts: list[dict]) -> list[dict]:
+    async def submit_tasks(self, task_dicts: list[dict],
+                           pre_expanded: bool = False) -> list[dict]:
         """
         Submit a list of tasks.
 
@@ -262,7 +280,7 @@ class RhapsodySession(PluginSession):
 
             # Offload CPU-bound deserialization to a worker thread
             tasks = await asyncio.to_thread(
-                self._prepare_batch, chunk_dicts)
+                self._prepare_batch, chunk_dicts, pre_expanded)
 
             # Async submit (backends are async)
             await self._rh_session.submit_tasks(tasks)
@@ -834,13 +852,10 @@ class RhapsodyClient(PluginClient):
         errors: list[str] = []
 
         def _submit_batch(b):
-            try:
-                resp = self._http.post(url, json={"tasks": b})
-            except TypeError:
-                # Pinpoint the exact non-serializable key path
-                for td in b:
-                    _assert_json_serializable(td)
-                raise
+            resp = self._http.post(
+                url,
+                data=msgpack.packb({"tasks": b}, use_bin_type=True),
+                headers={"Content-Type": "application/msgpack"})
             self._raise(resp, f"submit {len(b)} task(s)")
             return resp.json()
 
@@ -887,11 +902,10 @@ class RhapsodyClient(PluginClient):
 
         def _submit_chunk(uid_chunk):
             payload = {"template": template, "uids": uid_chunk}
-            try:
-                resp = self._http.post(url, json=payload)
-            except TypeError:
-                _assert_json_serializable(template)
-                raise
+            resp = self._http.post(
+                url,
+                data=msgpack.packb(payload, use_bin_type=True),
+                headers={"Content-Type": "application/msgpack"})
             self._raise(resp, f"submit template {len(uid_chunk)} task(s)")
             return resp.json()
 
@@ -1135,7 +1149,7 @@ class PluginRhapsody(Plugin):
         self.add_route_post('cancel/{sid}/{uid}', self.cancel_task)
         self.add_route_post('cancel_all/{sid}', self.cancel_all_tasks)
 
-    async def register_session(self, request: Request) -> JSONResponse:
+    async def register_session(self, request: Request) -> dict:
         """Register a new Rhapsody session.
 
         Accepts an optional JSON body with ``{"backends": ["name", ...]}``.
@@ -1165,7 +1179,7 @@ class PluginRhapsody(Plugin):
         # (and therefore the WebSocket slot) is released immediately.
         asyncio.create_task(self._init_session(sid, session))
 
-        return JSONResponse({"sid": sid, "status": "initializing"})
+        return {"sid": sid, "status": "initializing"}
 
     async def _init_session(self, sid: str, session) -> None:
         """Background task: initialize a session and notify via SSE."""
@@ -1192,7 +1206,7 @@ class PluginRhapsody(Plugin):
 
     # -- route handlers -----------------------------------------------------
 
-    async def submit_tasks(self, request: Request) -> JSONResponse:
+    async def submit_tasks(self, request: Request) -> dict:
         sid  = request.path_params['sid']
         data = await request.json()
 
@@ -1200,14 +1214,23 @@ class PluginRhapsody(Plugin):
         template = data.get('template')
         if template is not None:
             uids = data.get('uids', [])
+            # Expand template into N dicts sharing the same field values
+            # by reference (shallow copy).  Values like the deserialized
+            # cloudpickle callable will be identical objects across all
+            # tasks thanks to the pickle cache in _deserialize_task.
             task_dicts = [dict(template, uid=uid) for uid in uids]
+            # Mark as pre-expanded so _prepare_batch can skip per-task
+            # deserialization (template fields are already shared).
+            pre_expanded = True
         else:
             task_dicts = data.get('tasks', [])
+            pre_expanded = False
 
         return await self._forward(sid, RhapsodySession.submit_tasks,
-                                   task_dicts=task_dicts)
+                                   task_dicts=task_dicts,
+                                   pre_expanded=pre_expanded)
 
-    async def wait_tasks(self, request: Request) -> JSONResponse:
+    async def wait_tasks(self, request: Request) -> dict:
         sid = request.path_params['sid']
         data = await request.json()
         uids = data.get('uids', [])
@@ -1215,21 +1238,21 @@ class PluginRhapsody(Plugin):
         return await self._forward(sid, RhapsodySession.wait_tasks,
                                    uids=uids, timeout=timeout)
 
-    async def list_tasks(self, request: Request) -> JSONResponse:
+    async def list_tasks(self, request: Request) -> dict:
         sid = request.path_params['sid']
         return await self._forward(sid, RhapsodySession.list_tasks)
 
-    async def get_task(self, request: Request) -> JSONResponse:
+    async def get_task(self, request: Request) -> dict:
         sid = request.path_params['sid']
         uid = request.path_params['uid']
         return await self._forward(sid, RhapsodySession.get_task, uid=uid)
 
-    async def cancel_task(self, request: Request) -> JSONResponse:
+    async def cancel_task(self, request: Request) -> dict:
         sid = request.path_params['sid']
         uid = request.path_params['uid']
         return await self._forward(sid, RhapsodySession.cancel_task, uid=uid)
 
-    async def cancel_all_tasks(self, request: Request) -> JSONResponse:
+    async def cancel_all_tasks(self, request: Request) -> dict:
         sid = request.path_params['sid']
         return await self._forward(sid, RhapsodySession.cancel_all_tasks)
 

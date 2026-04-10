@@ -28,7 +28,6 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 from fastapi import FastAPI, HTTPException, Request
-from starlette.responses import JSONResponse
 
 from .plugin_session_base import PluginSession
 from .plugin_base import Plugin
@@ -1325,48 +1324,48 @@ class PluginXGFabric(Plugin):
 
     # -- Route handlers -------------------------------------------------------
 
-    async def get_workdir(self, request: Request) -> JSONResponse:
+    async def get_workdir(self, request: Request) -> dict:
         sid = request.path_params['sid']
         return await self._forward(sid, XGFabricSession.get_config_dir)
 
-    async def set_workdir(self, request: Request) -> JSONResponse:
+    async def set_workdir(self, request: Request) -> dict:
         sid = request.path_params['sid']
         data = await request.json()
         path = data.get('path', '')
         return await self._forward(sid, XGFabricSession.set_config_dir, path=path)
 
-    async def list_configs(self, request: Request) -> JSONResponse:
+    async def list_configs(self, request: Request) -> dict:
         sid = request.path_params['sid']
         return await self._forward(sid, XGFabricSession.list_configs)
 
-    async def get_default_config(self, request: Request) -> JSONResponse:
+    async def get_default_config(self, request: Request) -> dict:
         sid = request.path_params['sid']
         return await self._forward(sid, XGFabricSession.load_config, name='default')
 
-    async def get_test_config(self, request: Request) -> JSONResponse:
+    async def get_test_config(self, request: Request) -> dict:
         sid = request.path_params['sid']
         return await self._forward(sid, XGFabricSession.load_config, name='test')
 
-    async def load_config(self, request: Request) -> JSONResponse:
+    async def load_config(self, request: Request) -> dict:
         sid = request.path_params['sid']
         name = request.path_params['name']
         return await self._forward(sid, XGFabricSession.load_config, name=name)
 
-    async def save_config(self, request: Request) -> JSONResponse:
+    async def save_config(self, request: Request) -> dict:
         sid = request.path_params['sid']
         data = await request.json()
         return await self._forward(sid, XGFabricSession.save_config, data=data)
 
-    async def delete_config(self, request: Request) -> JSONResponse:
+    async def delete_config(self, request: Request) -> dict:
         sid = request.path_params['sid']
         name = request.path_params['name']
         return await self._forward(sid, XGFabricSession.delete_config, name=name)
 
-    async def get_status(self, request: Request) -> JSONResponse:
+    async def get_status(self, request: Request) -> dict:
         sid = request.path_params['sid']
         return await self._forward(sid, XGFabricSession.get_status)
 
-    async def start_workflow(self, request: Request) -> JSONResponse:
+    async def start_workflow(self, request: Request) -> dict:
         sid = request.path_params['sid']
         data = await request.json()
         # Accept both new-style {workflow, resource} and legacy {config_name} from explorer
@@ -1375,6 +1374,6 @@ class PluginXGFabric(Plugin):
         return await self._forward(sid, XGFabricSession.start_workflow,
                                    workflow=workflow, resource=resource)
 
-    async def stop_workflow(self, request: Request) -> JSONResponse:
+    async def stop_workflow(self, request: Request) -> dict:
         sid = request.path_params['sid']
         return await self._forward(sid, XGFabricSession.stop_workflow)

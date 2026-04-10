@@ -18,10 +18,11 @@ def test_plugin_staging_init():
     assert plugin.instance_name == 'staging'
     assert plugin.namespace == '/staging'
 
-    routes = [r.path for r in app.router.routes]
-    assert f"{plugin.namespace}/put/{{sid}}" in routes
-    assert f"{plugin.namespace}/get/{{sid}}" in routes
-    assert f"{plugin.namespace}/list/{{sid}}" in routes
+    route_pats = [p.pattern for _, p, _, _ in app.state.direct_routes]
+    ns = plugin.namespace.lstrip('/')
+    assert any(f'{ns}/put/' in p for p in route_pats)
+    assert any(f'{ns}/get/' in p for p in route_pats)
+    assert any(f'{ns}/list/' in p for p in route_pats)
 
 
 def test_staging_session_put_creates_parent_dirs(tmp_path):

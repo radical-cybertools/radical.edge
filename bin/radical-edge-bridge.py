@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import itertools
 import json
 import logging
 import os
@@ -10,6 +11,9 @@ import signal
 import socket
 import ssl
 import uuid
+
+import msgpack
+import radical.prof as rprof
 
 from contextlib import asynccontextmanager
 from typing  import Dict, Any
@@ -146,6 +150,9 @@ edges: Dict[str, WebSocket] = {}
 pending: Dict[str, tuple] = dict()  # req_id -> (future, edge_name)
 pending_lock: asyncio.Lock = asyncio.Lock()
 
+_bridge_prof    = rprof.Profiler('bridge', ns='radical.edge')
+_bridge_req_ctr = itertools.count()
+
 # {"bridge": {...},
 #  "edges": {edge_name: {"plugins": {...}}}}
 endpoints: Dict[str, Any] = {
@@ -180,13 +187,16 @@ async def broadcast_topology_to_edges():
             log.warning("[Bridge] Failed to send topology to %s: %s", edge_name, e)
 
 
-async def _send_to_edge(edge_name: str, message: dict):
+async def _send_to_edge(edge_name: str, message: dict, binary: bool = False):
 
     ws = edges.get(edge_name)
     if not ws or ws.client_state != WebSocketState.CONNECTED:
         raise HTTPException(status_code=503, detail=f"Edge '{edge_name}' not connected")
 
-    await ws.send_text(json.dumps(message))
+    if binary:
+        await ws.send_bytes(msgpack.packb(message, use_bin_type=True))
+    else:
+        await ws.send_text(json.dumps(message))
 
 
 @app.websocket("/register")
@@ -223,14 +233,23 @@ async def register(ws: WebSocket):
 
         while not (shutdown_event.is_set()):
             try:
-                msg = await asyncio.wait_for(ws.receive_text(), timeout=1.0)
+                raw = await asyncio.wait_for(ws.receive(), timeout=1.0)
             except asyncio.TimeoutError:
                 continue  # Check shutdown_event again
+
+            # Detect disconnect
+            if raw.get("type") == "websocket.disconnect":
+                raise WebSocketDisconnect(raw.get("code", 1000))
+
+            # Binary frame (msgpack) or text frame (JSON)
             try:
-                data = json.loads(msg)
-            except json.JSONDecodeError:
-                log.warning("[Bridge] Malformed JSON from edge '%s': %s",
-                            edge_name or '(unregistered)', msg[:200])
+                if raw.get("bytes"):
+                    data = msgpack.unpackb(raw["bytes"], raw=False)
+                else:
+                    data = json.loads(raw.get("text", "{}"))
+            except Exception:
+                log.warning("[Bridge] Malformed message from edge '%s'",
+                            edge_name or '(unregistered)')
                 continue
 
             if data.get("type") == "pong":
@@ -703,15 +722,18 @@ async def proxy(full_path: str, request: Request):
     is_binary  = False
 
     if body_bytes:
-        # Cheap heuristic: if decodable, send as text; else base64
+        # Cheap heuristic: if decodable, send as text; else binary WS frame
         try:
             body = body_bytes.decode("utf-8")
-
         except UnicodeDecodeError:
-            body = base64.b64encode(body_bytes).decode("ascii")
             is_binary = True
 
-    req_id = str(uuid.uuid4())
+    # Use client-provided request ID or generate one
+    req_id = (request.headers.get("x-request-id")
+              or 'req.%06d' % next(_bridge_req_ctr))
+
+    _bridge_prof.prof('bridge_recv', uid=req_id,
+                      msg='%s %s' % (request.method, forward_path))
 
     # Query params handling
     if request.url.query:
@@ -724,7 +746,7 @@ async def proxy(full_path: str, request: Request):
         "path"     : forward_path,
         "headers"  : _strip_headers(request),
         "is_binary": is_binary,
-        "body"     : body,
+        "body"     : body_bytes if is_binary else body,  # raw bytes or text
     }
 
     fut = asyncio.get_running_loop().create_future()
@@ -732,7 +754,9 @@ async def proxy(full_path: str, request: Request):
         pending[req_id] = (fut, edge_name)
 
     try:
-        await _send_to_edge(edge_name, message)
+        _bridge_prof.prof('bridge_ws_send', uid=req_id)
+        await _send_to_edge(edge_name, message, binary=is_binary)
+        _bridge_prof.prof('bridge_ws_sent', uid=req_id)
 
     except HTTPException:
         async with pending_lock:
@@ -747,6 +771,8 @@ async def proxy(full_path: str, request: Request):
             pending.pop(req_id, None)
         raise HTTPException(status_code=504, detail="Upstream (edge) timeout") from exc
 
+    _bridge_prof.prof('bridge_ws_recv', uid=req_id)
+
     status    = int(resp.get("status", 502))
     headers   = resp.get("headers") or {}
     resp_body = resp.get("body")
@@ -758,6 +784,7 @@ async def proxy(full_path: str, request: Request):
             log.exception("[Bridge] Failed to decode binary response: %s", e)
             raw = b""
 
+        _bridge_prof.prof('bridge_reply', uid=req_id, state=str(status))
         return Response(content=raw, status_code=status, headers=headers)
 
     else:
@@ -769,12 +796,14 @@ async def proxy(full_path: str, request: Request):
             try:
                 headers = {k.lower(): v for k, v in headers.items()
                                         if  k.lower() != "content-type"}
+                _bridge_prof.prof('bridge_reply', uid=req_id, state=str(status))
                 return JSONResponse(content=json.loads(content),
                                     status_code=status, headers=headers)
 
             except Exception as e:
                 log.exception("[Bridge] Failed to parse JSON response: %s", e)
 
+        _bridge_prof.prof('bridge_reply', uid=req_id, state=str(status))
         return Response(content=content, status_code=status, headers=headers)
 
 

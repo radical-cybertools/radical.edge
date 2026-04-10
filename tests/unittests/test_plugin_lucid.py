@@ -181,14 +181,14 @@ def test_plugin_lucid_initialization(mock_rp):
 
     assert plugin._instance_name == "lucid"
     assert plugin._sessions == {}
-    # Check that routes were added
-    route_paths = [route.path for route in app.router.routes]
-    assert any("register_session" in path for path in route_paths)
-    assert any("unregister_session" in path for path in route_paths)
-    assert any("pilot_submit" in path for path in route_paths)
-    assert any("task_submit" in path for path in route_paths)
-    assert any("task_wait" in path for path in route_paths)
-    assert any("version" in path for path in route_paths)
+    # Check that direct-dispatch routes were registered
+    route_pats = [p.pattern for _, p, _, _ in app.state.direct_routes]
+    assert any("register_session" in p for p in route_pats)
+    assert any("unregister_session" in p for p in route_pats)
+    assert any("pilot_submit" in p for p in route_pats)
+    assert any("task_submit" in p for p in route_pats)
+    assert any("task_wait" in p for p in route_pats)
+    assert any("version" in p for p in route_pats)
 
 
 @pytest.mark.asyncio
@@ -206,14 +206,11 @@ async def test_plugin_lucid_register_session(mock_rp):
 
     request = Mock(spec=Request)
 
-    response = await plugin.register_session(request)
+    data = await plugin.register_session(request)
 
-    assert isinstance(response, JSONResponse)
-    
-    import json
-    data = json.loads(response.body)
+    assert isinstance(data, dict)
     sid = data['sid']
-    
+
     assert sid in plugin._sessions
 
 
@@ -232,15 +229,14 @@ async def test_plugin_lucid_unregister_session(mock_rp):
 
     # Register a session
     request = Mock(spec=Request)
-    response = await plugin.register_session(request)
-    import json
-    sid = json.loads(response.body)['sid']
+    data = await plugin.register_session(request)
+    sid = data['sid']
 
     # Unregister it
     request.path_params = {"sid": sid}
     response = await plugin.unregister_session(request)
 
-    assert isinstance(response, JSONResponse)
+    assert isinstance(response, dict)
     assert sid not in plugin._sessions
 
 
@@ -271,17 +267,16 @@ async def test_plugin_lucid_pilot_submit(mock_rp):
 
     # Register a session
     request = Mock(spec=Request)
-    response = await plugin.register_session(request)
-    import json
-    sid = json.loads(response.body)['sid']
+    data = await plugin.register_session(request)
+    sid = data['sid']
 
     # Submit pilot
     request.path_params = {"sid": sid}
     request.json = AsyncMock(return_value={"description": {"resource": "local"}})
 
     response = await plugin.pilot_submit(request)
-    
-    assert isinstance(response, JSONResponse)
+
+    assert isinstance(response, dict)
 
 
 @pytest.mark.asyncio
@@ -308,17 +303,16 @@ async def test_plugin_lucid_task_submit(mock_rp):
 
     # Register a session
     request = Mock(spec=Request)
-    response = await plugin.register_session(request)
-    import json
-    sid = json.loads(response.body)['sid']
+    data = await plugin.register_session(request)
+    sid = data['sid']
 
     # Submit task
     request.path_params = {"sid": sid}
     request.json = AsyncMock(return_value={"description": {"executable": "/bin/echo"}})
 
     response = await plugin.task_submit(request)
-    
-    assert isinstance(response, JSONResponse)
+
+    assert isinstance(response, dict)
 
 
 @pytest.mark.asyncio

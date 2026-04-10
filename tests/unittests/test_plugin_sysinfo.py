@@ -13,10 +13,10 @@ def test_plugin_sysinfo_init():
     assert plugin.instance_name == 'sysinfo'
     assert plugin.namespace == '/sysinfo'
 
-    # Check routes
-    routes = [r.path for r in app.router.routes]
-    metric_path = f"{plugin.namespace}/metrics/{{sid}}"
-    assert metric_path in routes
+    # Check direct-dispatch routes
+    route_pats = [p.pattern for _, p, _, _ in app.state.direct_routes]
+    ns = plugin.namespace.lstrip('/')
+    assert any(f'{ns}/metrics/' in p for p in route_pats)
 
 
 def test_sysinfo_provider_basic():

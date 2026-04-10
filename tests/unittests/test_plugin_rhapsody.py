@@ -113,12 +113,13 @@ def test_plugin_rhapsody_init():
     assert plugin.plugin_name == 'rhapsody'
     assert plugin.instance_name == 'rhapsody'
 
-    route_paths = [r.path for r in app.router.routes]
-    assert f'{plugin.namespace}/submit/{{sid}}' in route_paths
-    assert f'{plugin.namespace}/wait/{{sid}}' in route_paths
-    assert f'{plugin.namespace}/task/{{sid}}/{{uid}}' in route_paths
-    assert f'{plugin.namespace}/cancel/{{sid}}/{{uid}}' in route_paths
-    assert f'{plugin.namespace}/cancel_all/{{sid}}' in route_paths
+    route_pats = [p.pattern for _, p, _, _ in app.state.direct_routes]
+    ns = plugin.namespace.lstrip('/')
+    assert any(f'{ns}/submit/' in p for p in route_pats)
+    assert any(f'{ns}/wait/' in p for p in route_pats)
+    assert any(f'{ns}/task/' in p for p in route_pats)
+    assert any(f'{ns}/cancel/' in p for p in route_pats)
+    assert any(f'{ns}/cancel_all/' in p for p in route_pats)
 
 
 def test_plugin_rhapsody_class_attributes():
@@ -654,7 +655,13 @@ def test_rhapsody_client_submit_tasks():
     result = client.submit_tasks(tasks)
     assert isinstance(result, list)
     mock_call = client._http.post.call_args
-    assert "tasks" in mock_call[1]["json"]
+    # Payload may be msgpack (data=) or JSON (json=) depending on availability
+    if "json" in mock_call[1]:
+        assert "tasks" in mock_call[1]["json"]
+    else:
+        import msgpack
+        payload = msgpack.unpackb(mock_call[1]["data"], raw=False)
+        assert "tasks" in payload
 
 
 def test_rhapsody_client_wait_tasks():

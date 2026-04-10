@@ -69,17 +69,17 @@ def test_plugin_add_route_post():
     async def test_handler():
         return {"status": "ok"}
 
-    initial_route_count = len(app.router.routes)
+    initial_count = len(app.state.direct_routes)
     plugin.add_route_post("/test", test_handler)
 
-    # Verify a new route was added
-    assert len(app.router.routes) == initial_route_count + 1
+    # Verify a new direct-dispatch route was added
+    assert len(app.state.direct_routes) == initial_count + 1
 
-    # Get the last added route
-    new_route = app.router.routes[-1]
-    assert isinstance(new_route, Route)
-    assert new_route.path == f"{plugin.namespace}/test"
-    assert "POST" in new_route.methods
+    # Check the last added route
+    method, pattern, param_names, handler = app.state.direct_routes[-1]
+    assert method == "POST"
+    assert pattern.match(f"{plugin.namespace}/test")
+    assert handler is test_handler
 
 
 def test_plugin_add_route_get():
@@ -92,17 +92,17 @@ def test_plugin_add_route_get():
     async def test_handler():
         return {"status": "ok"}
 
-    initial_route_count = len(app.router.routes)
+    initial_count = len(app.state.direct_routes)
     plugin.add_route_get("/test", test_handler)
 
-    # Verify a new route was added
-    assert len(app.router.routes) == initial_route_count + 1
+    # Verify a new direct-dispatch route was added
+    assert len(app.state.direct_routes) == initial_count + 1
 
-    # Get the last added route
-    new_route = app.router.routes[-1]
-    assert isinstance(new_route, Route)
-    assert new_route.path == f"{plugin.namespace}/test"
-    assert "GET" in new_route.methods
+    # Check the last added route
+    method, pattern, param_names, handler = app.state.direct_routes[-1]
+    assert method == "GET"
+    assert pattern.match(f"{plugin.namespace}/test")
+    assert handler is test_handler
 
 
 def test_plugin_route_path_normalization():
@@ -117,17 +117,17 @@ def test_plugin_route_path_normalization():
 
     # Add route with leading slash
     plugin.add_route_post("/test", test_handler)
-    route1 = app.router.routes[-1]
+    _, pattern1, _, _ = app.state.direct_routes[-1]
 
-    # Verify no double slashes
-    assert "//" not in route1.path
+    # Verify no double slashes in the regex pattern source
+    assert "//" not in pattern1.pattern
 
     # Add route without leading slash
     plugin.add_route_get("test2", test_handler)
-    route2 = app.router.routes[-1]
+    _, pattern2, _, _ = app.state.direct_routes[-1]
 
     # Verify no double slashes
-    assert "//" not in route2.path
+    assert "//" not in pattern2.pattern
 
 
 def test_plugin_multiple_routes():
@@ -146,18 +146,18 @@ def test_plugin_multiple_routes():
     async def handler3():
         return {"endpoint": "3"}
 
-    initial_route_count = len(app.router.routes)
+    initial_count = len(app.state.direct_routes)
 
     plugin.add_route_post("/endpoint1", handler1)
     plugin.add_route_get("/endpoint2", handler2)
     plugin.add_route_post("/endpoint3", handler3)
 
     # Verify all routes were added
-    assert len(app.router.routes) == initial_route_count + 3
+    assert len(app.state.direct_routes) == initial_count + 3
 
-    # Verify all routes have the correct namespace
-    for route in app.router.routes[-3:]:
-        assert route.path.startswith(plugin.namespace)
+    # Verify all routes match the plugin namespace
+    for _, pattern, _, _ in app.state.direct_routes[-3:]:
+        assert plugin.namespace.lstrip('/') in pattern.pattern
 
 
 @pytest.mark.asyncio
@@ -171,10 +171,7 @@ async def test_plugin_session_management():
 
     # Mock request for registration
     request = Mock(spec=Request)
-    response = await plugin.register_session(request)
-    
-    import json
-    data = json.loads(response.body)
+    data = await plugin.register_session(request)
     sid = data['sid']
     assert sid in plugin._sessions
     assert isinstance(plugin._sessions[sid], PluginSession)
@@ -219,10 +216,8 @@ async def test_plugin_health_check():
     await plugin.register_session(request)
 
     # Call health check
-    response = await plugin.health_check(request)
+    data = await plugin.health_check(request)
 
-    import json
-    data = json.loads(response.body)
     assert data['status'] == 'healthy'
     assert data['plugin'] == 'test_plugin'
     assert data['active_sessions'] == 1
@@ -244,10 +239,7 @@ async def test_plugin_session_ttl_expiration():
 
     # Register session
     request = Mock(spec=Request)
-    response = await plugin.register_session(request)
-
-    import json
-    data = json.loads(response.body)
+    data = await plugin.register_session(request)
     sid = data['sid']
 
     # Session should be accessible immediately
@@ -311,10 +303,7 @@ async def test_plugin_ui_config_endpoint():
 
     # Call ui_config endpoint
     request = Mock(spec=Request)
-    response = await plugin.get_ui_config(request)
-
-    import json
-    data = json.loads(response.body)
+    data = await plugin.get_ui_config(request)
 
     # Verify response structure
     assert 'plugin_name' in data
@@ -343,10 +332,7 @@ async def test_plugin_ui_config_with_custom_config():
     plugin = CustomPlugin(app, "custom")
 
     request = Mock(spec=Request)
-    response = await plugin.get_ui_config(request)
-
-    import json
-    data = json.loads(response.body)
+    data = await plugin.get_ui_config(request)
 
     assert data['plugin_name'] == 'custom'
     assert data['ui']['icon'] == '🔧'

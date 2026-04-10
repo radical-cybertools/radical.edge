@@ -44,7 +44,8 @@ def _noop_arg(x):
 
 # ---- output helper ---------------------------------------------------------
 
-fout = open("rhapsody_throughput.out", "w")
+fout = open("rhapsody_throughput.out", "a")
+fout.write("\n==============================================================\n")
 
 
 def out(data=''):
@@ -128,7 +129,7 @@ async def main():
     else:
         batch_sizes = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024,
                        2048, 4096, 8192,
-                       # 16384, 32768, 65536
+                       16384, 32768, 65536
                        ]
 
     # ---- discover bridge / edge ---
@@ -154,7 +155,7 @@ async def main():
         'edge',
         bridge_url=bridge_url,
         edge_name=edge_name,
-        backends=['dragon_v3'],
+        backends=['concurrent'],
     )
     backend = await backend   # async init (registers remote session)
 

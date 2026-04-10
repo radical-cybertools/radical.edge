@@ -12,13 +12,16 @@ import threading
 from importlib.metadata import entry_points
 from typing import Any, Dict, Optional
 
-import httpx
+import urllib.parse
+
+import msgpack
 import websockets
 from websockets import exceptions as ws_exc
 
-from fastapi import FastAPI
-from httpx import ASGITransport
+from fastapi import FastAPI, HTTPException
+from starlette.responses import JSONResponse
 
+import radical.prof as rprof
 import radical.edge.logging_config  # noqa: F401 # pylint: disable=unused-import
 
 from radical.edge.plugin_base import Plugin
@@ -30,6 +33,48 @@ from radical.edge.models import (
 from radical.edge.ui_schema import ui_config_to_dict
 
 log = logging.getLogger("radical.edge")
+
+
+# ---------------------------------------------------------------------------
+# RequestShim — lightweight stand-in for starlette.requests.Request
+# ---------------------------------------------------------------------------
+
+class RequestShim:
+    """Lightweight adapter for starlette ``Request``.
+
+    Provides the three interfaces that every plugin handler uses:
+    ``path_params``, ``query_params``, and ``await .json()`` / ``await .body()``.
+    Encoding-agnostic: stores raw bytes, decodes lazily based on content_type.
+    """
+
+    def __init__(self, path_params : dict,
+                       query_params: dict,
+                       body_bytes  : bytes,
+                       content_type: str = 'application/json'):
+        self.path_params  = path_params
+        self.query_params = query_params
+        self.content_type = content_type
+        self._body        = body_bytes
+        self._decoded     = None
+
+    async def body(self) -> bytes:
+        """Raw body bytes (matches ``Request.body()``)."""
+        return self._body
+
+    async def json(self) -> dict:
+        """Parse body into a Python dict (matches ``Request.json()``).
+
+        Content-type-aware: JSON or msgpack based on Content-Type header.
+        """
+        if self._decoded is not None:
+            return self._decoded
+
+        ct = self.content_type or 'application/json'
+        if 'msgpack' in ct:
+            self._decoded = msgpack.unpackb(self._body, raw=False)
+        else:
+            self._decoded = json.loads(self._body) if self._body else {}
+        return self._decoded
 
 
 def _resolve_plugin_names(requested: list, available: list) -> list:
@@ -109,13 +154,19 @@ class EdgeService:
         self._app.state.edge_service = self
         self._tunnel: bool = tunnel
         self._ws: Optional[websockets.WebSocketClientProtocol] = None
-        self._http_client: Optional[httpx.AsyncClient] = None
         self._send_lock: asyncio.Lock = asyncio.Lock()
         self._stop_event: asyncio.Event = asyncio.Event()
         self._running_task: Optional[asyncio.Task] = None
         self._thread: Optional[threading.Thread] = None
+        self._direct_routes: list = []
+        self._prof = rprof.Profiler('edge', ns='radical.edge')
 
         self._load_plugins()
+
+        # Collect direct-dispatch routes registered by all plugins
+        self._direct_routes = list(
+            getattr(self._app.state, 'direct_routes', [])
+        )
 
 
     @property
@@ -162,72 +213,135 @@ class EdgeService:
             except Exception:
                 log.exception("[Edge] Failed to load plugin: %s", pname)
 
-    async def _handle_request(self, msg: RequestMessage) -> None:
-        """
-        Forward messages received from Bridge to local internal API.
+    # -- direct dispatch ------------------------------------------------------
 
-        Args:
-            msg: Validated request message from bridge.
+    def _match_route(self, method: str, path: str):
+        """Match *method* + *path* against the direct-dispatch route table.
+
+        Returns ``(handler, path_params)`` or ``(None, None)``.
+        """
+        for rt_method, pattern, param_names, handler in self._direct_routes:
+            if rt_method == method:
+                m = pattern.match(path)
+                if m:
+                    return handler, dict(zip(param_names, m.groups()))
+        return None, None
+
+    @staticmethod
+    def _error_response(req_id: str, exc: Exception) -> ResponseMessage:
+        """Build a ``ResponseMessage`` from an exception."""
+        if isinstance(exc, HTTPException):
+            body   = json.dumps({"detail": exc.detail})
+            status = exc.status_code
+        else:
+            body   = json.dumps({"error": "edge-invoke-failed",
+                                 "detail": str(exc)})
+            status = 502
+        return ResponseMessage(
+            req_id=req_id, status=status,
+            headers={"content-type": "application/json"},
+            is_binary=False, body=body)
+
+    async def _handle_request(self, msg: RequestMessage) -> None:
+        """Dispatch a bridge-forwarded request directly to the plugin handler.
+
+        Bypasses the ASGI/FastAPI stack entirely — route matching and request
+        parsing are handled inline via ``_match_route`` and ``RequestShim``.
         """
         req_id = msg.req_id
+        prof   = self._prof
         try:
+            prof.prof('edge_recv', uid=req_id,
+                      msg='%s %s' % (msg.method, msg.path))
+
             log.debug("[Edge] [req:%s] Handling %s %s", req_id, msg.method, msg.path)
 
-            # Rehydrate body
-            content: Optional[bytes] = None
-            if msg.body is not None:
-                if msg.is_binary:
-                    content = base64.b64decode(msg.body)
-                else:
-                    content = msg.body.encode("utf-8")
+            # Split query string from path
+            if '?' in msg.path:
+                path, qs = msg.path.split('?', 1)
+                query_params = dict(urllib.parse.parse_qsl(qs))
+            else:
+                path         = msg.path
+                query_params = {}
 
-            # Call the local Edge FastAPI server (in-memory)
-            # URL host doesn't matter for ASGITransport, but must be valid URL
-            url = f"http://local{msg.path}"
+            # Match route
+            prof.prof('edge_route', uid=req_id)
+            handler, path_params = self._match_route(msg.method, path)
+            if handler is None:
+                log.error("[Edge] [req:%s] No route for %s %s",
+                          req_id, msg.method, path)
+                response = ResponseMessage(
+                    req_id=req_id, status=404,
+                    headers={"content-type": "application/json"},
+                    is_binary=False,
+                    body=json.dumps(
+                        {"detail": f"No route: {msg.method} {path}"}))
+                async with self._send_lock:
+                    if self._ws:
+                        await self._ws.send(response.model_dump_json())
+                return
 
-            resp = await self._http_client.request(
-                msg.method, url,
-                content=content,
-                headers=msg.headers,
-                timeout=40.0
-            )
+            # Build RequestShim
+            prof.prof('edge_shim', uid=req_id)
+            if isinstance(msg.body, bytes):
+                body_bytes = msg.body                    # binary WS frame
+            elif msg.is_binary and msg.body:
+                body_bytes = base64.b64decode(msg.body)  # base64 fallback
+            elif msg.body:
+                body_bytes = msg.body.encode('utf-8')
+            else:
+                body_bytes = b''
 
-            resp_is_binary = False
+            content_type = (msg.headers or {}).get(
+                'content-type', 'application/json')
+            shim = RequestShim(path_params, query_params,
+                               body_bytes, content_type)
+
+            # Dispatch to handler
+            prof.prof('edge_handler', uid=req_id)
             try:
-                # Try text first
-                out_body = resp.text
-            except Exception:
-                # Fallback to binary
-                out_body = base64.b64encode(resp.content).decode("ascii")
-                resp_is_binary = True
+                result = await handler(shim)
+            except HTTPException as e:
+                result = JSONResponse({"detail": e.detail},
+                                      status_code=e.status_code)
+            except Exception as e:
+                log.exception("[Edge] [req:%s] Handler error", req_id)
+                result = JSONResponse(
+                    {"error": "edge-invoke-failed", "detail": str(e)},
+                    status_code=500)
+            prof.prof('edge_handler_done', uid=req_id)
+
+            # Build ResponseMessage — handlers return plain dicts/lists
+            # (fast path) or JSONResponse (error path).
+            prof.prof('edge_serialize', uid=req_id)
+            if not hasattr(result, 'status_code'):
+                resp_body = json.dumps(result)
+                status    = 200
+                headers   = {"content-type": "application/json"}
+            else:
+                resp_body = result.body.decode('utf-8')
+                status    = result.status_code
+                headers   = dict(result.headers)
 
             response = ResponseMessage(
-                req_id=req_id,
-                status=resp.status_code,
-                headers=dict(resp.headers),
-                is_binary=resp_is_binary,
-                body=out_body
-            )
+                req_id    = req_id,
+                status    = status,
+                headers   = headers,
+                is_binary = False,
+                body      = resp_body)
 
-            log.debug("[Edge] [req:%s] Response status=%d", req_id, resp.status_code)
+            log.debug("[Edge] [req:%s] Response status=%d",
+                      req_id, status)
 
+            prof.prof('edge_ws_send', uid=req_id)
             async with self._send_lock:
                 if self._ws:
                     await self._ws.send(response.model_dump_json())
+            prof.prof('edge_ws_sent', uid=req_id, state=str(status))
 
         except Exception as e:
             log.exception("[Edge] [req:%s] Error handling request", req_id)
-
-            error_body = {"error": "edge-invoke-failed", "detail": str(e)}
-
-            response = ResponseMessage(
-                req_id=req_id,
-                status=502,
-                headers={"content-type": "application/json"},
-                is_binary=False,
-                body=json.dumps(error_body)
-            )
-
+            response = self._error_response(req_id, e)
             async with self._send_lock:
                 if self._ws:
                     await self._ws.send(response.model_dump_json())
@@ -320,159 +434,157 @@ class EdgeService:
             log.info("[Edge] Relay active; using %s", self._bridge_url)
         # ── End relay setup ───────────────────────────────────────────────────
 
-        transport = ASGITransport(app=self._app)
         while not self._stop_event.is_set():
             try:
-                async with httpx.AsyncClient(transport=transport,
-                                             base_url="http://local") as http_client:
-                    self._http_client = http_client
+                # For the ws connect, we change http(s) to ws(s)
+                if self._bridge_url.startswith("https://"):
+                    ws_url = "wss://" + self._bridge_url[len("https://"):]
+                elif self._bridge_url.startswith("http://"):
+                    ws_url = "ws://" + self._bridge_url[len("http://"):]
+                else:
+                    ws_url = self._bridge_url
 
+                # remove trailing slashes
+                ws_url = ws_url.rstrip("/")
+                if not ws_url.endswith("/register"):
+                    ws_url += "/register"
+
+                # Determine if we need SSL
+                ssl_ctx = None
+                if ws_url.startswith("wss://"):
+                    ssl_ctx = ssl.create_default_context()
+                    ssl_ctx.check_hostname = False
+                    ssl_ctx.verify_mode = ssl.CERT_NONE
+                    certfile = os.environ.get("RADICAL_BRIDGE_CERT")
+                    if certfile and os.path.exists(certfile):
+                        ssl_ctx.load_verify_locations(certfile)
+
+                async with websockets.connect(ws_url,
+                                              ssl=ssl_ctx,
+                                              ping_interval=PING_INTERVAL,
+                                              ping_timeout=PING_TIMEOUT,
+                                              close_timeout=2,
+                                              max_size=10 * 1024 * 1024,
+                                              compression='deflate',
+                                              ) as ws:
+
+                    self._ws = ws
+                    log.info("[Edge] Connected to %s", self._bridge_url)
+                    backoff = 0.5  # Reset backoff on success
+
+                    # Register edge + all plugins in a single message
+                    async with self._send_lock:
+                        plugins_data = {}
+                        for pname, plugin in self._plugins.items():
+                            ui_module_content = None
+                            ui_module_path = getattr(plugin.__class__, 'ui_module', None)
+                            if ui_module_path and os.path.isfile(ui_module_path):
+                                try:
+                                    with open(ui_module_path, encoding='utf-8') as f:
+                                        ui_module_content = f.read()
+                                except Exception:
+                                    log.warning("[Edge] Could not read ui_module for %s: %s",
+                                                pname, ui_module_path)
+                            plugins_data[pname] = {
+                                "type": pname,
+                                "namespace": f"/{self._name}{plugin.namespace}",
+                                "version": getattr(plugin, 'version', '0.0.1'),
+                                "enabled": plugin.is_enabled(),
+                                "ui_config": ui_config_to_dict(
+                                    getattr(plugin, 'ui_config', None)
+                                ),
+                                "ui_module": ui_module_content,
+                            }
+
+                        reg = RegisterMessage(
+                            edge_name=self._name,
+                            endpoint={"type": "radical.edge"},
+                            plugins=plugins_data,
+                        )
+                        await ws.send(reg.model_dump_json())
+
+                    # Processing Loop — use asyncio.wait so the loop wakes
+                    # immediately on either a new message or stop signal,
+                    # eliminating the 1-second idle timeout overhead.
+                    _recv_task = asyncio.ensure_future(ws.recv())
+                    _stop_fut  = asyncio.ensure_future(self._stop_event.wait())
                     try:
-                        # For the ws connect, we change http(s) to ws(s)
-                        if self._bridge_url.startswith("https://"):
-                            ws_url = "wss://" + self._bridge_url[len("https://"):]
-                        elif self._bridge_url.startswith("http://"):
-                            ws_url = "ws://" + self._bridge_url[len("http://"):]
-                        else:
-                            ws_url = self._bridge_url
+                        while not self._stop_event.is_set():
+                            done, _ = await asyncio.wait(
+                                {_recv_task, _stop_fut},
+                                return_when=asyncio.FIRST_COMPLETED)
 
-                        # remove trailing slashes
-                        ws_url = ws_url.rstrip("/")
-                        if not ws_url.endswith("/register"):
-                            ws_url += "/register"
+                            if _stop_fut in done:
+                                _recv_task.cancel()
+                                break
 
-                        # Determine if we need SSL
-                        ssl_ctx = None
-                        if ws_url.startswith("wss://"):
-                            ssl_ctx = ssl.create_default_context()
-                            ssl_ctx.check_hostname = False
-                            ssl_ctx.verify_mode = ssl.CERT_NONE
-                            certfile = os.environ.get("RADICAL_BRIDGE_CERT")
-                            if certfile and os.path.exists(certfile):
-                                ssl_ctx.load_verify_locations(certfile)
-
-                        async with websockets.connect(ws_url,
-                                                      ssl=ssl_ctx,
-                                                      ping_interval=PING_INTERVAL,
-                                                      ping_timeout=PING_TIMEOUT,
-                                                      close_timeout=2,
-                                                      max_size=10 * 1024 * 1024,
-                                                      compression='deflate',
-                                                      ) as ws:
-
-                            self._ws = ws
-                            log.info("[Edge] Connected to %s", self._bridge_url)
-                            backoff = 0.5  # Reset backoff on success
-
-                            # Register edge + all plugins in a single message
-                            async with self._send_lock:
-                                plugins_data = {}
-                                for pname, plugin in self._plugins.items():
-                                    ui_module_content = None
-                                    ui_module_path = getattr(plugin.__class__, 'ui_module', None)
-                                    if ui_module_path and os.path.isfile(ui_module_path):
-                                        try:
-                                            with open(ui_module_path, encoding='utf-8') as f:
-                                                ui_module_content = f.read()
-                                        except Exception:
-                                            log.warning("[Edge] Could not read ui_module for %s: %s",
-                                                        pname, ui_module_path)
-                                    plugins_data[pname] = {
-                                        "type": pname,
-                                        "namespace": f"/{self._name}{plugin.namespace}",
-                                        "version": getattr(plugin, 'version', '0.0.1'),
-                                        "enabled": plugin.is_enabled(),
-                                        "ui_config": ui_config_to_dict(
-                                            getattr(plugin, 'ui_config', None)
-                                        ),
-                                        "ui_module": ui_module_content,
-                                    }
-
-                                reg = RegisterMessage(
-                                    edge_name=self._name,
-                                    endpoint={"type": "radical.edge"},
-                                    plugins=plugins_data,
-                                )
-                                await ws.send(reg.model_dump_json())
-
-                            # Processing Loop — use asyncio.wait so the loop wakes
-                            # immediately on either a new message or stop signal,
-                            # eliminating the 1-second idle timeout overhead.
-                            _recv_task = asyncio.ensure_future(ws.recv())
-                            _stop_fut  = asyncio.ensure_future(self._stop_event.wait())
+                            # _recv_task completed — retrieve result
                             try:
-                                while not self._stop_event.is_set():
-                                    done, _ = await asyncio.wait(
-                                        {_recv_task, _stop_fut},
-                                        return_when=asyncio.FIRST_COMPLETED)
+                                raw_msg = _recv_task.result()
+                            except websockets.exceptions.ConnectionClosed:
+                                if self._stop_event.is_set():
+                                    _stop_fut.cancel()
+                                    break
+                                log.info("[Edge] Connection closed")
+                                _stop_fut.cancel()
+                                raise  # Reconnect
 
-                                    if _stop_fut in done:
-                                        _recv_task.cancel()
-                                        break
+                            # Arm next recv immediately
+                            _recv_task = asyncio.ensure_future(ws.recv())
 
-                                    # _recv_task completed — retrieve result
-                                    try:
-                                        raw_msg = _recv_task.result()
-                                    except websockets.exceptions.ConnectionClosed:
-                                        if self._stop_event.is_set():
-                                            _stop_fut.cancel()
-                                            break
-                                        log.info("[Edge] Connection closed")
-                                        _stop_fut.cancel()
-                                        raise  # Reconnect
+                            # Binary WS frame → msgpack; text → JSON
+                            if isinstance(raw_msg, bytes):
+                                data = msgpack.unpackb(raw_msg, raw=False)
+                            else:
+                                data = json.loads(raw_msg)
+                            try:
+                                msg = parse_bridge_message(data)
+                            except ValueError as ve:
+                                log.warning("[Edge] Invalid message: %s", ve)
+                                continue
 
-                                    # Arm next recv immediately
-                                    _recv_task = asyncio.ensure_future(ws.recv())
-
-                                    data = json.loads(raw_msg)
-                                    try:
-                                        msg = parse_bridge_message(data)
-                                    except ValueError as ve:
-                                        log.warning("[Edge] Invalid message: %s", ve)
-                                        continue
-
-                                    if isinstance(msg, ErrorMessage):
-                                        log.error("[Edge] Registration error: %s", msg.message)
-                                        self._stop_event.set()
-                                        _recv_task.cancel()
-                                        _stop_fut.cancel()
-                                        return  # Fatal error, stop
-
-                                    if isinstance(msg, PingMessage):
-                                        async with self._send_lock:
-                                            await ws.send('{"type": "pong"}')
-                                        continue
-
-                                    if isinstance(msg, ShutdownMessage):
-                                        log.info("[Edge] Shutdown requested: %s", msg.reason)
-                                        self._stop_event.set()
-                                        _recv_task.cancel()
-                                        _stop_fut.cancel()
-                                        return
-
-                                    if isinstance(msg, RequestMessage):
-                                        asyncio.create_task(self._handle_request(msg))
-
-                                    if isinstance(msg, TopologyMessage):
-                                        asyncio.create_task(self._handle_topology(msg))
-                            finally:
+                            if isinstance(msg, ErrorMessage):
+                                log.error("[Edge] Registration error: %s", msg.message)
+                                self._stop_event.set()
                                 _recv_task.cancel()
                                 _stop_fut.cancel()
-                                await asyncio.gather(
-                                    _recv_task, _stop_fut,
-                                    return_exceptions=True)
+                                return  # Fatal error, stop
 
-                    except (ws_exc.ConnectionClosed, OSError) as e:
-                        if self._stop_event.is_set():
-                            break  # no reconnect
+                            if isinstance(msg, PingMessage):
+                                async with self._send_lock:
+                                    await ws.send('{"type": "pong"}')
+                                continue
 
-                        # Add jitter to backoff to prevent thundering herd
-                        jitter = backoff * JITTER_FACTOR * random.random()
-                        sleep_time = backoff + jitter
-                        log.warning("[Edge] Connection lost: %s. Reconnecting in %.1fs...",
-                                    e, sleep_time)
-                        await asyncio.sleep(sleep_time)
-                        backoff = min(backoff * BACKOFF_FACTOR, MAX_BACKOFF)
+                            if isinstance(msg, ShutdownMessage):
+                                log.info("[Edge] Shutdown requested: %s", msg.reason)
+                                self._stop_event.set()
+                                _recv_task.cancel()
+                                _stop_fut.cancel()
+                                return
+
+                            if isinstance(msg, RequestMessage):
+                                asyncio.create_task(self._handle_request(msg))
+
+                            if isinstance(msg, TopologyMessage):
+                                asyncio.create_task(self._handle_topology(msg))
+                    finally:
+                        _recv_task.cancel()
+                        _stop_fut.cancel()
+                        await asyncio.gather(
+                            _recv_task, _stop_fut,
+                            return_exceptions=True)
+
+            except (ws_exc.ConnectionClosed, OSError) as e:
+                if self._stop_event.is_set():
+                    break  # no reconnect
+
+                # Add jitter to backoff to prevent thundering herd
+                jitter = backoff * JITTER_FACTOR * random.random()
+                sleep_time = backoff + jitter
+                log.warning("[Edge] Connection lost: %s. Reconnecting in %.1fs...",
+                            e, sleep_time)
+                await asyncio.sleep(sleep_time)
+                backoff = min(backoff * BACKOFF_FACTOR, MAX_BACKOFF)
 
             except Exception as e:
                 # Fatal errors set the stop event, so check that first
@@ -485,6 +597,7 @@ class EdgeService:
 
     def stop(self):
         """Signal the service to stop."""
+        self._prof.close()
         self._stop_event.set()
         if self._running_task:
             self._running_task.cancel()

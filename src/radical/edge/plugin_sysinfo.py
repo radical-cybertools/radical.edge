@@ -21,7 +21,6 @@ from typing import Dict, List, Any
 
 from fastapi import FastAPI
 from starlette.requests import Request
-from starlette.responses import JSONResponse
 
 from .plugin_base import Plugin
 from .client import PluginClient
@@ -590,11 +589,11 @@ class PluginSysInfo(Plugin):
         """
         return SysInfoSession(sid, self._provider)
 
-    async def homedir_endpoint(self, request: Request) -> JSONResponse:
+    async def homedir_endpoint(self, request: Request) -> dict:
         """Return the home directory of the edge-side process."""
-        return JSONResponse({'homedir': os.path.expanduser('~')})
+        return {'homedir': os.path.expanduser('~')}
 
-    async def get_metrics_endpoint(self, request: Request) -> JSONResponse:
+    async def get_metrics_endpoint(self, request: Request) -> dict:
         """
         Return current system metrics for the specified session.
         """

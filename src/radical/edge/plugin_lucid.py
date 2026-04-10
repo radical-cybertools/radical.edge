@@ -9,7 +9,6 @@ __license__   = 'MIT'
 from fastapi import FastAPI
 
 from starlette.requests  import Request
-from starlette.responses import JSONResponse
 
 import asyncio
 
@@ -184,7 +183,7 @@ class PluginLucid(Plugin):
         self.add_route_post('task_submit/{sid}', self.task_submit)
         self.add_route_get('task_wait/{sid}/{tid}', self.task_wait)
 
-    async def pilot_submit(self, request: Request) -> JSONResponse:
+    async def pilot_submit(self, request: Request) -> dict:
         """
         Submit a pilot to the specified LucidSession instance.
 
@@ -202,7 +201,7 @@ class PluginLucid(Plugin):
 
         return await self._forward(sid, LucidSession.pilot_submit, desc)
 
-    async def task_submit(self, request: Request) -> JSONResponse:
+    async def task_submit(self, request: Request) -> dict:
         """
         Submit a task to the specified LucidSession instance.
 
@@ -220,7 +219,7 @@ class PluginLucid(Plugin):
 
         return await self._forward(sid, LucidSession.task_submit, desc)
 
-    async def task_wait(self, request: Request) -> JSONResponse:
+    async def task_wait(self, request: Request) -> dict:
         """
         Wait for a task to complete in the specified LucidSession instance.
 
