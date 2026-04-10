@@ -14,7 +14,7 @@ overhead measurement.
 Usage:
   python examples/example_rhapsody_individual.py [n_tasks] [batch_window]
 
-  Default: 8192 tasks, 0.1 s batch window (0 = no batching)
+  Default: 8192 tasks, 0.05 s batch window (0 = no batching)
 """
 
 import asyncio
@@ -33,7 +33,7 @@ def _noop():
 async def main():
 
     n_tasks      = int(sys.argv[1])   if len(sys.argv) > 1 else 8192
-    batch_window = float(sys.argv[2]) if len(sys.argv) > 2 else 0.1
+    batch_window = float(sys.argv[2]) if len(sys.argv) > 2 else 0.05
 
     # ---- discover bridge / edge ---
     bridge_url = os.environ.get('RADICAL_BRIDGE_URL',

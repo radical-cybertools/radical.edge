@@ -25,8 +25,8 @@ log = logging.getLogger("radical.edge")
 TERMINAL_STATES    = {'DONE', 'FAILED', 'CANCELED', 'COMPLETED'}
 WATCH_CONCURRENCY  = 64
 WS_PAYLOAD_LIMIT   = 8 * 1024 * 1024   # target max per batch (conservative)
-NOTIFY_BATCH_SIZE  = 256               # max tasks per bulk notification
-NOTIFY_BATCH_WINDOW = 0.1              # seconds to accumulate before flush
+NOTIFY_BATCH_SIZE   = 256              # max tasks per bulk notification
+NOTIFY_BATCH_WINDOW = 0.05            # seconds to accumulate before flush
 
 # Guard optional dependencies
 try:
