@@ -143,7 +143,7 @@ class RhapsodySession(PluginSession):
 
             # Register state-change callbacks for intermediate notifications
             self._notified_states: dict[str, str] = {}
-            self._notified_lock = threading.Lock()
+            self._notified_lock = asyncio.Lock()
             for b in backends:
                 if hasattr(b, 'register_callback'):
                     orig = getattr(b, '_callback_func', None)
