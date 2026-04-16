@@ -1774,13 +1774,15 @@
           const t = await res.text();
           const errMsg = `HTTP ${res.status}: ${t}`;
 
-          // Show toast for HTTP errors
-          if (res.status >= 500) {
-            showToast('Server Error', `${path}: ${errMsg}`, 'error');
-          } else if (res.status === 404) {
-            showToast('Not Found', `${path}: Resource not found`, 'warning');
-          } else if (res.status === 410) {
-            showToast('Session Expired', `${path}: Session has expired`, 'warning');
+          // Show toast for HTTP errors (unless caller opts out)
+          if (!opts.quiet) {
+            if (res.status >= 500) {
+              showToast('Server Error', `${path}: ${errMsg}`, 'error');
+            } else if (res.status === 404) {
+              showToast('Not Found', `${path}: Resource not found`, 'warning');
+            } else if (res.status === 410) {
+              showToast('Session Expired', `${path}: Session has expired`, 'warning');
+            }
           }
 
           throw new Error(errMsg);
@@ -2090,21 +2092,22 @@
       return '<span class="badge badge-orange" style="font-size:.65rem;padding:1px 5px;vertical-align:middle;margin-left:4px;">⏳</span>';
     }
 
+    const BRIDGE_EDGE_NAME = 'bridge';
+
     function buildSidebar(edges) {
       const el = document.getElementById('edgeTree');
 
-      // Build children map based on dot-separated names (same logic as renderHierarchy)
-      const edgeNames = Object.keys(edges);
+      // ── helpers ──────────────────────────────────────────────
+
+      // Build children map based on dot-separated edge names
+      const edgeNames = Object.keys(edges).filter(n => n !== BRIDGE_EDGE_NAME);
       const children = {}; // parentName -> [childNames]
       const topLevel = [];
 
-      // Sort names by length so we process parents before children
       const sortedNames = edgeNames.sort((a, b) => a.split('.').length - b.split('.').length);
-
       sortedNames.forEach(ename => {
         const parts = ename.split('.');
         if (parts.length > 1) {
-          // Find longest existing prefix as parent
           let parentFound = false;
           for (let i = parts.length - 1; i >= 1; i--) {
             const prefix = parts.slice(0, i).join('.');
@@ -2121,13 +2124,47 @@
         }
       });
 
+      function renderPluginList(ename, plugins, pluginNames) {
+        let html = '';
+        for (const pname of pluginNames) {
+          const pid = `${ename}__${pname}`;
+          const icon = pluginIcon(pname, ename);
+          const tasks = (taskRegistry[ename] && taskRegistry[ename][pname]) || {};
+          const taskKeys = Object.keys(tasks);
+
+          if (taskKeys.length === 0) {
+            html += `<li class="tree-item plugin" id="nav-${pid}"
+                     onclick="showPluginPage('${ename}','${pname}')">
+                   <span class="icon">${icon}</span> ${pname}
+                 </li>`;
+          } else {
+            html += `<details id="sidebar-plugin-${pid}">
+              <summary style="display:list-item; list-style-position:inside; cursor:pointer;" class="tree-item plugin"
+                       onclick="showPluginPage('${ename}','${pname}')">
+                 <span style="display:inline-flex; align-items:center;"><span class="icon">${icon}</span> ${pname}</span>
+              </summary>
+              <ul class="tree" style="margin-top:2px; padding-left:8px; border-left:1px dashed var(--border); margin-left:8px;">`;
+            for (const [tid, tinfo] of Object.entries(tasks)) {
+              const short = tid.length > 10 ? tid.slice(0, 8) + '…' : tid;
+              const badge = taskStateBadge(tinfo.state);
+              html += `<li class="tree-item" style="padding-left:12px; font-size:0.8rem; opacity:0.9;"
+                       onclick="showTaskEntry('${ename}','${pname}','${tid}')">
+                     ${badge} <code style="font-size:0.75rem;">${short}</code>
+                   </li>`;
+            }
+            html += `</ul></details>`;
+          }
+        }
+        return html;
+      }
+
       function renderEdgeSidebar(ename, depth = 0) {
         const edata = edges[ename];
         const plugins = edata.plugins || {};
         const pluginNames = Object.keys(plugins).filter(p => plugins[p].enabled !== false);
         const indent = depth * 12;
         let html = `<details id="sidebar-edge-${ename}">
-          <summary style="display: list-item; list-style-position: inside; padding: 6px 16px; padding-left: ${16 + indent}px; user-select:none; outline:none; font-weight:bold; cursor:pointer; font-size: 0.85rem; color: var(--accent2); transition: background .15s;" onmouseover="this.style.background='var(--bg3)'" onmouseout="this.style.background='transparent'">
+          <summary style="display:list-item; list-style-position:inside; padding:6px 16px; padding-left:${16 + indent}px; user-select:none; outline:none; font-weight:bold; cursor:pointer; font-size:0.85rem; color:var(--accent2); transition:background .15s;" onmouseover="this.style.background='var(--bg3)'" onmouseout="this.style.background='transparent'">
             <span style="display:inline-flex; align-items:center; justify-content:space-between; width:calc(100% - 16px);">
               <span onclick="showPage('bridge'); event.stopPropagation();" style="display:inline-flex; align-items:center; gap:8px;">
                 <span class="icon">💻</span> ${ename}
@@ -2135,54 +2172,20 @@
               <button class="task-cancel-btn" onclick="disconnectEdge(event, '${ename}')" title="Disconnect edge">❌</button>
             </span>
           </summary>
-          <ul class="tree" style="margin-top: 2px; padding-left: 8px; border-left: 1px dashed var(--border); margin-left: ${16 + indent}px;">`;
+          <ul class="tree" style="margin-top:2px; padding-left:8px; border-left:1px dashed var(--border); margin-left:${16 + indent}px;">`;
 
-        // Render plugins under a collapsible "plugins" entry (expanded by default)
         if (pluginNames.length > 0) {
           html += `<li style="list-style:none;"><details id="sidebar-plugins-${ename}" open>
-            <summary style="display: list-item; list-style-position: inside; cursor:pointer; font-size:0.8rem; color:var(--muted); padding:2px 0;">
+            <summary style="display:list-item; list-style-position:inside; cursor:pointer; font-size:0.8rem; color:var(--muted); padding:2px 0;">
               <span style="display:inline-flex; align-items:center; gap:6px;">
                 <span class="icon">🔌</span> plugins (${pluginNames.length})
               </span>
             </summary>
             <ul class="tree" style="margin-top:2px; padding-left:8px; border-left:1px dashed var(--border); margin-left:8px;">`;
-
-          for (const pname of pluginNames) {
-            const pid = `${ename}__${pname}`;
-            const icon = pluginIcon(pname, ename);
-
-            // Add registered tasks under this plugin
-            const tasks = (taskRegistry[ename] && taskRegistry[ename][pname]) || {};
-            const taskKeys = Object.keys(tasks);
-
-            if (taskKeys.length === 0) {
-              html += `<li class="tree-item plugin" id="nav-${pid}"
-                       onclick="showPluginPage('${ename}','${pname}')">
-                     <span class="icon">${icon}</span> ${pname}
-                   </li>`;
-            } else {
-              html += `<details id="sidebar-plugin-${pid}">
-                <summary style="display: list-item; list-style-position: inside; cursor:pointer;" class="tree-item plugin"
-                         onclick="showPluginPage('${ename}','${pname}')">
-                   <span style="display:inline-flex; align-items:center;"><span class="icon">${icon}</span> ${pname}</span>
-                </summary>
-                <ul class="tree" style="margin-top:2px; padding-left:8px; border-left:1px dashed var(--border); margin-left:8px;">`;
-              for (const [tid, tinfo] of Object.entries(tasks)) {
-                const short = tid.length > 10 ? tid.slice(0, 8) + '…' : tid;
-                const badge = taskStateBadge(tinfo.state);
-                html += `<li class="tree-item" style="padding-left:12px; font-size:0.8rem; opacity:0.9;"
-                         onclick="showTaskEntry('${ename}','${pname}','${tid}')">
-                       ${badge} <code style="font-size:0.75rem;">${short}</code>
-                     </li>`;
-              }
-              html += `</ul></details>`;
-            }
-          }
-
+          html += renderPluginList(ename, plugins, pluginNames);
           html += `</ul></details></li>`;
         }
 
-        // Render child edges (at same level as plugins entry)
         if (children[ename]) {
           for (const cname of children[ename]) {
             html += `<li style="list-style:none; margin-left:-8px;">`;
@@ -2195,18 +2198,62 @@
         return html;
       }
 
-      // Preserve open/closed state of all <details> before re-render
+      // ── Preserve open/closed state before re-render ─────────
       const detailsState = new Map();
       el.querySelectorAll('details[id]').forEach(d => detailsState.set(d.id, d.open));
-
-      let html = '';
-      for (const ename of topLevel) {
-        html += renderEdgeSidebar(ename);
+      const navBridge = document.getElementById('nav-bridge');
+      if (navBridge && navBridge.tagName === 'DETAILS') {
+        detailsState.set('nav-bridge', navBridge.open);
       }
-      el.innerHTML = html;
 
-      // Restore state for known entries; brand-new entries keep their rendered default
-      el.querySelectorAll('details[id]').forEach(d => {
+      // ── Build Bridge node (plugins + edges as children) ─────
+      const bridgeOpen = detailsState.has('nav-bridge') ? detailsState.get('nav-bridge') : true;
+      let bridgeHtml = `<details id="nav-bridge" style="display:block;" ${bridgeOpen ? 'open' : ''}>
+        <summary style="display:list-item; list-style-position:inside; padding:6px 16px; user-select:none; outline:none; font-weight:bold; cursor:pointer; font-size:0.85rem; color:var(--accent2); transition:background .15s;" onmouseover="this.style.background='var(--bg3)'" onmouseout="this.style.background='transparent'">
+          <span style="display:inline-flex; align-items:center; justify-content:space-between; width:calc(100% - 16px);">
+            <span onclick="showPage('bridge'); event.stopPropagation();" style="display:inline-flex; align-items:center; gap:8px;">
+              <span class="icon">🌉</span> <span id="bridgeLabel">Bridge</span>
+            </span>
+            <button class="task-cancel-btn" onclick="terminateBridge(event)" title="Terminate bridge">❌</button>
+          </span>
+        </summary>
+        <ul class="tree" style="margin-top:2px; padding-left:8px; border-left:1px dashed var(--border); margin-left:16px;">`;
+
+      // Bridge plugins (in a collapsible folder, same style as edge plugins)
+      const bridgeEdge = edges[BRIDGE_EDGE_NAME];
+      if (bridgeEdge) {
+        const bp = bridgeEdge.plugins || {};
+        const bpNames = Object.keys(bp).filter(p => bp[p].enabled !== false);
+        if (bpNames.length > 0) {
+          bridgeHtml += `<li style="list-style:none; margin-left:-8px;"><details id="sidebar-plugins-${BRIDGE_EDGE_NAME}">
+            <summary style="display:list-item; list-style-position:inside; padding:6px 16px; user-select:none; outline:none; font-weight:bold; cursor:pointer; font-size:0.85rem; color:var(--muted); transition:background .15s;" onmouseover="this.style.background='var(--bg3)'" onmouseout="this.style.background='transparent'">
+              <span style="display:inline-flex; align-items:center; gap:8px;">
+                <span class="icon">🔌</span> plugins (${bpNames.length})
+              </span>
+            </summary>
+            <ul class="tree" style="margin-top:2px; padding-left:8px; border-left:1px dashed var(--border); margin-left:8px;">`;
+          bridgeHtml += renderPluginList(BRIDGE_EDGE_NAME, bp, bpNames);
+          bridgeHtml += `</ul></details></li>`;
+        }
+      }
+
+      // Edge services (nested under Bridge)
+      for (const ename of topLevel) {
+        bridgeHtml += `<li style="list-style:none; margin-left:-8px;">`;
+        bridgeHtml += renderEdgeSidebar(ename, 0);
+        bridgeHtml += `</li>`;
+      }
+
+      bridgeHtml += `</ul></details>`;
+
+      // Replace the nav-bridge element in treeRoot
+      if (navBridge) navBridge.outerHTML = bridgeHtml;
+
+      // Clear edgeTree (edges now live inside Bridge)
+      el.innerHTML = '';
+
+      // Restore open/closed state
+      document.querySelectorAll('#treeRoot details[id], #edgeTree details[id]').forEach(d => {
         if (detailsState.has(d.id)) d.open = detailsState.get(d.id);
       });
     }
@@ -2244,13 +2291,33 @@
         </div>
       </div>`;
 
+      // Bridge plugins card (if any)
+      const bridgeEdge = edges[BRIDGE_EDGE_NAME];
+      if (bridgeEdge) {
+        const allBP = bridgeEdge.plugins || {};
+        const bpNames = Object.keys(allBP).filter(p => allBP[p].enabled !== false);
+        if (bpNames.length > 0) {
+          html += `<div class="card" style="margin-bottom:16px;">
+            <div class="card-title" style="margin-bottom:8px;">Bridge Plugins</div>
+            <div style="display:flex; flex-wrap:wrap; gap:8px;">`;
+          for (const pname of bpNames) {
+            const icon = pluginIcon(pname, BRIDGE_EDGE_NAME);
+            html += `<span class="badge" style="cursor:pointer; padding:4px 10px; font-size:0.85rem;"
+                           onclick="showPluginPage('${BRIDGE_EDGE_NAME}','${pname}')">
+                       ${icon} ${pname}
+                     </span>`;
+          }
+          html += `</div></div>`;
+        }
+      }
+
       // Connected edges card - no global docs button since each edge has its own
       html += `<div class="card">
         <div style="display:flex; align-items:center; gap:8px; margin-bottom:12px;">
           <div class="card-title" style="margin-bottom:0;">Connected Edges</div>
         </div>`;
 
-      const edgeNames = Object.keys(edges).sort();
+      const edgeNames = Object.keys(edges).filter(n => n !== BRIDGE_EDGE_NAME).sort();
       if (edgeNames.length === 0) {
         html += `<div style="color:var(--muted); font-style:italic; padding:12px 0;">
           No edges connected to this bridge.

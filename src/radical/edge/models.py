@@ -79,17 +79,26 @@ class ShutdownMessage(BaseModel):
     reason: str = Field("User requested shutdown", description="Shutdown reason")
 
 
+# ---------------------------------------------------------------------------
+# Bidirectional Messages
+# ---------------------------------------------------------------------------
+
 class TopologyMessage(BaseModel):
-    """Topology update from bridge to edge (edge connect/disconnect)."""
+    """Topology update (used in both directions).
+
+    Bridge -> Edge: ``edges`` contains the full global topology.
+    Edge -> Bridge: ``edges`` contains only the sending edge's entry
+    (the bridge merges it into global state).
+    """
     type: Literal["topology"] = "topology"
-    edges: Dict[str, Any] = Field(default_factory=dict, description="Connected edges and their plugins")
+    edges: Dict[str, Any] = Field(default_factory=dict, description="Edge topology data")
 
 
 # ---------------------------------------------------------------------------
 # Union types for parsing
 # ---------------------------------------------------------------------------
 
-EdgeToBridgeMessage = Union[RegisterMessage, ResponseMessage, NotificationMessage, PongMessage]
+EdgeToBridgeMessage = Union[RegisterMessage, ResponseMessage, NotificationMessage, TopologyMessage, PongMessage]
 BridgeToEdgeMessage = Union[RequestMessage, PingMessage, ErrorMessage, ShutdownMessage, TopologyMessage]
 
 
@@ -97,6 +106,7 @@ _EDGE_MSG_TYPES = {
     "register":     RegisterMessage,
     "response":     ResponseMessage,
     "notification": NotificationMessage,
+    "topology":     TopologyMessage,
     "pong":         PongMessage,
 }
 

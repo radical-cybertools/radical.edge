@@ -6,11 +6,11 @@ __license__   = 'MIT'
 
 
 
-from fastapi import FastAPI
-
-from starlette.requests  import Request
-
 import asyncio
+import os
+
+from fastapi import FastAPI
+from starlette.requests import Request
 
 import radical.pilot as rp
 
@@ -167,6 +167,11 @@ class PluginLucid(Plugin):
         "description": "Radical Pilot session management.",
         "stub_message": "Advanced web interface for Lucid is not yet available."
     }
+
+    @classmethod
+    def is_enabled(cls, app: FastAPI) -> bool:
+        """Lucid loads on compute nodes only (RADICAL Pilot)."""
+        return bool(os.environ.get('SLURM_JOB_ID'))
 
     def __init__(self, app: FastAPI):
         """

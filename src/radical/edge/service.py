@@ -9,7 +9,6 @@ import random
 import ssl
 import socket
 import threading
-from importlib.metadata import entry_points
 from typing import Any, Dict, Optional
 
 import urllib.parse
@@ -24,7 +23,8 @@ from starlette.responses import JSONResponse
 import radical.prof as rprof
 import radical.edge.logging_config  # noqa: F401 # pylint: disable=unused-import
 
-from radical.edge.plugin_base import Plugin
+from radical.edge.plugin_base      import Plugin
+from radical.edge.plugin_host_base import PluginHostBase
 from radical.edge.models import (
     RequestMessage, PingMessage, ErrorMessage, ShutdownMessage, TopologyMessage,
     ResponseMessage, NotificationMessage, RegisterMessage,
@@ -77,45 +77,12 @@ class RequestShim:
         return self._decoded
 
 
-def _resolve_plugin_names(requested: list, available: list) -> list:
-    """Resolve a requested plugin list against the available plugin names.
 
-    Supports prefix matching: 'sys' matches 'sysinfo', 'q' matches 'queue_info'.
-    Exact matches take priority over prefix matches.
-
-    Args:
-        requested: List of tokens from the user, or ['all'].
-        available: Full list of registered plugin names.
-
-    Returns:
-        Ordered list of resolved plugin names.
-
-    Raises:
-        ValueError: If a token matches nothing or is ambiguous.
-    """
-    if requested == ['all']:
-        return list(available)
-
-    result = []
-    for token in requested:
-        if token in available:
-            result.append(token)
-            continue
-        matches = [p for p in available if p.startswith(token)]
-        if not matches:
-            raise ValueError(
-                f"No plugin matches '{token}'. "
-                f"Available: {', '.join(sorted(available))}"
-            )
-        if len(matches) > 1:
-            raise ValueError(
-                f"Ambiguous plugin name '{token}': matches {sorted(matches)}"
-            )
-        result.append(matches[0])
-    return result
+# Re-export for backward compatibility (bridge_plugin_host.py, tests, etc.)
+from radical.edge.plugin_host_base import _resolve_plugin_names  # noqa: F401
 
 
-class EdgeService:
+class EdgeService(PluginHostBase):
     """
     Embedded Radical Edge Service.
 
@@ -152,6 +119,7 @@ class EdgeService:
         self._plugin_filter: list = plugins or ['all']
         self._app.state.edge_name = self._name
         self._app.state.edge_service = self
+        self._app.state.is_bridge    = False
         self._tunnel: bool = tunnel
         self._ws: Optional[websockets.WebSocketClientProtocol] = None
         self._send_lock: asyncio.Lock = asyncio.Lock()
@@ -161,57 +129,17 @@ class EdgeService:
         self._direct_routes: list = []
         self._prof = rprof.Profiler('edge', ns='radical.edge')
 
-        self._load_plugins()
+        self._load_plugins_from_filter(self._plugin_filter)
 
-        # Collect direct-dispatch routes registered by all plugins
-        self._direct_routes = list(
-            getattr(self._app.state, 'direct_routes', [])
-        )
+        # Reference the live list — not a copy — so dynamically registered
+        # plugin routes are visible immediately.
+        self._direct_routes = getattr(self._app.state, 'direct_routes', [])
 
 
     @property
     def bridge_url(self):
         """Get the current Bridge URL."""
         return self._bridge_url
-
-    def _load_plugins(self) -> None:
-        """
-        Load all known and enabled plugins into the service.
-
-        This method:
-        1. Discovers external plugins via 'radical.edge.plugins' entry points
-        2. Instantiates all registered plugins (built-in and external)
-        """
-        # Discover and import external plugins via entry points
-        try:
-            eps = entry_points(group='radical.edge.plugins')
-            for ep in eps:
-                try:
-                    ep.load()  # This imports the module and triggers auto-registration
-                    log.info("[Edge] Discovered external plugin: %s", ep.name)
-                except Exception:
-                    log.exception("[Edge] Failed to load entry point: %s", ep.name)
-        except Exception:
-            log.debug("[Edge] No external plugins found via entry points")
-
-        # Resolve requested plugin list (supports prefix matching)
-        to_load = _resolve_plugin_names(self._plugin_filter, Plugin.get_plugin_names())
-        log.info("[Edge] Loading plugins: %s", to_load)
-
-        # Instantiate resolved plugins
-        for pname in to_load:
-
-            try:
-                pclass = Plugin.get_plugin_class(pname)
-                pinstance = pclass(app=self._app)
-                self._plugins[pname] = pinstance
-                if pinstance.is_enabled():
-                    log.info("[Edge] Loaded plugin: %s", pname)
-                else:
-                    log.info("[Edge] Loaded plugin (disabled): %s", pname)
-
-            except Exception:
-                log.exception("[Edge] Failed to load plugin: %s", pname)
 
     # -- direct dispatch ------------------------------------------------------
 
@@ -377,6 +305,43 @@ class EdgeService:
             except Exception as e:
                 log.warning("[Edge] Plugin %s topology handler failed: %s", pname, e)
 
+    # -- topology announcement (PluginHostBase contract) -----------------------
+
+    async def _announce_topology(self) -> None:
+        """Send a topology message to the bridge over WebSocket.
+
+        Called by ``register_dynamic_plugin`` / ``deregister_dynamic_plugin``
+        after plugin set changes at runtime.
+        """
+        if not self._ws:
+            log.warning("[Edge] Cannot announce topology, not connected")
+            return
+
+        plugins_data = {}
+        for pname, plugin in self._plugins.items():
+            plugins_data[pname] = {
+                'type'     : pname,
+                'namespace': f'/{self._name}{plugin.namespace}',
+                'version'  : getattr(plugin, 'version', '0.0.1'),
+                'enabled'  : True,
+                'ui_config': ui_config_to_dict(
+                    getattr(plugin, 'ui_config', None)),
+            }
+
+        msg = json.dumps({
+            'type' : 'topology',
+            'edges': {self._name: {'plugins': plugins_data}},
+        })
+        async with self._send_lock:
+            try:
+                await self._ws.send(msg)
+                log.info("[Edge] Sent topology (%d plugins)",
+                         len(plugins_data))
+            except Exception as exc:
+                log.warning("[Edge] Failed to send topology: %s", exc)
+
+    # -- notifications --------------------------------------------------------
+
     async def send_notification(self, plugin_name: str, topic: str, data: Dict[str, Any]) -> None:
         """
         Send an unsolicited notification to the bridge to broadcast to UI clients.
@@ -503,7 +468,7 @@ class EdgeService:
                                 "type": pname,
                                 "namespace": f"/{self._name}{plugin.namespace}",
                                 "version": getattr(plugin, 'version', '0.0.1'),
-                                "enabled": plugin.is_enabled(),
+                                "enabled": True,
                                 "ui_config": ui_config_to_dict(
                                     getattr(plugin, 'ui_config', None)
                                 ),
