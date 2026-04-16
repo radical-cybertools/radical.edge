@@ -16,7 +16,6 @@ log = logging.getLogger('radical.edge')
 
 from fastapi import FastAPI, HTTPException
 from starlette.requests import Request
-from starlette.responses import JSONResponse
 
 from .plugin_session_base import PluginSession
 from .plugin_base import Plugin
@@ -377,9 +376,9 @@ class PluginQueueInfo(Plugin):
         result = subprocess.run(['sinfo', '--json'], capture_output=True, timeout=5)
         return result.returncode == 0
 
-    async def is_enabled_endpoint(self, request: Request) -> JSONResponse:
+    async def is_enabled_endpoint(self, request: Request) -> dict:
         """Session-less endpoint: returns {"available": bool} for remote callers."""
-        return JSONResponse({'available': self.is_enabled()})
+        return {'available': self.is_enabled()}
 
     def get_job_allocation(self) -> 'dict | None':
         """Return edge job allocation info, or None if not inside a SLURM job.
@@ -474,7 +473,7 @@ class PluginQueueInfo(Plugin):
         log.debug('[queue_info] get_job_allocation result: %s', alloc)
         return alloc
 
-    async def job_allocation_endpoint(self, request: Request) -> JSONResponse:
+    async def job_allocation_endpoint(self, request: Request) -> dict:
         """Session-less endpoint: returns current edge job allocation info.
 
         Response::
@@ -485,11 +484,11 @@ class PluginQueueInfo(Plugin):
         """
         try:
             alloc = await asyncio.to_thread(self.get_job_allocation)
-            return JSONResponse({'allocation': alloc})
+            return {'allocation': alloc}
         except RuntimeError as exc:
             raise HTTPException(status_code=500, detail=str(exc))
 
-    async def get_info(self, request: Request) -> JSONResponse:
+    async def get_info(self, request: Request) -> dict:
         """Return queue/partition information."""
         data = request.path_params
         sid = data['sid']
@@ -499,7 +498,7 @@ class PluginQueueInfo(Plugin):
         return await self._forward(sid, QueueInfoSession.get_info,
                                    user=user, force=force)
 
-    async def list_jobs(self, request: Request) -> JSONResponse:
+    async def list_jobs(self, request: Request) -> dict:
         """List jobs in a specified queue/partition."""
         data = request.path_params
         sid = data['sid']
@@ -510,7 +509,7 @@ class PluginQueueInfo(Plugin):
         return await self._forward(sid, QueueInfoSession.list_jobs,
                                    queue, user=user, force=force)
 
-    async def list_all_jobs(self, request: Request) -> JSONResponse:
+    async def list_all_jobs(self, request: Request) -> dict:
         """List all jobs for the user across all partitions."""
         data  = request.path_params
         sid   = data['sid']
@@ -520,7 +519,7 @@ class PluginQueueInfo(Plugin):
         return await self._forward(sid, QueueInfoSession.list_all_jobs,
                                    user=user, force=force)
 
-    async def list_allocations(self, request: Request) -> JSONResponse:
+    async def list_allocations(self, request: Request) -> dict:
         """List allocations/projects."""
         data = request.path_params
         sid = data['sid']
@@ -530,7 +529,7 @@ class PluginQueueInfo(Plugin):
         return await self._forward(sid, QueueInfoSession.list_allocations,
                                    user=user, force=force)
 
-    async def cancel_job(self, request: Request) -> JSONResponse:
+    async def cancel_job(self, request: Request) -> dict:
         """Cancel a job by ID."""
         sid    = request.path_params['sid']
         job_id = request.path_params['job_id']

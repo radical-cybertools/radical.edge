@@ -1,3 +1,4 @@
+import re
 import uuid
 import asyncio
 import logging
@@ -5,7 +6,6 @@ import time
 
 from typing import Type, Optional, Dict, Callable, Any, Union
 from fastapi import FastAPI, HTTPException, Request
-from starlette.routing import Route
 from starlette.responses import JSONResponse
 
 from .plugin_session_base import PluginSession
@@ -151,6 +151,10 @@ class Plugin(object):
         self._main_loop: Optional[asyncio.AbstractEventLoop] = None
         self._cleanup_task: Optional[asyncio.Task] = None
 
+        # Shared direct-dispatch route table (one list across all plugins)
+        if not hasattr(self._app.state, 'direct_routes'):
+            self._app.state.direct_routes = []
+
         # Built-in session management routes
         self.add_route_post('register_session', self.register_session)
         self.add_route_post('unregister_session/{sid}', self.unregister_session)
@@ -179,13 +183,48 @@ class Plugin(object):
         """Add a POST route to the plugin's namespace."""
         full_path = self._namespace + '/' + path
         full_path = full_path.replace('//', '/')
-        self._app.add_route(full_path, method, methods=["POST"])
+        self._register_direct(full_path, "POST", method)
+        self._app.add_route(full_path, self._wrap_handler(method),
+                            methods=["POST"])
 
     def add_route_get(self, path: str, method: Callable):
         """Add a GET route to the plugin's namespace."""
         full_path = self._namespace + '/' + path
         full_path = full_path.replace('//', '/')
-        self._app.add_route(full_path, method, methods=["GET"])
+        self._register_direct(full_path, "GET", method)
+        self._app.add_route(full_path, self._wrap_handler(method),
+                            methods=["GET"])
+
+    @staticmethod
+    def _wrap_handler(handler: Callable) -> Callable:
+        """Wrap a dict-returning handler for ASGI compatibility.
+
+        Handlers return plain dicts on the direct-dispatch path.
+        The FastAPI/ASGI path (TestClient, Explorer UI) needs a
+        ``JSONResponse`` wrapper.
+        """
+        async def _wrapped(request):
+            result = await handler(request)
+            if not hasattr(result, 'status_code'):
+                return JSONResponse(result)
+            return result
+        return _wrapped
+
+    def _register_direct(self, path: str, method: str, handler: Callable):
+        """Compile '{param}' path pattern into regex, register for direct dispatch."""
+        parts       = path.strip('/').split('/')
+        regex_parts = []
+        param_names = []
+        for part in parts:
+            if part.startswith('{') and part.endswith('}'):
+                param_names.append(part[1:-1])
+                regex_parts.append('([^/]+)')
+            else:
+                regex_parts.append(re.escape(part))
+        pattern = re.compile('^/' + '/'.join(regex_parts) + '$')
+        self._app.state.direct_routes.append(
+            (method, pattern, tuple(param_names), handler)
+        )
 
     def _create_session(self, sid: str, **kwargs) -> PluginSession:
         """
@@ -231,16 +270,16 @@ class Plugin(object):
                 log.debug("[%s] No event loop available for notification",
                           self.instance_name)
 
-    async def register_session(self, request: Request) -> JSONResponse:
+    async def register_session(self, request: Request) -> dict:
         """Register a new session and return its unique session ID."""
         self._ensure_cleanup_task()
         sid = f"session.{uuid.uuid4().hex[:8]}"
         self._sessions[sid] = self._create_session(sid)
         self._session_last_access[sid] = time.time()
         log.info("[%s] Registered session %s", self.instance_name, sid)
-        return JSONResponse({"sid": sid})
+        return {"sid": sid}
 
-    async def unregister_session(self, request: Request) -> JSONResponse:
+    async def unregister_session(self, request: Request) -> dict:
         """Unregister a session by its session ID and close it."""
         sid = request.path_params['sid']
         inst = self._sessions.pop(sid, None)
@@ -251,13 +290,13 @@ class Plugin(object):
 
         await inst.close()
         log.info("[%s] Unregistered session %s", self.instance_name, sid)
-        return JSONResponse({"ok": True})
+        return {"ok": True}
 
-    async def get_version(self, request: Request) -> JSONResponse:
+    async def get_version(self, request: Request) -> dict:
         """Return the plugin version."""
-        return JSONResponse({"version": self.version})
+        return {"version": self.version}
 
-    async def get_ui_config(self, request: Request) -> JSONResponse:
+    async def get_ui_config(self, request: Request) -> dict:
         """
         Return UI configuration for portal rendering.
 
@@ -265,18 +304,18 @@ class Plugin(object):
         monitors, and notification handlers, enabling seamless portal integration.
         """
         plugin_name = getattr(self.__class__, 'plugin_name', self._instance_name)
-        return JSONResponse({
+        return {
             "plugin_name": plugin_name,
             "instance_name": self._instance_name,
             "version": self.version,
             "ui": ui_config_to_dict(self.ui_config)
-        })
+        }
 
-    async def list_sessions(self, request: Request) -> JSONResponse:
+    async def list_sessions(self, request: Request) -> dict:
         """Return a list of active session IDs."""
-        return JSONResponse({"sessions": list(self._sessions.keys())})
+        return {"sessions": list(self._sessions.keys())}
 
-    async def health_check(self, request: Request) -> JSONResponse:
+    async def health_check(self, request: Request) -> dict:
         """
         Health check endpoint for monitoring.
 
@@ -289,13 +328,13 @@ class Plugin(object):
         uptime = time.time() - self._start_time
         active_sessions = len(self._sessions)
 
-        return JSONResponse({
+        return {
             "status": "healthy",
             "plugin": self._instance_name,
             "version": self.version,
             "uptime_seconds": round(uptime, 2),
             "active_sessions": active_sessions
-        })
+        }
 
     def is_enabled(self) -> bool:
         """
@@ -331,7 +370,7 @@ class Plugin(object):
         """
         pass
 
-    async def _forward(self, sid: str, func: Callable, *args: Any, **kwargs: Any) -> JSONResponse:
+    async def _forward(self, sid: str, func: Callable, *args: Any, **kwargs: Any) -> dict:
         """
         Forward a request to the specified session instance.
 
@@ -342,7 +381,7 @@ class Plugin(object):
             **kwargs: Keyword arguments for the method.
 
         Returns:
-            JSONResponse with the method result.
+            dict: The session method's return value (a plain dict).
 
         Raises:
             HTTPException 404: Session ID not found.
@@ -367,8 +406,7 @@ class Plugin(object):
 
         try:
             log.debug("[%s] Forwarding to session %s: %s", self.instance_name, sid, func.__name__)
-            ret = await func(session, *args, **kwargs)
-            return JSONResponse(ret)
+            return await func(session, *args, **kwargs)
         except HTTPException:
             raise  # Re-raise HTTP exceptions as-is
         except Exception as e:
@@ -428,8 +466,9 @@ class Plugin(object):
     def _log_routes(self) -> None:
         """Log all registered routes for debugging."""
         log.debug("[%s] %s routes:", self.instance_name, self.__class__.__name__)
-        for route in self._app.router.routes:
-            if isinstance(route, Route):
-                if route.path.startswith(self.namespace):
-                    log.debug("  %s -> %s", route.path, route.endpoint.__name__)
+        for method, pattern, _, handler in self._app.state.direct_routes:
+            path = pattern.pattern  # compiled regex string
+            if self.namespace in path:
+                name = getattr(handler, '__name__', str(handler))
+                log.debug("  %s %s -> %s", method, path, name)
 

@@ -42,12 +42,17 @@ def _fake_from_dict(d):
 
     # Provide to_dict() that returns a JSON-serializable dict
     def _to_dict():
-        return {
+        ret = {
             'uid': t.uid,
             'state': str(t.state) if t.state else 'SUBMITTED',
             'executable': d.get('executable', ''),
             'arguments': d.get('arguments', []),
         }
+        for k in ('task_backend_specific_kwargs', 'backend',
+                   'function', 'return_value', 'stdout', 'stderr'):
+            if k in d:
+                ret[k] = d[k]
+        return ret
     t.to_dict = _to_dict
 
     return t
@@ -92,7 +97,10 @@ def _make_plugin():
 def _register(client, plugin):
     resp = client.post(f"{plugin.namespace}/register_session")
     assert resp.status_code == 200
-    return resp.json()['sid']
+    sid = resp.json()['sid']
+    # Mark session as initialized — tests mock _rh_session directly
+    plugin._sessions[sid]._init_ready.set()
+    return sid
 
 
 # ---------------------------------------------------------------------------
@@ -105,12 +113,13 @@ def test_plugin_rhapsody_init():
     assert plugin.plugin_name == 'rhapsody'
     assert plugin.instance_name == 'rhapsody'
 
-    route_paths = [r.path for r in app.router.routes]
-    assert f'{plugin.namespace}/submit/{{sid}}' in route_paths
-    assert f'{plugin.namespace}/wait/{{sid}}' in route_paths
-    assert f'{plugin.namespace}/task/{{sid}}/{{uid}}' in route_paths
-    assert f'{plugin.namespace}/cancel/{{sid}}/{{uid}}' in route_paths
-    assert f'{plugin.namespace}/statistics/{{sid}}' in route_paths
+    route_pats = [p.pattern for _, p, _, _ in app.state.direct_routes]
+    ns = plugin.namespace.lstrip('/')
+    assert any(f'{ns}/submit/' in p for p in route_pats)
+    assert any(f'{ns}/wait/' in p for p in route_pats)
+    assert any(f'{ns}/task/' in p for p in route_pats)
+    assert any(f'{ns}/cancel/' in p for p in route_pats)
+    assert any(f'{ns}/cancel_all/' in p for p in route_pats)
 
 
 def test_plugin_rhapsody_class_attributes():
@@ -309,6 +318,301 @@ async def test_cancel_task():
 
 
 # ---------------------------------------------------------------------------
+# Phase 0 — passthrough verification
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_submit_with_backend_specific_kwargs():
+    """task_backend_specific_kwargs must survive the plugin round-trip."""
+    _, plugin, client = _make_plugin()
+    sid = _register(client, plugin)
+
+    session = plugin._sessions[sid]
+    session._rh_session = MagicMock()
+    session._rh_session.submit_tasks = AsyncMock()
+
+    # Intercept from_dict calls to capture the raw dicts
+    captured = []
+    orig_from_dict = _mock_rh.BaseTask.from_dict
+    _mock_rh.BaseTask.from_dict = lambda d: (captured.append(d), orig_from_dict(d))[1]
+
+    kwargs = {"timeout": 30, "ranks": 4, "type": "mpi"}
+    payload = {
+        "tasks": [{
+            "executable": "/bin/echo", "arguments": ["hi"],
+            "uid": "task.kw001",
+            "task_backend_specific_kwargs": kwargs,
+        }]
+    }
+    resp = client.post(f"{plugin.namespace}/submit/{sid}", json=payload)
+    assert resp.status_code == 200
+
+    _mock_rh.BaseTask.from_dict = orig_from_dict
+    assert len(captured) == 1
+    assert captured[0]["task_backend_specific_kwargs"] == kwargs
+
+
+@pytest.mark.asyncio
+async def test_submit_with_per_task_backend():
+    """Per-task 'backend' field must reach BaseTask.from_dict."""
+    _, plugin, client = _make_plugin()
+    sid = _register(client, plugin)
+
+    session = plugin._sessions[sid]
+    session._rh_session = MagicMock()
+    session._rh_session.submit_tasks = AsyncMock()
+
+    captured = []
+    orig_from_dict = _mock_rh.BaseTask.from_dict
+    _mock_rh.BaseTask.from_dict = lambda d: (captured.append(d), orig_from_dict(d))[1]
+
+    payload = {
+        "tasks": [{
+            "executable": "/bin/echo", "arguments": [],
+            "uid": "task.be001",
+            "backend": "dragon_v3",
+        }]
+    }
+    resp = client.post(f"{plugin.namespace}/submit/{sid}", json=payload)
+    assert resp.status_code == 200
+
+    _mock_rh.BaseTask.from_dict = orig_from_dict
+    assert len(captured) == 1
+    assert captured[0]["backend"] == "dragon_v3"
+
+
+# ---------------------------------------------------------------------------
+# Phase 1a — _sanitize_task hardening
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_sanitize_callable_function():
+    """Callable in 'function' field must be stringified."""
+    session = RhapsodySession("test.san1")
+    session._rh_session = MagicMock()
+
+    def my_func(x):
+        return x + 1
+
+    task = MagicMock()
+    task.uid = "task.fn001"
+    task.state = "DONE"
+    task.to_dict = lambda: {"uid": "task.fn001", "state": "DONE",
+                            "function": my_func}
+
+    d = session._sanitize_task(task)
+    assert isinstance(d["function"], str)
+    assert "my_func" in d["function"]
+
+
+@pytest.mark.asyncio
+async def test_sanitize_non_serializable_return_value():
+    """Non-JSON-serializable return_value must be stringified."""
+    session = RhapsodySession("test.san2")
+    session._rh_session = MagicMock()
+
+    class DragonRef:
+        def __repr__(self):
+            return "DataReference(0xdead)"
+
+    task = MagicMock()
+    task.uid = "task.rv001"
+    task.state = "DONE"
+    task.to_dict = lambda: {"uid": "task.rv001", "state": "DONE",
+                            "return_value": DragonRef()}
+
+    d = session._sanitize_task(task)
+    assert isinstance(d["return_value"], str)
+    assert "DataReference" in d["return_value"]
+
+
+@pytest.mark.asyncio
+async def test_sanitize_bytes_stdout():
+    """bytes stdout/stderr must be decoded to str."""
+    session = RhapsodySession("test.san3")
+    session._rh_session = MagicMock()
+
+    task = MagicMock()
+    task.uid = "task.bs001"
+    task.state = "DONE"
+    task.to_dict = lambda: {"uid": "task.bs001", "state": "DONE",
+                            "stdout": b"hello\n", "stderr": b"warn\n"}
+
+    d = session._sanitize_task(task)
+    assert d["stdout"] == "hello\n"
+    assert d["stderr"] == "warn\n"
+
+
+@pytest.mark.asyncio
+async def test_sanitize_list_stdout():
+    """list stdout/stderr (multi-rank) must be joined."""
+    session = RhapsodySession("test.san4")
+    session._rh_session = MagicMock()
+
+    task = MagicMock()
+    task.uid = "task.ls001"
+    task.state = "DONE"
+    task.to_dict = lambda: {"uid": "task.ls001", "state": "DONE",
+                            "stdout": ["rank0 out", "rank1 out"],
+                            "stderr": ["rank0 err"]}
+
+    d = session._sanitize_task(task)
+    assert d["stdout"] == "rank0 out\nrank1 out"
+    assert d["stderr"] == "rank0 err"
+
+
+@pytest.mark.asyncio
+async def test_sanitize_preserves_normal_values():
+    """Normal JSON-serializable values must pass through unchanged."""
+    session = RhapsodySession("test.san5")
+    session._rh_session = MagicMock()
+
+    task = MagicMock()
+    task.uid = "task.ok001"
+    task.state = "DONE"
+    task.to_dict = lambda: {"uid": "task.ok001", "state": "DONE",
+                            "return_value": {"count": 42},
+                            "stdout": "normal output",
+                            "function": None}
+
+    d = session._sanitize_task(task)
+    assert d["return_value"] == {"count": 42}
+    assert d["stdout"] == "normal output"
+    assert d["function"] is None
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — function task serialization
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_function_task_cloudpickle_roundtrip():
+    """cloudpickle-encoded function must be deserialized before from_dict."""
+    import cloudpickle
+    import base64
+
+    _, plugin, client = _make_plugin()
+    sid = _register(client, plugin)
+
+    session = plugin._sessions[sid]
+    session._rh_session = MagicMock()
+    session._rh_session.submit_tasks = AsyncMock()
+
+    # Simulate what the Edge backend (edge.py) would do
+    def adder(a, b):
+        return a + b
+
+    fn_pickled = 'cloudpickle::' + base64.b64encode(
+        cloudpickle.dumps(adder)).decode('ascii')
+    args_pickled = 'cloudpickle::' + base64.b64encode(
+        cloudpickle.dumps((3, 4))).decode('ascii')
+
+    captured = []
+    orig_from_dict = _mock_rh.BaseTask.from_dict
+    _mock_rh.BaseTask.from_dict = lambda d: (captured.append(d),
+                                              orig_from_dict(d))[1]
+
+    payload = {
+        "tasks": [{
+            "uid": "task.cp001",
+            "function": fn_pickled,
+            "args": args_pickled,
+            "_pickled_fields": ["function", "args"],
+        }]
+    }
+    resp = client.post(f"{plugin.namespace}/submit/{sid}", json=payload)
+    assert resp.status_code == 200
+
+    _mock_rh.BaseTask.from_dict = orig_from_dict
+    assert len(captured) == 1
+    td = captured[0]
+    assert callable(td["function"])
+    assert td["function"](3, 4) == 7
+    assert td["args"] == (3, 4)
+    assert "_pickled_fields" not in td
+
+
+@pytest.mark.asyncio
+async def test_function_task_import_path():
+    """Import-path string 'module:func' must be resolved to a callable."""
+    _, plugin, client = _make_plugin()
+    sid = _register(client, plugin)
+
+    session = plugin._sessions[sid]
+    session._rh_session = MagicMock()
+    session._rh_session.submit_tasks = AsyncMock()
+
+    captured = []
+    orig_from_dict = _mock_rh.BaseTask.from_dict
+    _mock_rh.BaseTask.from_dict = lambda d: (captured.append(d),
+                                              orig_from_dict(d))[1]
+
+    payload = {
+        "tasks": [{
+            "uid": "task.ip001",
+            "function": "os.path:join",
+            "args": ["/tmp", "test"],
+        }]
+    }
+    resp = client.post(f"{plugin.namespace}/submit/{sid}", json=payload)
+    assert resp.status_code == 200
+
+    _mock_rh.BaseTask.from_dict = orig_from_dict
+    assert len(captured) == 1
+    td = captured[0]
+    import os.path
+    assert td["function"] is os.path.join
+
+
+@pytest.mark.asyncio
+async def test_function_task_pickled_disabled():
+    """Pickled tasks must be rejected when allow_pickled_tasks=False."""
+    import cloudpickle
+    import base64
+
+    _, plugin, client = _make_plugin()
+    sid = _register(client, plugin)
+
+    session = plugin._sessions[sid]
+    session._rh_session = MagicMock()
+    session._rh_session.submit_tasks = AsyncMock()
+    session.allow_pickled_tasks = False
+
+    fn_pickled = 'cloudpickle::' + base64.b64encode(
+        cloudpickle.dumps(lambda x: x)).decode('ascii')
+
+    payload = {
+        "tasks": [{
+            "uid": "task.dis001",
+            "function": fn_pickled,
+            "_pickled_fields": ["function"],
+        }]
+    }
+    resp = client.post(f"{plugin.namespace}/submit/{sid}", json=payload)
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_function_task_bad_import_path():
+    """Invalid import path must return 400."""
+    _, plugin, client = _make_plugin()
+    sid = _register(client, plugin)
+
+    session = plugin._sessions[sid]
+    session._rh_session = MagicMock()
+    session._rh_session.submit_tasks = AsyncMock()
+
+    payload = {
+        "tasks": [{
+            "uid": "task.bad001",
+            "function": "no_such_module:no_func",
+        }]
+    }
+    resp = client.post(f"{plugin.namespace}/submit/{sid}", json=payload)
+    assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
 # RhapsodySession direct tests
 # ---------------------------------------------------------------------------
 
@@ -351,7 +655,13 @@ def test_rhapsody_client_submit_tasks():
     result = client.submit_tasks(tasks)
     assert isinstance(result, list)
     mock_call = client._http.post.call_args
-    assert "tasks" in mock_call[1]["json"]
+    # Payload may be msgpack (data=) or JSON (json=) depending on availability
+    if "json" in mock_call[1]:
+        assert "tasks" in mock_call[1]["json"]
+    else:
+        import msgpack
+        payload = msgpack.unpackb(mock_call[1]["data"], raw=False)
+        assert "tasks" in payload
 
 
 def test_rhapsody_client_wait_tasks():
@@ -392,6 +702,13 @@ def test_rhapsody_client_get_task():
     client._http.get.assert_called_once()
 
 
+def test_rhapsody_client_cancel_all_tasks():
+    client = _make_rhapsody_client({"canceled": 3})
+    result = client.cancel_all_tasks()
+    assert result["canceled"] == 3
+    client._http.post.assert_called_once()
+
+
 def test_rhapsody_client_no_session_raises():
     """All session-requiring methods must raise if no session is active."""
     mock_http = MagicMock()
@@ -406,6 +723,67 @@ def test_rhapsody_client_no_session_raises():
 
     with pytest.raises(RuntimeError, match="session"):
         client.cancel_task("t.001")
+
+    with pytest.raises(RuntimeError, match="session"):
+        client.cancel_all_tasks()
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — cancel_all_tasks
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_cancel_all_tasks():
+    """cancel_all_tasks must cancel non-terminal tasks and return count."""
+    _, plugin, client = _make_plugin()
+    sid = _register(client, plugin)
+
+    session = plugin._sessions[sid]
+    session._rh_session = MagicMock()
+    session._rh_session.submit_tasks = AsyncMock()
+    mock_backend = MagicMock()
+    mock_backend.cancel_task = AsyncMock()
+    session._rh_session.backends = {'concurrent': mock_backend}
+
+    # Submit 3 tasks
+    payload = {
+        "tasks": [
+            {"executable": "/bin/echo", "uid": f"task.ca{i:03d}",
+             "backend": "concurrent"}
+            for i in range(3)
+        ]
+    }
+    client.post(f"{plugin.namespace}/submit/{sid}", json=payload)
+
+    # Mark one as DONE so it should be skipped
+    session._tasks["task.ca001"].state = "DONE"
+
+    resp = client.post(f"{plugin.namespace}/cancel_all/{sid}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["canceled"] == 2
+
+
+@pytest.mark.asyncio
+async def test_cancel_all_skips_terminal():
+    """cancel_all_tasks with all tasks terminal should cancel 0."""
+    _, plugin, client = _make_plugin()
+    sid = _register(client, plugin)
+
+    session = plugin._sessions[sid]
+    session._rh_session = MagicMock()
+    session._rh_session.submit_tasks = AsyncMock()
+    session._rh_session.backends = {}
+
+    payload = {
+        "tasks": [{"executable": "/bin/true", "uid": "task.term001"}]
+    }
+    client.post(f"{plugin.namespace}/submit/{sid}", json=payload)
+    session._tasks["task.term001"].state = "DONE"
+
+    resp = client.post(f"{plugin.namespace}/cancel_all/{sid}")
+    assert resp.status_code == 200
+    assert resp.json()["canceled"] == 0
 
 
 if __name__ == '__main__':

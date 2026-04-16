@@ -31,10 +31,9 @@ async def test_embedded_service_async_init():
     assert 'mock_plugin' in service._plugins
     assert isinstance(service._plugins['mock_plugin'], MockPlugin)
 
-    # Verify internal app has routes
-    routes = [r.path for r in service._app.routes]
-    # Standard routes + MockPlugin routes
-    assert any('/mock_plugin/' in r for r in routes)
+    # Verify direct-dispatch route table has plugin routes
+    assert any('/mock_plugin/' in pat.pattern
+               for _, pat, _, _ in service._direct_routes)
 
 
 @pytest.mark.asyncio

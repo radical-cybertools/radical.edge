@@ -11,7 +11,6 @@ import logging
 
 from fastapi import FastAPI, HTTPException
 from starlette.requests import Request
-from starlette.responses import JSONResponse
 
 from .plugin_base import Plugin
 from .plugin_session_base import PluginSession
@@ -371,7 +370,7 @@ class PluginStaging(Plugin):
         self.add_route_post('get/{sid}', self.get_endpoint)
         self.add_route_post('list/{sid}', self.list_endpoint)
 
-    async def put_endpoint(self, request: Request) -> JSONResponse:
+    async def put_endpoint(self, request: Request) -> dict:
         """
         Upload a file to the edge filesystem.
 
@@ -399,7 +398,7 @@ class PluginStaging(Plugin):
 
         try:
             result = await session.put_file(filename, content_b64, overwrite=overwrite)
-            return JSONResponse(result)
+            return result
         except FileExistsError as e:
             raise HTTPException(status_code=409, detail=str(e)) from e
         except PermissionError as e:
@@ -407,7 +406,7 @@ class PluginStaging(Plugin):
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
 
-    async def get_endpoint(self, request: Request) -> JSONResponse:
+    async def get_endpoint(self, request: Request) -> dict:
         """
         Download a file from the edge filesystem.
 
@@ -431,7 +430,7 @@ class PluginStaging(Plugin):
 
         try:
             result = await session.get_file(filename)
-            return JSONResponse(result)
+            return result
         except FileNotFoundError as e:
             raise HTTPException(status_code=404, detail=str(e)) from e
         except PermissionError as e:
@@ -439,7 +438,7 @@ class PluginStaging(Plugin):
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
 
-    async def list_endpoint(self, request: Request) -> JSONResponse:
+    async def list_endpoint(self, request: Request) -> dict:
         """
         List contents of a directory on the edge filesystem.
 
@@ -463,7 +462,7 @@ class PluginStaging(Plugin):
 
         try:
             result = await session.list_dir(path)
-            return JSONResponse(result)
+            return result
         except FileNotFoundError as e:
             raise HTTPException(status_code=404, detail=str(e)) from e
         except NotADirectoryError as e:

@@ -91,9 +91,12 @@ import httpx
 import logging
 import urllib3
 import json
+import itertools
 import threading
 
 from typing import Any, Dict, List, Optional, Callable, Tuple
+
+import radical.prof as rprof
 
 from .plugin_base import Plugin
 
@@ -113,6 +116,10 @@ def _raise(resp, context: str = '') -> None:
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 log = logging.getLogger("radical.edge.client")
+
+# Silence per-request INFO logging from httpx/httpcore
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 class BridgeClient:
@@ -172,16 +179,34 @@ class BridgeClient:
         if not self._url:
             raise ValueError("Bridge URL required (arg or RADICAL_BRIDGE_URL)")
 
+        self._prof = rprof.Profiler('client', ns='radical.edge')
+        self._req_counter = itertools.count()
+
+        def _inject_req_id(request):
+            req_id = 'req.%06d' % next(self._req_counter)
+            request.headers['X-Request-ID'] = req_id
+            # stash for the response hook
+            request.extensions['req_id'] = req_id
+            self._prof.prof('client_send', uid=req_id, msg=str(request.url))
+
+        def _on_response(response):
+            req_id = response.request.extensions.get('req_id', '')
+            self._prof.prof('client_recv', uid=req_id,
+                            state=str(response.status_code))
+
         self._http: httpx.Client = httpx.Client(
             base_url=self._url,
             verify=self._cert if self._cert else False,
-            timeout=60.0
+            timeout=60.0,
+            event_hooks={'request' : [_inject_req_id],
+                         'response': [_on_response]},
         )
         # Callbacks: key is (edge_id, plugin_name, topic) - None means wildcard
         self._callbacks: Dict[Tuple[Optional[str], Optional[str], Optional[str]], List[Callable]] = {}
         self._topology_callbacks: List[Callable] = []
         self._listener_thread: Optional[threading.Thread] = None
         self._listener_stop: threading.Event = threading.Event()
+        self._listener_connected: threading.Event = threading.Event()
 
     def register_callback(self, edge_id: Optional[str] = None, plugin_name: Optional[str] = None,
                           topic: Optional[str] = None, callback: Callable = None) -> None:
@@ -245,8 +270,17 @@ class BridgeClient:
     def _ensure_listener(self) -> None:
         if self._listener_thread is None or not self._listener_thread.is_alive():
             self._listener_stop.clear()
+            self._listener_connected.clear()
             self._listener_thread = threading.Thread(target=self._listen_sse, daemon=True)
             self._listener_thread.start()
+
+    def wait_for_listener(self, timeout: float = 30) -> bool:
+        """Block until the SSE listener is connected.
+
+        Returns ``True`` if connected, ``False`` on timeout.
+        """
+        self._ensure_listener()
+        return self._listener_connected.wait(timeout=timeout)
 
     def _dispatch_notification(self, edge: str, plugin: str, topic: str, data: dict) -> None:
         """Dispatch a notification to matching callbacks."""
@@ -274,6 +308,7 @@ class BridgeClient:
         try:
             with httpx.stream("GET", f"{self._url}/events", verify=self._cert if self._cert else False, timeout=None) as response:
                 log.debug("[client] SSE stream connected: status=%s", response.status_code)
+                self._listener_connected.set()
                 for line in response.iter_lines():
                     if self._listener_stop.is_set():
                         log.debug("[client] SSE listener stopping (stop flag set)")
@@ -319,6 +354,7 @@ class BridgeClient:
     def close(self) -> None:
         self._listener_stop.set()
         self._http.close()
+        self._prof.close()
 
     def list_edges(self) -> List[str]:
         """

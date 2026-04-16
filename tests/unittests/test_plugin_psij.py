@@ -36,7 +36,9 @@ def test_plugin_psij_init():
     plugin = PluginPSIJ(app)
     assert plugin.plugin_name == 'psij'
     assert plugin.instance_name == 'psij'
-    assert f'{plugin.namespace}/submit/{{sid}}' in [r.path for r in app.router.routes]
+    route_pats = [p.pattern for _, p, _, _ in app.state.direct_routes]
+    ns = plugin.namespace.lstrip('/')
+    assert any(f'{ns}/submit/' in p for p in route_pats)
 
 
 @pytest.mark.asyncio

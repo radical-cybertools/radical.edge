@@ -168,13 +168,13 @@ def test_plugin_queue_info_initialization(mock_slurm):
     assert plugin._backend == mock_backend
     mock_slurm.assert_called_once_with(slurm_conf=None)
 
-    # Check that routes were added
-    route_paths = [route.path for route in app.router.routes]
-    assert any("register_session" in path for path in route_paths)
-    assert any("unregister_session" in path for path in route_paths)
-    assert any("get_info" in path for path in route_paths)
-    assert any("list_jobs" in path for path in route_paths)
-    assert any("list_allocations" in path for path in route_paths)
+    # Check that direct-dispatch routes were registered
+    route_pats = [p.pattern for _, p, _, _ in app.state.direct_routes]
+    assert any("register_session" in p for p in route_pats)
+    assert any("unregister_session" in p for p in route_pats)
+    assert any("get_info" in p for p in route_pats)
+    assert any("list_jobs" in p for p in route_pats)
+    assert any("list_allocations" in p for p in route_pats)
 
 
 @patch('radical.edge.plugin_queue_info.QueueInfoSlurm')
@@ -204,13 +204,11 @@ async def test_plugin_queue_info_register_session(mock_slurm):
 
     request = Mock(spec=Request)
 
-    response = await plugin.register_session(request)
+    data = await plugin.register_session(request)
 
-    assert isinstance(response, JSONResponse)
-    import json
-    data = json.loads(response.body)
+    assert isinstance(data, dict)
     sid = data['sid']
-    
+
     assert sid in plugin._sessions
     assert sid.startswith("session.")
 
@@ -229,15 +227,14 @@ async def test_plugin_queue_info_unregister_session(mock_slurm):
 
     # Register a session
     request = Mock(spec=Request)
-    response = await plugin.register_session(request)
-    import json
-    sid = json.loads(response.body)['sid']
+    data = await plugin.register_session(request)
+    sid = data['sid']
 
     # Unregister it
     request.path_params = {"sid": sid}
     response = await plugin.unregister_session(request)
 
-    assert isinstance(response, JSONResponse)
+    assert isinstance(response, dict)
     assert sid not in plugin._sessions
 
 
@@ -256,9 +253,8 @@ async def test_plugin_queue_info_get_info(mock_slurm):
 
     # Register a session
     request = Mock(spec=Request)
-    response = await plugin.register_session(request)
-    import json
-    sid = json.loads(response.body)['sid']
+    data = await plugin.register_session(request)
+    sid = data['sid']
 
     # Get info
     request.path_params = {"sid": sid}
@@ -266,7 +262,7 @@ async def test_plugin_queue_info_get_info(mock_slurm):
 
     response = await plugin.get_info(request)
 
-    assert isinstance(response, JSONResponse)
+    assert isinstance(response, dict)
     
     # Check backend call
     mock_backend.get_info.assert_called_with(user=None, force=False)
@@ -287,9 +283,8 @@ async def test_plugin_queue_info_list_jobs(mock_slurm):
 
     # Register a session
     request = Mock(spec=Request)
-    response = await plugin.register_session(request)
-    import json
-    sid = json.loads(response.body)['sid']
+    data = await plugin.register_session(request)
+    sid = data['sid']
 
     # List jobs
     request.path_params = {"sid": sid, "queue": "test_queue"}
@@ -297,7 +292,7 @@ async def test_plugin_queue_info_list_jobs(mock_slurm):
 
     response = await plugin.list_jobs(request)
 
-    assert isinstance(response, JSONResponse)
+    assert isinstance(response, dict)
     
     # Check backend call
     mock_backend.list_jobs.assert_called_with("test_queue", None, False)
@@ -318,9 +313,8 @@ async def test_plugin_queue_info_list_allocations(mock_slurm):
 
     # Register a session
     request = Mock(spec=Request)
-    response = await plugin.register_session(request)
-    import json
-    sid = json.loads(response.body)['sid']
+    data = await plugin.register_session(request)
+    sid = data['sid']
 
     # List allocations
     request.path_params = {"sid": sid}
@@ -328,7 +322,7 @@ async def test_plugin_queue_info_list_allocations(mock_slurm):
 
     response = await plugin.list_allocations(request)
 
-    assert isinstance(response, JSONResponse)
+    assert isinstance(response, dict)
     
     # Check backend call
     mock_backend.list_allocations.assert_called_with(None, False)

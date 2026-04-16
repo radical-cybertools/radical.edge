@@ -6,7 +6,7 @@ over the WebSocket connection.
 """
 
 from typing import Any, Dict, Literal, Optional, Union
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # ---------------------------------------------------------------------------
@@ -51,13 +51,15 @@ class PongMessage(BaseModel):
 
 class RequestMessage(BaseModel):
     """Proxied HTTP request from bridge to edge."""
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     type: Literal["request"] = "request"
     req_id: str = Field(..., description="Request correlation ID")
     method: str = Field(..., description="HTTP method")
     path: str = Field(..., description="Request path")
     headers: Dict[str, str] = Field(default_factory=dict, description="Request headers")
-    body: Optional[str] = Field(None, description="Request body (text or base64)")
-    is_binary: bool = Field(False, description="Whether body is base64-encoded binary")
+    body: Optional[Union[str, bytes]] = Field(None, description="Request body (text, base64, or raw bytes)")
+    is_binary: bool = Field(False, description="Whether body is binary")
 
 
 class PingMessage(BaseModel):
