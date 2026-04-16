@@ -25,7 +25,11 @@ from starlette.responses     import StreamingResponse
 
 from starlette.websockets    import WebSocketState
 
+from radical.edge.bridge_plugin_host import BridgePluginHost
+
 log = logging.getLogger("radical.edge.bridge")
+
+BRIDGE_EDGE_NAME = 'bridge'
 
 # Global shutdown event for graceful termination
 shutdown_event = asyncio.Event()
@@ -34,7 +38,31 @@ shutdown_event = asyncio.Event()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan context manager for startup/shutdown."""
+    global bridge_plugin_host
     shutdown_event.clear()
+
+    # Load bridge-hosted plugins if configured via CLI (stored on app.state)
+    plugin_spec = getattr(app.state, '_bridge_plugins', None)
+    if plugin_spec:
+        names = [t.strip() for t in plugin_spec.split(',') if t.strip()]
+        if names:
+            async def _on_bridge_topology_changed():
+                """Called when bridge plugins change (dynamic registration)."""
+                if bridge_plugin_host:
+                    endpoints['edges'][BRIDGE_EDGE_NAME] = \
+                        bridge_plugin_host.get_topology_info()
+                    _plugin_ui_module_js.update(
+                        bridge_plugin_host.get_ui_modules())
+                await broadcast_event('topology', endpoints)
+                await broadcast_topology_to_edges()
+
+            bridge_plugin_host = BridgePluginHost(
+                names, broadcast_event, BRIDGE_EDGE_NAME,
+                on_topology_changed=_on_bridge_topology_changed)
+            endpoints['edges'][BRIDGE_EDGE_NAME] = \
+                bridge_plugin_host.get_topology_info()
+            _plugin_ui_module_js.update(bridge_plugin_host.get_ui_modules())
+            log.info('[Bridge] Loaded bridge plugins: %s', names)
 
     async def _print_url():
         await asyncio.sleep(0.2)  # let uvicorn print its own startup line first
@@ -164,6 +192,8 @@ REQUEST_TIMEOUT    = 45
 
 clients_sse: set = set()
 
+bridge_plugin_host: BridgePluginHost | None = None
+
 
 async def broadcast_event(topic: str, data: dict):
     msg = json.dumps({"topic": topic, "data": data})
@@ -184,6 +214,13 @@ async def broadcast_topology_to_edges():
                 await ws.send_text(msg)
         except Exception as e:
             log.warning("[Bridge] Failed to send topology to %s: %s", edge_name, e)
+
+    # Also notify bridge-hosted plugins
+    if bridge_plugin_host is not None:
+        try:
+            await bridge_plugin_host.on_topology_change(edge_list)
+        except Exception as e:
+            log.warning("[Bridge] Failed topology notify to bridge plugins: %s", e)
 
 
 async def _send_to_edge(edge_name: str, message, binary: bool = False):
@@ -266,6 +303,15 @@ async def register(ws: WebSocket):
                 if not frame_edge_name:
                     log.warning("[Bridge] Registration missing edge_name")
                     continue
+
+                if frame_edge_name == BRIDGE_EDGE_NAME:
+                    log.warning("[Bridge] Edge name '%s' is reserved",
+                                frame_edge_name)
+                    await ws.send_text(json.dumps({
+                        "type": "error",
+                        "message": f"Edge name '{frame_edge_name}' is reserved"
+                    }))
+                    return
 
                 if frame_edge_name in edges:
                     log.warning("[Bridge] Edge '%s' already connected.", frame_edge_name)
@@ -454,7 +500,7 @@ async def get_edges():
     edge_list = []
     for edge_name, edge_data in endpoints.get("edges", {}).items():
         plugins = list(edge_data.get("plugins", {}).keys())
-        connected = edge_name in edges
+        connected = edge_name in edges or edge_name == BRIDGE_EDGE_NAME
         edge_list.append({
             "name": edge_name,
             "plugins": plugins,
@@ -474,6 +520,10 @@ async def disconnect_edge(edge_name: str):
 
     This will cause the edge service to terminate (not reconnect).
     """
+    if edge_name == BRIDGE_EDGE_NAME:
+        raise HTTPException(status_code=400,
+                            detail="Cannot disconnect bridge-hosted plugins")
+
     if edge_name not in edges:
         raise HTTPException(status_code=404, detail=f"Edge '{edge_name}' not connected")
 
@@ -631,7 +681,7 @@ async def serve_plugin(filename: str):
     then from paths declared via ui_module on registered plugin classes."""
 
     # Validate filename (only allow .js files with safe names)
-    if not re.match(r'^[a-z_]+\.js$', filename):
+    if not re.match(r'^[a-z_][a-z0-9_.]*\.js$', filename):
         raise HTTPException(status_code=404, detail="Invalid plugin filename")
 
     plugin_path = None
@@ -711,6 +761,17 @@ async def proxy(full_path: str, request: Request):
         raise HTTPException(status_code=404, detail="Invalid path")
 
     edge_name = parts[0]
+
+    # Bridge-hosted plugins: dispatch locally, skip the WebSocket proxy path
+    if edge_name == BRIDGE_EDGE_NAME and bridge_plugin_host is not None:
+        forward_path = '/' + parts[1] if len(parts) > 1 else '/'
+        return await bridge_plugin_host.handle_request(
+            method       = request.method,
+            path         = forward_path,
+            headers      = dict(request.headers),
+            body_bytes   = await request.body(),
+            query_string = str(request.url.query) if request.url.query else '',
+        )
 
     if edge_name not in edges:
         raise HTTPException(status_code=404, detail=f"Edge '{edge_name}' unknown")
@@ -861,7 +922,18 @@ def validate_ssl_config(certfile: str, keyfile: str) -> None:
 
 def main():
 
+    import argparse
     import uvicorn
+
+    parser = argparse.ArgumentParser(description='RADICAL Edge Bridge')
+    parser.add_argument('--plugins', '-p', default='',
+                        help='Comma-separated plugins to host on the bridge '
+                             '(default: none). Use "all" for every registered '
+                             'plugin. Prefix matching supported.')
+    args = parser.parse_args()
+
+    # Stash on app.state so the lifespan handler can pick it up
+    app.state._bridge_plugins = args.plugins or ''
 
     # Custom log filter to suppress CancelledError during shutdown
     class ShutdownFilter(logging.Filter):

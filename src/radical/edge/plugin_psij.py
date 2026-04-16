@@ -609,6 +609,11 @@ class PluginPSIJ(Plugin):
         }
     }
 
+    @classmethod
+    def is_enabled(cls, app: FastAPI) -> bool:
+        """PsiJ loads on edge nodes (login or compute) — not on the bridge."""
+        return not getattr(app.state, 'is_bridge', False)
+
     def __init__(self, app: FastAPI, instance_name: str = "psij"):
         super().__init__(app, instance_name)
 

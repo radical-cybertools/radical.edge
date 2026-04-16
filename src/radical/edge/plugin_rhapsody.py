@@ -10,6 +10,7 @@ import base64
 import importlib
 import json
 import logging
+import os
 import threading
 import time
 import uuid
@@ -143,7 +144,7 @@ class RhapsodySession(PluginSession):
 
             # Register state-change callbacks for intermediate notifications
             self._notified_states: dict[str, str] = {}
-            self._notified_lock = asyncio.Lock()
+            self._notified_lock = threading.Lock()
             for b in backends:
                 if hasattr(b, 'register_callback'):
                     orig = getattr(b, '_callback_func', None)
@@ -1284,6 +1285,11 @@ class PluginRhapsody(Plugin):
             "state_field": "state"
         }
     }
+
+    @classmethod
+    def is_enabled(cls, app: FastAPI) -> bool:
+        """Rhapsody loads on compute nodes only (task execution)."""
+        return bool(os.environ.get('SLURM_JOB_ID'))
 
     def __init__(self, app: FastAPI, instance_name: str = "rhapsody"):
         super().__init__(app, instance_name)

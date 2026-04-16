@@ -1,3 +1,4 @@
+import os
 import re
 import uuid
 import asyncio
@@ -163,6 +164,21 @@ class Plugin(object):
         self.add_route_get('health', self.health_check)
         self.add_route_get('ui_config', self.get_ui_config)
         self._log_routes()
+
+    @property
+    def is_bridge(self) -> bool:
+        """True when this plugin is hosted on the bridge (not on an edge)."""
+        return getattr(self._app.state, 'is_bridge', False)
+
+    @property
+    def is_compute_node(self) -> bool:
+        """True when running inside a batch job allocation (compute node)."""
+        return bool(os.environ.get('SLURM_JOB_ID'))
+
+    @property
+    def is_login_node(self) -> bool:
+        """True when running on a login node (not inside a batch job)."""
+        return not self.is_bridge and not self.is_compute_node
 
     @property
     def namespace(self) -> str:
@@ -336,14 +352,14 @@ class Plugin(object):
             "active_sessions": active_sessions
         }
 
-    def is_enabled(self) -> bool:
-        """
-        Return True if this plugin should be loaded and registered on this edge.
+    @classmethod
+    def is_enabled(cls, app: FastAPI) -> bool:
+        """Return False to skip loading this plugin on this host.
 
-        Override in subclasses to gate loading on runtime conditions (e.g.
-        presence of an external binary).  Plugins that return False are never
-        instantiated by the edge service and therefore never appear in the
-        Explorer or in /edge/list responses.
+        Checked *before* instantiation so no routes are registered when the
+        plugin is not applicable.  Override in subclasses to gate on host type
+        (bridge vs edge) or runtime conditions (e.g. scheduler presence).
+        Default: always load.
         """
         return True
 

@@ -178,6 +178,7 @@ class XGFabricSession(PluginSession):
         self._edge_name = edge_name or 'local'
         self._bridge_url = bridge_url
         self._bridge_cert = bridge_cert
+        self._http        = httpx.AsyncClient(verify=self._verify())
         self._connected_edges: Dict[str, Any] = {}  # Cached connected edges
         self._current_config: Optional[WorkflowConfig] = None
         self._current_resource_config: Optional[ResourceConfig] = None
@@ -197,14 +198,12 @@ class XGFabricSession(PluginSession):
         return self._bridge_cert if self._bridge_cert else False
 
     async def _http_get(self, url: str, **kwargs) -> Any:
-        """Run httpx.get in a thread with appropriate SSL verification."""
-        verify = self._verify()
-        return await asyncio.to_thread(lambda: httpx.get(url, verify=verify, **kwargs))
+        """Run httpx.get using the session AsyncClient."""
+        return await self._http.get(url, **kwargs)
 
     async def _http_post(self, url: str, **kwargs) -> Any:
-        """Run httpx.post in a thread with appropriate SSL verification."""
-        verify = self._verify()
-        return await asyncio.to_thread(lambda: httpx.post(url, verify=verify, **kwargs))
+        """Run httpx.post using the session AsyncClient."""
+        return await self._http.post(url, **kwargs)
 
     async def _resolve_path(self, edge_name: str, path: str) -> str:
         """Expand a leading '~' to the home directory on the remote edge."""
@@ -345,22 +344,6 @@ class XGFabricSession(PluginSession):
 
         return asdict(self._state)
 
-    async def _is_enabled(self, edge_name: str) -> bool:
-        """Check whether an edge's queue_info plugin reports a working scheduler."""
-        if not self._bridge_url:
-            log.info("[XGFabric] _is_enabled(%s): no bridge_url — returning False", edge_name)
-            return False
-        url = self._bridge_url.rstrip('/') + f'/{edge_name}/queue_info/is_enabled'
-        try:
-
-            resp = await self._http_get(url, timeout=5)
-            result = resp.json().get('available', False)
-            log.info("[XGFabric] _is_enabled(%s): available=%s", edge_name, result)
-            return result
-        except Exception as e:
-            log.info("[XGFabric] _is_enabled(%s): request failed — %s", edge_name, e)
-            return False
-
     async def _get_connected_edges(self) -> tuple[List[Dict], List[Dict]]:
         """Return (immediate, allocate) cluster lists from cache or bridge query.
 
@@ -384,7 +367,7 @@ class XGFabricSession(PluginSession):
                 if 'ucsb' in edge_name:
                     log.info("[XGFabric]   %s -> immediate (ucsb)", edge_name)
                     immediate.append(_cluster(edge_name))
-                elif 'queue_info' in plugins and await self._is_enabled(edge_name):
+                elif 'queue_info' in plugins:
                     log.info("[XGFabric]   %s -> allocate (queue_info enabled)", edge_name)
                     allocate.append(_cluster(edge_name))
                 else:
@@ -1152,6 +1135,7 @@ class XGFabricSession(PluginSession):
                 self._bc.close()
             except Exception as e:
                 log.exception("[XGFabric] Error closing bridge client: %s", e)
+        await self._http.aclose()
         return await super().close()
 
 
@@ -1254,6 +1238,11 @@ class PluginXGFabric(Plugin):
         "description":     "CFDaAI workflow orchestrator for HPC clusters.",
         "custom_template": True,
     }
+
+    @classmethod
+    def is_enabled(cls, app: FastAPI) -> bool:
+        """XGFabric loads on edge nodes (login or compute) — not on the bridge."""
+        return not getattr(app.state, 'is_bridge', False)
 
     def __init__(self, app: FastAPI, workdir: Optional[str] = None):
         super().__init__(app, 'xgfabric')

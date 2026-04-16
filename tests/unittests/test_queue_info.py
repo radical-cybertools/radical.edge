@@ -619,9 +619,7 @@ class TestGetJobAllocation:
 
     def _make_plugin(self):
         """Construct a PluginQueueInfo without starting prefetch."""
-        with patch('radical.edge.plugin_queue_info.QueueInfoSlurm') as MockBackend, \
-             patch('radical.edge.plugin_queue_info.PluginQueueInfo.is_enabled',
-                   return_value=True):
+        with patch('radical.edge.plugin_queue_info.QueueInfoSlurm') as MockBackend:
             MockBackend.return_value.start_prefetch = Mock()
             from fastapi import FastAPI
             app    = FastAPI()

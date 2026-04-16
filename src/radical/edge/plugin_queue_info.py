@@ -262,15 +262,7 @@ class QueueInfoClient(PluginClient):
         self._raise(resp)
         return resp.json()
 
-    def is_enabled(self) -> bool:
-        """Return whether SLURM is available on the edge.
 
-        No session is required.  Calls the edge-side ``is_enabled`` endpoint
-        which checks for the presence and functionality of ``sinfo --json``.
-        """
-        resp = self._http.get(self._url('is_enabled'))
-        self._raise(resp, 'is_enabled')
-        return resp.json()['available']
 
     def job_allocation(self) -> 'dict | None':
         """Return edge job allocation info, or None if not inside a SLURM job.
@@ -298,15 +290,8 @@ class PluginQueueInfo(Plugin):
     QueueInfo plugin for Radical Edge.
 
     This plugin exposes batch system queue information, job listings, and
-    allocation data via REST endpoints.  It overrides ``is_enabled()`` to
-    return False on edges where SLURM (sinfo) is not present; the edge service
-    will not load or register it on such edges.
-
-    Session-less endpoints (no sid required):
-        GET /queue_info/is_enabled  – returns {"available": bool} indicating
-            whether SLURM (sinfo) is present on this edge.  Used by other plugins
-            (e.g. xgfabric) to classify edges as batch-capable without creating a
-            full session.
+    allocation data via REST endpoints.  ``is_enabled()`` prevents loading on
+    edges where SLURM (sinfo) is not present.
     """
 
     plugin_name = "queue_info"
@@ -348,7 +333,6 @@ class PluginQueueInfo(Plugin):
         self._backend.start_prefetch()
 
         # Register QueueInfo-specific routes
-        self.add_route_get('is_enabled',     self.is_enabled_endpoint)
         self.add_route_get('job_allocation', self.job_allocation_endpoint)
         self.add_route_get('get_info/{sid}', self.get_info)
         self.add_route_get('list_jobs/{sid}/{queue}', self.list_jobs)
@@ -369,16 +353,13 @@ class PluginQueueInfo(Plugin):
         """
         return self.session_class(sid, backend=self._backend)
 
-    def is_enabled(self) -> bool:
-        """Return False if SLURM is not present or doesn't support --json."""
+    @classmethod
+    def is_enabled(cls, app: FastAPI) -> bool:
+        """Load only when SLURM is present and supports --json."""
         if not shutil.which('sinfo'):
             return False
         result = subprocess.run(['sinfo', '--json'], capture_output=True, timeout=5)
         return result.returncode == 0
-
-    async def is_enabled_endpoint(self, request: Request) -> dict:
-        """Session-less endpoint: returns {"available": bool} for remote callers."""
-        return {'available': self.is_enabled()}
 
     def get_job_allocation(self) -> 'dict | None':
         """Return edge job allocation info, or None if not inside a SLURM job.

@@ -409,15 +409,6 @@ def _make_queue_info_client(json_resp, status_code=200):
     return client
 
 
-def test_queue_info_client_is_enabled_true():
-    client = _make_queue_info_client({"available": True})
-    assert client.is_enabled() is True
-
-
-def test_queue_info_client_is_enabled_false():
-    client = _make_queue_info_client({"available": False})
-    assert client.is_enabled() is False
-
 
 def test_queue_info_client_job_allocation_none():
     client = _make_queue_info_client({"allocation": None})
