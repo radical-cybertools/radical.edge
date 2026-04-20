@@ -35,7 +35,7 @@ endpoint.
 > The self-signed certificate is for **development purposes only**.
 
 ```shell
-cd radical.edge/examples/docker
+cd examples/docker
 docker build --build-arg GENERATE_BRIDGE_CERT=true \
              --build-arg BRIDGE_IP=127.0.0.1 \
              --build-arg BRIDGE_HOSTNAME=${RADICAL_BRIDGE_HOSTNAME} \
