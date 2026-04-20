@@ -56,7 +56,31 @@ cd /app/radical.edge/examples
 python3 example_sysinfo.py
 ```
 
-### 4. Useful commands
+### 4. Browse the API
+
+The bridge service exposes port `8000` to the host, so once the containers are
+running you can open the API documentation directly in a web browser:
+
+| URL | Description |
+|-----|-------------|
+| <https://localhost:8000/docs> | Swagger UI — interactive API explorer |
+| <https://localhost:8000/redoc> | ReDoc — alternative API reference |
+
+> [!NOTE]
+> Your browser will show a TLS warning because a self-signed certificate is
+> used. Click **Advanced → Proceed to localhost** (or equivalent) to continue.
+
+> [!TIP]
+> When registering a new edge service through the portal (e.g., via the
+> `/register` endpoint), use the **internal Docker hostname** as the Bridge URL:
+> ```
+> https://bridge:8000
+> ```
+> where `bridge` is the value of `BRIDGE_HOSTNAME` argument used during the docker
+> build (default: `bridge`). Using `localhost` here would resolve on the host
+> machine, not inside the Docker network.
+
+### 5. Useful commands
 
 ```shell
 # follow logs from bridge and edge containers
