@@ -9,7 +9,6 @@ fastapi
 uvicorn
 
 psutil
-radical.prof @ git+https://github.com/radical-cybertools/radical.profile.git@devel
 rich
 
 psij-python

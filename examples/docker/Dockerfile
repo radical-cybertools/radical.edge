@@ -26,7 +26,7 @@ ARG RADICAL_EDGE_BRANCH=master
 RUN git clone -b ${RADICAL_EDGE_BRANCH} https://github.com/radical-cybertools/radical.edge.git
 
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
-    pip install --no-cache-dir -e /app/radical.edge
+    pip install --no-cache-dir /app/radical.edge
 
 ARG GENERATE_BRIDGE_CERT=false
 ARG BRIDGE_IP=127.0.0.1
