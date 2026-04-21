@@ -17,6 +17,15 @@ services:
     container_name: radical-bridge
     hostname: ${RADICAL_BRIDGE_HOSTNAME:-bridge}
     command: [ "radical-edge-bridge.py" ]
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          python3 -c 'import socket; s=socket.socket(); s.settimeout(5); s.connect(("localhost", 8000)); s.close()'
+      interval: 5s
+      timeout: 10s
+      retries: 15
+      start_period: 30s
     ports:
       - "8000:8000"
     volumes:
@@ -39,7 +48,8 @@ services:
     networks:
       - radical-edge-network
     depends_on:
-      - bridge
+      bridge:
+        condition: service_healthy
 
   client:
     <<: *common-build
@@ -56,8 +66,10 @@ services:
     networks:
       - radical-edge-network
     depends_on:
-      - bridge
-      - edge
+      bridge:
+        condition: service_healthy
+      edge:
+        condition: service_started
 
 volumes:
   radical-edge-volume:
