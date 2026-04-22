@@ -151,13 +151,13 @@ async def test_queue_info_session_list_allocations_with_user():
     mock_backend.list_allocations.assert_called_once_with("testuser", True)
 
 
-@patch('radical.edge.plugin_queue_info.QueueInfoSlurm')
-def test_plugin_queue_info_initialization(mock_slurm):
+@patch('radical.edge.plugin_queue_info.make_queue_info')
+def test_plugin_queue_info_initialization(mock_factory):
     '''
     Test PluginQueueInfo initialization.
     '''
     mock_backend = Mock()
-    mock_slurm.return_value = mock_backend
+    mock_factory.return_value = mock_backend
 
     app = FastAPI()
     plugin = PluginQueueInfo(app)
@@ -166,7 +166,7 @@ def test_plugin_queue_info_initialization(mock_slurm):
     assert plugin._sessions == {}
     # Backend is now created at plugin level and shared
     assert plugin._backend == mock_backend
-    mock_slurm.assert_called_once_with(slurm_conf=None)
+    mock_factory.assert_called_once_with(conf_path=None)
 
     # Check that direct-dispatch routes were registered
     route_pats = [p.pattern for _, p, _, _ in app.state.direct_routes]
@@ -177,25 +177,26 @@ def test_plugin_queue_info_initialization(mock_slurm):
     assert any("list_allocations" in p for p in route_pats)
 
 
-@patch('radical.edge.plugin_queue_info.QueueInfoSlurm')
-def test_plugin_queue_info_custom_name_and_conf(mock_slurm):
+@patch('radical.edge.plugin_queue_info.make_queue_info')
+def test_plugin_queue_info_custom_name_and_conf(mock_factory):
     '''
-    Test PluginQueueInfo with custom name and SLURM config.
+    Test PluginQueueInfo with custom name and backend config (slurm_conf
+    alias is the legacy kwarg).
     '''
     mock_backend = Mock()
-    mock_slurm.return_value = mock_backend
+    mock_factory.return_value = mock_backend
 
     app = FastAPI()
     plugin = PluginQueueInfo(app, instance_name="custom_queue", slurm_conf="/custom/slurm.conf")
 
     assert plugin._instance_name == "custom_queue"
-    # Backend is created with custom slurm_conf
-    mock_slurm.assert_called_once_with(slurm_conf="/custom/slurm.conf")
+    # Backend is created with the conf path forwarded as conf_path
+    mock_factory.assert_called_once_with(conf_path="/custom/slurm.conf")
 
 
 @pytest.mark.asyncio
-@patch('radical.edge.plugin_queue_info.QueueInfoSlurm')
-async def test_plugin_queue_info_register_session(mock_slurm):
+@patch('radical.edge.plugin_queue_info.make_queue_info')
+async def test_plugin_queue_info_register_session(mock_factory):
     '''
     Test registering a new session.
     '''
@@ -213,12 +214,12 @@ async def test_plugin_queue_info_register_session(mock_slurm):
     assert sid.startswith("session.")
 
     # Verify session created with backend
-    mock_slurm.assert_called_once()
+    mock_factory.assert_called_once()
 
 
 @pytest.mark.asyncio
-@patch('radical.edge.plugin_queue_info.QueueInfoSlurm')
-async def test_plugin_queue_info_unregister_session(mock_slurm):
+@patch('radical.edge.plugin_queue_info.make_queue_info')
+async def test_plugin_queue_info_unregister_session(mock_factory):
     '''
     Test unregistering a session.
     '''
@@ -239,14 +240,14 @@ async def test_plugin_queue_info_unregister_session(mock_slurm):
 
 
 @pytest.mark.asyncio
-@patch('radical.edge.plugin_queue_info.QueueInfoSlurm')
-async def test_plugin_queue_info_get_info(mock_slurm):
+@patch('radical.edge.plugin_queue_info.make_queue_info')
+async def test_plugin_queue_info_get_info(mock_factory):
     '''
     Test get_info endpoint.
     '''
     mock_backend = Mock()
     mock_backend.get_info = Mock(return_value={"queues": {}})
-    mock_slurm.return_value = mock_backend
+    mock_factory.return_value = mock_backend
 
     app = FastAPI()
     plugin = PluginQueueInfo(app)
@@ -269,14 +270,14 @@ async def test_plugin_queue_info_get_info(mock_slurm):
 
 
 @pytest.mark.asyncio
-@patch('radical.edge.plugin_queue_info.QueueInfoSlurm')
-async def test_plugin_queue_info_list_jobs(mock_slurm):
+@patch('radical.edge.plugin_queue_info.make_queue_info')
+async def test_plugin_queue_info_list_jobs(mock_factory):
     '''
     Test list_jobs endpoint.
     '''
     mock_backend = Mock()
     mock_backend.list_jobs = Mock(return_value={"jobs": []})
-    mock_slurm.return_value = mock_backend
+    mock_factory.return_value = mock_backend
 
     app = FastAPI()
     plugin = PluginQueueInfo(app)
@@ -299,14 +300,14 @@ async def test_plugin_queue_info_list_jobs(mock_slurm):
 
 
 @pytest.mark.asyncio
-@patch('radical.edge.plugin_queue_info.QueueInfoSlurm')
-async def test_plugin_queue_info_list_allocations(mock_slurm):
+@patch('radical.edge.plugin_queue_info.make_queue_info')
+async def test_plugin_queue_info_list_allocations(mock_factory):
     '''
     Test list_allocations endpoint.
     '''
     mock_backend = Mock()
     mock_backend.list_allocations = Mock(return_value={"allocations": []})
-    mock_slurm.return_value = mock_backend
+    mock_factory.return_value = mock_backend
 
     app = FastAPI()
     plugin = PluginQueueInfo(app)
@@ -329,8 +330,8 @@ async def test_plugin_queue_info_list_allocations(mock_slurm):
 
 
 @pytest.mark.asyncio
-@patch('radical.edge.plugin_queue_info.QueueInfoSlurm')
-async def test_plugin_queue_info_unknown_session_error(mock_slurm):
+@patch('radical.edge.plugin_queue_info.make_queue_info')
+async def test_plugin_queue_info_unknown_session_error(mock_factory):
     '''
     Test that operations on unknown session raise HTTPException.
     '''
@@ -352,30 +353,42 @@ async def test_plugin_queue_info_unknown_session_error(mock_slurm):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-@patch('radical.edge.plugin_queue_info.subprocess.run')
+@patch('radical.edge.batch_system_slurm.subprocess.run')
 async def test_queue_info_session_cancel_job_success(mock_run):
-    """cancel_job calls scancel and returns status dict."""
-    mock_run.return_value = Mock(returncode=0, stderr='')
-    session = QueueInfoSession("sid-cancel", backend=Mock())
-    result = await session.cancel_job("12345")
-    assert result == {'job_id': '12345', 'status': 'canceled'}
-    mock_run.assert_called_once()
-    args = mock_run.call_args[0][0]
-    assert 'scancel' in args
-    assert '12345' in args
+    """cancel_job dispatches to the active batch system (SLURM here)."""
+    from radical.edge import batch_system as _bs
+    from radical.edge.batch_system_slurm import SlurmBatchSystem
+    _bs._DETECTED = SlurmBatchSystem()
+    try:
+        mock_run.return_value = Mock(returncode=0, stderr='')
+        session = QueueInfoSession("sid-cancel", backend=Mock())
+        result = await session.cancel_job("12345")
+        assert result == {'job_id': '12345', 'status': 'canceled'}
+        mock_run.assert_called_once()
+        args = mock_run.call_args[0][0]
+        assert 'scancel' in args
+        assert '12345' in args
+    finally:
+        _bs._DETECTED = None
 
 
 @pytest.mark.asyncio
-@patch('radical.edge.plugin_queue_info.subprocess.run')
+@patch('radical.edge.batch_system_slurm.subprocess.run')
 async def test_queue_info_session_cancel_job_failure(mock_run):
-    """cancel_job raises HTTPException on scancel failure."""
+    """cancel_job raises HTTPException on scheduler failure."""
     from fastapi import HTTPException
-    mock_run.return_value = Mock(returncode=1, stderr='Job not found')
-    session = QueueInfoSession("sid-cancel2", backend=Mock())
-    with pytest.raises(HTTPException) as exc_info:
-        await session.cancel_job("99999")
-    assert exc_info.value.status_code == 500
-    assert "scancel failed" in exc_info.value.detail
+    from radical.edge import batch_system as _bs
+    from radical.edge.batch_system_slurm import SlurmBatchSystem
+    _bs._DETECTED = SlurmBatchSystem()
+    try:
+        mock_run.return_value = Mock(returncode=1, stderr='Job not found')
+        session = QueueInfoSession("sid-cancel2", backend=Mock())
+        with pytest.raises(HTTPException) as exc_info:
+            await session.cancel_job("99999")
+        assert exc_info.value.status_code == 500
+        assert "scancel failed" in exc_info.value.detail
+    finally:
+        _bs._DETECTED = None
 
 
 @pytest.mark.asyncio

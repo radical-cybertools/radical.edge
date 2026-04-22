@@ -830,26 +830,29 @@ class PluginPSIJ(Plugin):
 
     async def _tunnel_watcher(self, edge_name: str, native_id,
                               relay_file: pathlib.Path) -> None:
-        """Watch a SLURM job and spawn a reverse SSH tunnel once it starts.
+        """Watch a batch job and spawn a reverse SSH tunnel once it starts.
 
-        Polls ``squeue`` until the job is RUNNING, then calls
+        Polls the active batch system until the job is RUNNING, then calls
         ``_spawn_tunnel`` to open the reverse SSH tunnel and write the
         assigned port to *relay_file*.
 
         Args:
             edge_name:  Logical name of the child edge service.
-            native_id:  SLURM job ID string/int.
+            native_id:  Native job ID string/int (SLURM/PBS/...).
             relay_file: Path where the tunnel port will be written.
         """
-        from .queue_info import QueueInfoSlurm
+        from .batch_system import (detect_batch_system, STATE_RUNNING,
+                                   TERMINAL_STATES)
+        batch = detect_batch_system()
 
-        log.info("[psij] Watcher started for edge '%s' (job %s)", edge_name, native_id)
+        log.info("[psij] Watcher started for edge '%s' (job %s, backend=%s)",
+                 edge_name, native_id, batch.name)
 
         # --- wait for job to reach RUNNING ---
         last_state = None
         for attempt in range(120):          # up to ~4 min (2s × 120)
             await asyncio.sleep(2)
-            state = await _get_slurm_state(native_id)
+            state = await asyncio.to_thread(batch.job_state, native_id)
             log.debug("[psij] watcher edge=%s job=%s state=%r attempt=%d",
                       edge_name, native_id, state, attempt)
 
@@ -859,17 +862,16 @@ class PluginPSIJ(Plugin):
                          edge_name, native_id, state or '(unknown)', attempt)
                 last_state = state
 
-            if state in ('FAILED', 'CANCELLED', 'TIMEOUT', 'NODE_FAIL', 'PREEMPTED'):
+            if state in TERMINAL_STATES and state != 'DONE':
                 log.warning("[psij] Job %s ended with state %s — aborting tunnel",
                             native_id, state)
                 return
 
-            if state != 'RUNNING':
+            if state != STATE_RUNNING:
                 continue
 
             # --- job is RUNNING: find its nodes ---
-            nodes = await asyncio.to_thread(
-                QueueInfoSlurm.get_job_nodes, str(native_id))
+            nodes = await asyncio.to_thread(batch.job_nodes, str(native_id))
             if not nodes:
                 log.warning("[psij] Job %s RUNNING but no nodes found yet, retrying",
                             native_id)
@@ -1014,16 +1016,4 @@ class PluginPSIJ(Plugin):
                  edge_name, port, proc.pid)
 
 
-async def _get_slurm_state(native_id) -> str:
-    """Return the SLURM state string for *native_id*, or empty string."""
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            'squeue', '--job', str(native_id), '--noheader', '--format=%T',
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE)
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
-        lines = [l.strip() for l in stdout.decode().splitlines() if l.strip()]
-        return lines[0] if lines else ''
-    except Exception:
-        return ''
 

@@ -835,8 +835,28 @@ class XGFabricSession(PluginSession):
             }
         }
 
-        result = await asyncio.to_thread(psij.submit_job, pilot_spec, cluster.get('executor', 'slurm'))
+        executor = cluster.get('executor') or await self._discover_executor(ec)
+        result = await asyncio.to_thread(psij.submit_job, pilot_spec, executor)
         return result['job_id']
+
+    async def _discover_executor(self, ec) -> str:
+        """Ask the remote edge's queue_info plugin which scheduler it uses.
+
+        Returns the matching PsiJ executor name. Falls back to 'slurm' (the
+        historical default) if the edge has no queue_info plugin or the
+        query fails.
+        """
+        try:
+            qi = await asyncio.to_thread(ec.get_plugin, 'queue_info')
+            backend = await asyncio.to_thread(qi.backend)
+        except Exception as exc:
+            log.info("[XGFabric] _discover_executor: probe failed (%s) — "
+                     "defaulting to slurm", exc)
+            return 'slurm'
+        # backend names align with PsiJ executor names; 'none' falls back too.
+        if backend in ('slurm', 'pbs', 'lsf', 'cobalt'):
+            return backend
+        return 'slurm'
 
     # -------------------------------------------------------------------------
     # Data Staging

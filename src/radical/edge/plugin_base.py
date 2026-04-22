@@ -173,7 +173,8 @@ class Plugin(object):
     @property
     def is_compute_node(self) -> bool:
         """True when running inside a batch job allocation (compute node)."""
-        return bool(os.environ.get('SLURM_JOB_ID'))
+        from .batch_system import detect_batch_system
+        return detect_batch_system().in_allocation()
 
     @property
     def is_login_node(self) -> bool:

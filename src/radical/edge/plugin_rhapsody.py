@@ -1289,7 +1289,8 @@ class PluginRhapsody(Plugin):
     @classmethod
     def is_enabled(cls, app: FastAPI) -> bool:
         """Rhapsody loads on compute nodes only (task execution)."""
-        return bool(os.environ.get('SLURM_JOB_ID'))
+        from .batch_system import detect_batch_system
+        return detect_batch_system().in_allocation()
 
     def __init__(self, app: FastAPI, instance_name: str = "rhapsody"):
         super().__init__(app, instance_name)
