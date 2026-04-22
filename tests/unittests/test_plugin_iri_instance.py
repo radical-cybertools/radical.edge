@@ -118,10 +118,11 @@ def test_iri_raise_404():
 
 def test_iri_raise_500():
     resp = MagicMock()
-    resp.is_success   = False
-    resp.status_code  = 500
-    resp.text         = 'internal error'
-    with pytest.raises(Exception, match='IRI endpoint error'):
+    resp.is_success        = False
+    resp.status_code       = 500
+    resp.text              = 'internal error'
+    resp.json.return_value = {'detail': 'endpoint error'}
+    with pytest.raises(Exception, match='endpoint error'):
         _iri_raise(resp)
 
 

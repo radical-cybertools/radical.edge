@@ -96,7 +96,7 @@ import threading
 
 from typing import Any, Dict, List, Optional, Callable, Tuple
 
-import radical.prof as rprof
+from radical.edge import _prof as rprof
 
 from .plugin_base import Plugin
 

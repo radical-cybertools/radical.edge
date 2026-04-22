@@ -9,7 +9,6 @@ fastapi
 uvicorn
 
 psutil
-radical.prof
 rich
 
 psij-python

@@ -20,7 +20,7 @@ from websockets import exceptions as ws_exc
 from fastapi import FastAPI, HTTPException
 from starlette.responses import JSONResponse
 
-import radical.prof as rprof
+from radical.edge import _prof as rprof
 import radical.edge.logging_config  # noqa: F401 # pylint: disable=unused-import
 
 from radical.edge.plugin_base      import Plugin

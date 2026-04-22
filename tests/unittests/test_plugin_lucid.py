@@ -7,10 +7,13 @@ __copyright__ = 'Copyright 2024, RADICAL@Rutgers'
 __license__   = 'MIT'
 
 
+import pytest
+
+pytest.importorskip('radical.pilot')
+
 import radical.edge
 from radical.edge.plugin_lucid import PluginLucid, LucidSession
 
-import pytest
 from unittest.mock import Mock, AsyncMock, patch, MagicMock
 from fastapi import FastAPI, HTTPException
 from starlette.requests import Request
