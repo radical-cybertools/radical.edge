@@ -113,6 +113,7 @@ class PSIJSession(PluginSession):
         self._jobs: Dict[str, Any] = {}       # job_id -> psij.Job
         self._job_meta: Dict[str, dict] = {}  # job_id -> submission metadata
         self._job_states: Dict[str, str] = {}  # track last known state per job
+        self._cancelled_jobs: set = set()      # job_ids the user asked to cancel
         self._poll_interval = kwargs.get('poll_interval', self.poll_interval)
         self._poll_task = None
 
@@ -120,6 +121,19 @@ class PSIJSession(PluginSession):
         self._output_dir = _OUTPUT_BASE / sid
         self._cleanup_stale_output()
         self._output_dir.mkdir(parents=True, exist_ok=True)
+
+    def _effective_state(self, job_id: str, raw_state: str) -> str:
+        """Map a psij state to what the caller should see.
+
+        psij's PBS backend only flags Exit_status == 265 as CANCELED
+        (pbs_base.py:135-139); sites like Aurora return a different code,
+        so a cancelled job surfaces as COMPLETED/FAILED.  We remember
+        which jobs the user asked to cancel and report those as CANCELED
+        regardless of what the backend says.
+        """
+        if job_id in self._cancelled_jobs and raw_state in ('COMPLETED', 'FAILED'):
+            return 'CANCELED'
+        return raw_state
 
     def _cleanup_stale_output(self) -> None:
         """Remove output directories older than _OUTPUT_MAX_AGE_DAYS."""
@@ -207,6 +221,7 @@ class PSIJSession(PluginSession):
             def _on_status(j, status):
                 nonlocal last_state
                 state_str = _normalize_state(status.state)
+                state_str = self._effective_state(job_id, state_str)
 
                 # Skip if state hasn't changed
                 if state_str == last_state:
@@ -255,6 +270,7 @@ class PSIJSession(PluginSession):
 
         status    = job.status
         state_str = _normalize_state(status.state)
+        state_str = self._effective_state(job_id, state_str)
 
         stdout_content = _read_output_file(job, 'stdout_path', stdout_offset)
         stderr_content = _read_output_file(job, 'stderr_path', stderr_offset)
@@ -289,6 +305,7 @@ class PSIJSession(PluginSession):
         jobs = []
         for job_id, job in self._jobs.items():
             state_str = _normalize_state(job.status.state)
+            state_str = self._effective_state(job_id, state_str)
             meta      = self._job_meta.get(job_id, {})
             jobs.append({
                 "job_id":     job_id,
@@ -312,6 +329,9 @@ class PSIJSession(PluginSession):
         if not job:
             raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
 
+        # Record intent *before* calling cancel() so any status update
+        # that races with qdel gets mapped through _effective_state.
+        self._cancelled_jobs.add(job_id)
         try:
             job.cancel()
             return {"job_id": job_id, "status": "canceled"}
@@ -367,6 +387,7 @@ class PSIJSession(PluginSession):
                     try:
                         status    = job.status
                         state_str = _normalize_state(status.state)
+                        state_str = self._effective_state(job_id, state_str)
 
                         # Skip if state hasn't changed
                         last_state = self._job_states.get(job_id)
