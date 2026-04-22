@@ -37,7 +37,7 @@ except ImportError:
 
 import cloudpickle as _cp
 import msgpack
-from radical.edge import _prof as rprof
+from . import _prof as rprof
 
 
 def _assert_json_serializable(obj, path=""):
