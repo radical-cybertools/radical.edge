@@ -284,6 +284,7 @@ class TestPluginUIConfigs:
         assert ui["notifications"]["topic"] == "task_status"
 
     def test_lucid_ui_config(self):
+        pytest.importorskip('radical.pilot')
         from radical.edge.plugin_lucid import PluginLucid
         ui = PluginLucid.ui_config
         assert ui["icon"] == "🧠"

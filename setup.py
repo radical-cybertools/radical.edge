@@ -25,7 +25,7 @@ base     = 'edge'
 name     = 'radical.%s'      % base
 mod_root = 'src/radical/%s/' % base
 
-scripts  = list(glob('bin/*'))
+scripts  = [p for p in glob('bin/*') if os.path.isfile(p)]
 root     = os.path.dirname(__file__) or '.'
 readme   = open('%s/README.md' % root, encoding='utf-8').read()
 descr    = 'RADICAL Edge connects external RCT applications with HPC resources'

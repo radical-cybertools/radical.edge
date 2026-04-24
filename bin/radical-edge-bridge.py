@@ -12,7 +12,7 @@ import socket
 import ssl
 
 import msgpack
-import radical.prof as rprof
+from radical.edge import _prof as rprof
 
 from contextlib import asynccontextmanager
 from typing  import Dict, Any
