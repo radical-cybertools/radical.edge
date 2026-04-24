@@ -260,6 +260,9 @@ def _builtin_strategies() -> dict[str, str]:
         'conservative':
             'radical.edge.task_dispatcher_strategy_conservative'
             ':ConservativeStrategy',
+        'aggressive_scale_to_backlog':
+            'radical.edge.task_dispatcher_strategy_examples'
+            ':AggressiveScaleToBacklogStrategy',
     }
 
 
