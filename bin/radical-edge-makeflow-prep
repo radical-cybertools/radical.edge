@@ -237,7 +237,13 @@ def _emit_rule(rule: Rule, run_id: str) -> list[str]:
 
 
 def _build_wrapper_cmd(rule: Rule, run_id: str, original: str) -> str:
-    '''Produce the ``radical-edge-run ... -- <cmd>`` line.'''
+    '''Produce the ``radical-edge-run ... -- sh -c '<cmd>'`` line.
+
+    The original command is wrapped in ``sh -c`` so shell grammar
+    (pipes, redirections, compound commands) is contained as a single
+    argument to the wrapper rather than splitting at the outer shell
+    that Makeflow uses to invoke the rule.
+    '''
     parts = ['radical-edge-run',
              f'--edge={_q(rule.edge)}',
              f'--pool={_q(rule.pool)}',
@@ -248,7 +254,9 @@ def _build_wrapper_cmd(rule: Rule, run_id: str, original: str) -> str:
     for f in rule.outputs:
         parts.append(f'--out {_q(f)}')
     parts.append('--')
-    parts.append(original)
+    parts.append('sh')
+    parts.append('-c')
+    parts.append(shlex.quote(original))
     return ' '.join(parts)
 
 

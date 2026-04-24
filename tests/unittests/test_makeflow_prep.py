@@ -47,7 +47,8 @@ class TestBasicRewrite:
         assert '--run-id=runid0' in out
         assert '--in in.dat' in out
         assert '--out out.dat' in out
-        assert '-- ./compute in.dat out.dat' in out
+        # Original command is wrapped in sh -c to contain shell grammar
+        assert "-- sh -c './compute in.dat out.dat'" in out
 
     def test_directives_consumed(self):
         out = _run(
@@ -177,8 +178,34 @@ class TestMultiCommand:
             'o: i\n'
             '\tpart1\n'
             '\tpart2\n')
-        # joined with ' ; '
-        assert '-- part1 ; part2' in out
+        # Joined with ' ; ' inside the sh -c argument.
+        assert "-- sh -c 'part1 ; part2'" in out
+
+    def test_shell_metachars_contained(self):
+        """Pipes and redirections must end up inside the sh -c arg so
+        they are not consumed by the outer shell Makeflow uses."""
+        out = _run('EDGE = "e"\nPOOL = "p"\n'
+                   'o: i\n\tcat i | grep x > o\n')
+        assert "-- sh -c 'cat i | grep x > o'" in out
+        # The raw pipe must not appear outside the quoted argument
+        assert '| grep' not in out.replace("'cat i | grep x > o'", '')
+
+    def test_single_quotes_in_cmd_escaped(self):
+        """shlex.quote produces safe output for commands containing
+        single quotes themselves."""
+        out = _run('EDGE = "e"\nPOOL = "p"\n'
+                   'o: i\n\techo \'hi there\'\n')
+        assert '-- sh -c' in out
+        # Some quoted form ends the line; the important part is that
+        # the preprocessor doesn't produce a syntactically broken line.
+        # Compile-check via shlex.split:
+        import shlex as _shlex
+        line = [l for l in out.split('\n') if 'radical-edge-run' in l][0]
+        tokens = _shlex.split(line)
+        sep    = tokens.index('--')
+        # After '-- sh -c', the final token should equal the original.
+        assert tokens[sep + 1:sep + 3] == ['sh', '-c']
+        assert tokens[sep + 3] == "echo 'hi there'"
 
 
 # ---------------------------------------------------------------------------
