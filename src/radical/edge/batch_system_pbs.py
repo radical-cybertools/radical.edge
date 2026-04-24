@@ -13,6 +13,7 @@ import subprocess
 
 from .batch_system import (BatchSystem, register_backend,
                            STATE_PENDING, STATE_RUNNING, STATE_DONE,
+                           STATE_FAILED, STATE_CANCELLED,
                            STATE_HELD, STATE_UNKNOWN)
 
 
@@ -147,6 +148,15 @@ class PBSProBatchSystem(BatchSystem):
     name          = 'pbs'
     psij_executor = 'pbs'
 
+    def __init__(self) -> None:
+        super().__init__()
+        # Native ids we've been asked to cancel.  PBSPro's qstat letter
+        # codes have no dedicated 'cancelled' value — the job ends up in
+        # 'F' (finished) just like a normal exit, so we remember the
+        # intent here and map terminal states to STATE_CANCELLED in
+        # job_state().
+        self._cancelled: set = set()
+
     @classmethod
     def detect(cls) -> bool:
         return shutil.which('qstat') is not None
@@ -178,7 +188,10 @@ class PBSProBatchSystem(BatchSystem):
         code = info.get('job_state', '').strip()
         if not code:
             return STATE_UNKNOWN
-        return _STATE_MAP.get(code[0].upper(), STATE_UNKNOWN)
+        state = _STATE_MAP.get(code[0].upper(), STATE_UNKNOWN)
+        if str(native_id) in self._cancelled and state in (STATE_DONE, STATE_FAILED):
+            return STATE_CANCELLED
+        return state
 
     def job_nodes(self, native_id) -> list:
         try:
@@ -197,6 +210,7 @@ class PBSProBatchSystem(BatchSystem):
                            capture_output=True, text=True, timeout=10)
         if r.returncode != 0:
             raise RuntimeError(f"qdel failed: {r.stderr.strip()}")
+        self._cancelled.add(str(native_id))
 
     def job_allocation(self) -> 'dict | None':
         job_id = os.environ.get('PBS_JOBID')
