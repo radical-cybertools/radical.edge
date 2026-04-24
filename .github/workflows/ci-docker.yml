@@ -1,0 +1,68 @@
+name: Run Docker Example
+
+on:
+  pull_request:
+    types: [ closed ]
+    branches:
+      - devel
+  workflow_dispatch:
+
+jobs:
+  docker-example:
+    name: Build and run Docker example
+    if: github.event.pull_request.merged == true || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+
+    env:
+      RADICAL_EDGE_IMAGE: radicalcybertools/radical.edge
+      RADICAL_EDGE_TAG: dev
+      RADICAL_EDGE_BRANCH: ${{ github.base_ref || 'devel' }}
+      RADICAL_BRIDGE_HOSTNAME: bridge
+
+    defaults:
+      run:
+        working-directory: examples/docker
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: examples/docker
+          push: false
+          load: true
+          tags: ${{ env.RADICAL_EDGE_IMAGE }}:${{ env.RADICAL_EDGE_TAG }}
+          build-args: |
+            GENERATE_BRIDGE_CERT=true
+            BRIDGE_HOSTNAME=${{ env.RADICAL_BRIDGE_HOSTNAME }}
+            RADICAL_EDGE_BRANCH=${{ env.RADICAL_EDGE_BRANCH }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Start containers
+        run: docker compose up -d --no-build --wait
+
+      - name: Wait for edge service to connect
+        run: |
+          timeout 60 bash -c \
+            'until docker compose logs edge 2>&1 | \
+             grep -q "Connected"; do sleep 2; done'
+
+      - name: Run example (sysinfo)
+        run: |
+          docker exec radical-edge-client bash -c \
+            "cd /app/radical.edge/examples && \
+             python3 example_sysinfo.py"
+
+      - name: Show logs on failure
+        if: failure()
+        run: docker compose logs
+
+      - name: Stop and remove containers
+        if: always()
+        run: docker compose down -v
