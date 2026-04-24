@@ -1,0 +1,56 @@
+#!/bin/sh
+# Auto-generated at install time — do not edit.
+#
+# Pilot wrapper for the task dispatcher.  Runs as the pilot's batch-job
+# command; starts a child radical.edge service with [rhapsody, staging]
+# and issues a handshake POST back to the parent dispatcher once the
+# child edge is registered with the bridge.
+#
+# Required environment (set by the dispatcher in the JobSpec):
+#   RADICAL_EDGE_PILOT_ID          – dispatcher-local pilot id
+#   RADICAL_EDGE_EDGE_NAME         – name for this child edge
+#   RADICAL_EDGE_PARENT_EDGE       – parent edge hosting the dispatcher
+#   RADICAL_EDGE_DISPATCHER_SID    – parent dispatcher session id
+#   RADICAL_EDGE_BRIDGE_URL        – bridge URL
+#   RADICAL_EDGE_POOL              – pool name (logging)
+#   RADICAL_EDGE_RHAPSODY_BACKEND  – rhapsody backend name for this pilot
+#   RADICAL_EDGE_SCRATCH_BASE      – shared-FS scratch path
+#
+# Optional:
+#   RADICAL_EDGE_BRIDGE_CA         – CA bundle for HTTPS bridges
+#   RADICAL_EDGE_LOG_LEVEL         – default INFO
+
+set -e
+
+export PATH="@BINDIR@:${PATH}"
+export PYTHONPATH="@SITEPKGS@:${PYTHONPATH:-}"
+
+# Sanity check on required vars
+for var in RADICAL_EDGE_PILOT_ID RADICAL_EDGE_EDGE_NAME \
+           RADICAL_EDGE_PARENT_EDGE RADICAL_EDGE_DISPATCHER_SID \
+           RADICAL_EDGE_BRIDGE_URL RADICAL_EDGE_RHAPSODY_BACKEND; do
+    eval "val=\${$var:-}"
+    if [ -z "$val" ]; then
+        echo "[pilot-wrapper] ERROR: $var unset" >&2
+        exit 2
+    fi
+done
+
+# Point the child edge at the bridge and export its cert if any
+export RADICAL_BRIDGE_URL="${RADICAL_EDGE_BRIDGE_URL}"
+if [ -n "${RADICAL_EDGE_BRIDGE_CA:-}" ]; then
+    export RADICAL_BRIDGE_CERT="${RADICAL_EDGE_BRIDGE_CA}"
+fi
+
+# Start the handshake helper in the background.  It will poll the
+# bridge until our child edge registers, then POST the handshake.
+"@PYTHON@" "@BINDIR@/radical-edge-pilot-handshake.py" &
+HANDSHAKE_PID=$!
+
+# Exec the edge service with rhapsody + staging.  This is the pilot's
+# main process — the batch scheduler treats its exit as the job's exit.
+# The handshake helper will exit on its own once done.
+exec "@PYTHON@" "@BINDIR@/radical-edge-service.py" \
+    -n "${RADICAL_EDGE_EDGE_NAME}" \
+    --plugins rhapsody,staging \
+    "$@"
