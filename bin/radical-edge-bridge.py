@@ -981,7 +981,7 @@ def main():
             advertise_host = _get_outbound_ip() or socket.gethostname()
     else:
         advertise_host = host
-    bridge_url = f"https://{advertise_host}:{port}/register"
+    bridge_url = f"https://{advertise_host}:{port}/"
 
     endpoints["bridge"]["url"] = bridge_url
 
