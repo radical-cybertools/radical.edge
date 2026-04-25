@@ -9,10 +9,10 @@ bridge-only ``iri_connect`` plugin.
 Usage::
 
     # NERSC — read token from local file
-    python examples/example_iri.py ~/.iri/nersc_token nersc
+    python examples/example_iri.py ~/.amsc/token_nersc nersc
 
     # OLCF — read token from local S3M token
-    python examples/example_iri.py ~/.iri/olcf_token olcf
+    python examples/example_iri.py ~/.amsc/token_olcf olcf
 
 The token file should contain only the Bearer token string (no "Bearer" prefix).
 The token is read locally and sent to the bridge at connect time — it is
@@ -35,9 +35,43 @@ import time
 from radical.edge.client import BridgeClient
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  Per-endpoint configuration.
+#
+#  Edit the dict below to match your account / paths and re-run.  Env vars
+#  (IRI_ACCOUNT, IRI_WORKDIR) and CLI positionals override these values.
+# ─────────────────────────────────────────────────────────────────────────────
+
+ENDPOINT_CONFIG = {
+    'nersc': {
+        'resource_id': 'perlmutter',
+        'queue_name' : 'debug',
+        'account'    : None,                                # set me
+        'workdir'    : None,                                # optional on NERSC
+        'constraint' : 'cpu',                               # perlmutter requires cpu/gpu
+    },
+    'olcf': {
+        'resource_id': 'odo',
+        'queue_name' : 'batch',
+        'account'    : 'fus183',
+        'workdir'    : '/gpfs/wolf2/olcf/fus183/proj-shared',
+        'constraint' : None,
+    },
+}
+
+
 def main():
-    token_file = sys.argv[1] if len(sys.argv) > 1 else os.path.expanduser('~/.iri/olcf_token')
-    endpoint   = sys.argv[2] if len(sys.argv) > 2 else 'olcf'
+    token_file  = sys.argv[1] if len(sys.argv) > 1 else os.path.expanduser('~/.amsc/token_olcf')
+    endpoint    = sys.argv[2] if len(sys.argv) > 2 else 'olcf'
+
+    cfg         = dict(ENDPOINT_CONFIG.get(endpoint, {}))
+
+    # CLI positionals (3, 4) override config; env vars override config.
+    resource_id = sys.argv[3] if len(sys.argv) > 3 else cfg.get('resource_id')
+    queue_name  = sys.argv[4] if len(sys.argv) > 4 else cfg.get('queue_name')
+    account     = os.environ.get('IRI_ACCOUNT') or cfg.get('account')
+    workdir     = os.environ.get('IRI_WORKDIR') or cfg.get('workdir')
+    constraint  = cfg.get('constraint')
 
     token_path = os.path.expanduser(token_file)
     if not os.path.exists(token_path):
@@ -88,22 +122,35 @@ def main():
     for r in rlist:
         print(f'    {r.get("name", "-"):20s}  status={r.get("status", "?")}')
 
-    # Use first available resource
-    resource_id = rlist[0].get('name') or rlist[0].get('id', 'perlmutter')
-    print(f'\nUsing resource: {resource_id}')
+    # Use the resource the user (or per-endpoint defaults) picked, NOT rlist[0].
+    if not resource_id:
+        print('  No resource_id given and no default for this endpoint — exiting')
+        cx.disconnect(endpoint)
+        bc.close()
+        return
+    print(f'\nUsing resource: {resource_id}  (queue: {queue_name})'
+          + (f'  account: {account}' if account else ''))
 
     # Submit a simple test job
     print('\nSubmitting test job…')
-    job = iri.submit_job(resource_id, {
+    attributes = {
+        'queue_name': queue_name,
+        'duration'  : 300,
+    }
+    if account:
+        attributes['account'] = account
+    if constraint:
+        attributes['constraint'] = constraint
+    job_spec = {
         'executable' : '/bin/bash',
         'arguments'  : ['-lc', 'echo "IRI test: $(hostname) $(date)"'],
         'name'       : 'edge-iri-test',
         'resources'  : {'node_count': 1, 'process_count': 1},
-        'attributes' : {
-            'queue_name': 'debug',
-            'duration'  : 300,
-        },
-    })
+        'attributes' : attributes,
+    }
+    if workdir:
+        job_spec['directory'] = workdir
+    job = iri.submit_job(resource_id, job_spec)
     job_id = job['job_id']
     print(f'  Job submitted: {job_id}')
 
@@ -123,7 +170,11 @@ def main():
 
     print(f'\nJob finished with state: {state}')
 
-    # Fetch account info (same plugin, same session)
+    # Fetch account info (same plugin, same session).
+    # Note: NERSC's account API takes the same Globus token; OLCF's S3M
+    # token is scoped for compute only — listing projects there returns
+    # 401 by design.  Surface this as a one-line note rather than a
+    # scary traceback.
     print('\nFetching projects…')
     try:
         projects = iri.list_projects()
@@ -131,22 +182,15 @@ def main():
         print(f'  {len(plist)} project(s) found')
         for p in plist[:3]:
             print(f'    {p.get("name", p.get("id", "-"))}')
-    except Exception as exc:
-        print(f'  Could not fetch projects: {exc}')
-
-    # Check for incidents
-    print('\nFetching incidents…')
-    try:
-        incidents = iri.list_incidents()
-        ilist     = incidents.get('incidents', [])
-        if ilist:
-            print(f'  {len(ilist)} active incident(s):')
-            for inc in ilist[:3]:
-                print(f'    [{inc.get("severity", "-")}] {inc.get("subject", inc.get("summary", "-"))}')
+    except RuntimeError as exc:
+        msg = str(exc)
+        if 'HTTP 401' in msg:
+            print(f'  (project listing not available for endpoint {endpoint!r} '
+                  f'— token is likely compute-scoped)')
+        elif 'HTTP 404' in msg:
+            print(f'  (project listing endpoint not available on {endpoint!r})')
         else:
-            print('  No active incidents')
-    except Exception as exc:
-        print(f'  Could not fetch incidents: {exc}')
+            print(f'  Could not fetch projects: {msg}')
 
     # Disconnect the dynamic instance
     cx.disconnect(endpoint)
