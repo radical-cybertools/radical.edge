@@ -8,9 +8,6 @@ __license__   = 'MIT'
 
 import asyncio
 import logging
-import os
-import shutil
-import subprocess
 
 log = logging.getLogger('radical.edge')
 
@@ -20,45 +17,16 @@ from starlette.requests import Request
 from .plugin_session_base import PluginSession
 from .plugin_base import Plugin
 from .client import PluginClient
-from .queue_info import QueueInfoSlurm, _parse_gpus
+from .queue_info import make_queue_info, QueueInfo
 
+# Re-exported for tests / external callers that patch this name on the
+# plugin_queue_info module; the real class lives in queue_info_slurm.
+from .queue_info_slurm import QueueInfoSlurm   # noqa: F401
+from .batch_system import detect_batch_system
 
-def _parse_slurm_time(s: str) -> 'int | None':
-    """Parse a SLURM time string to seconds.
-
-    Accepted formats:
-      ``MM:SS``, ``HH:MM:SS``, ``D-HH:MM:SS``
-
-    Returns:
-        int: Total seconds, or ``None`` for UNLIMITED/INFINITE time limits.
-
-    Raises:
-        RuntimeError: If the string cannot be parsed.
-    """
-    orig = s = s.strip().upper()
-    if s in ('UNLIMITED', 'INFINITE', 'NOT_SET', 'N/A', ''):
-        return None
-
-    days = 0
-    if '-' in s:
-        day_part, s = s.split('-', 1)
-        try:
-            days = int(day_part)
-        except ValueError:
-            raise RuntimeError(f"Cannot parse SLURM time: {orig!r}")
-
-    parts = s.split(':')
-    try:
-        if   len(parts) == 3:
-            h, m, sec = int(parts[0]), int(parts[1]), int(parts[2])
-        elif len(parts) == 2:
-            h, m, sec = 0, int(parts[0]), int(parts[1])
-        else:
-            raise RuntimeError(f"Cannot parse SLURM time: {s!r}")
-    except ValueError:
-        raise RuntimeError(f"Cannot parse SLURM time: {s!r}")
-
-    return days * 86400 + h * 3600 + m * 60 + sec
+# Re-exported for tests / external callers that imported this from the
+# old location. The real implementation lives in batch_system_slurm.
+from .batch_system_slurm import _parse_slurm_time   # noqa: F401
 
 
 class QueueInfoSession(PluginSession):
@@ -68,13 +36,13 @@ class QueueInfoSession(PluginSession):
     All sessions share a single backend instance for cache efficiency.
     """
 
-    def __init__(self, sid: str, backend: QueueInfoSlurm):
+    def __init__(self, sid: str, backend: QueueInfo):
         """
         Initialize a QueueInfoSession instance.
 
         Args:
             sid (str): The unique session ID.
-            backend (QueueInfoSlurm): Shared backend instance from the plugin.
+            backend (QueueInfo): Shared backend instance from the plugin.
         """
         super().__init__(sid)
         self._backend = backend
@@ -143,13 +111,13 @@ class QueueInfoSession(PluginSession):
                                        user, force)
 
     async def cancel_job(self, job_id: str) -> dict:
-        """Cancel a job via scancel."""
+        """Cancel a job via the active batch system (scancel/qdel/...)."""
         self._check_active()
-        result = subprocess.run(['scancel', str(job_id)],
-                                capture_output=True, text=True, timeout=10)
-        if result.returncode != 0:
-            raise HTTPException(status_code=500,
-                                detail=f"scancel failed: {result.stderr.strip()}")
+        batch = detect_batch_system()
+        try:
+            await asyncio.to_thread(batch.cancel, job_id)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=500, detail=str(exc))
         return {'job_id': job_id, 'status': 'canceled'}
 
     async def list_allocations(self, user=None, force=False):
@@ -265,24 +233,34 @@ class QueueInfoClient(PluginClient):
 
 
     def job_allocation(self) -> 'dict | None':
-        """Return edge job allocation info, or None if not inside a SLURM job.
+        """Return edge job allocation info, or None if not inside a batch job.
 
         No session is required.  The information reflects the environment of
         the **edge** process, not the client.
 
         Returns:
-            None: Edge is running on a login node (no ``SLURM_JOB_ID``).
-            dict: ``{"n_nodes": int, "runtime": int | None}`` — number of
-                allocated nodes and walltime limit in seconds (``None`` for
-                UNLIMITED).
+            None: Edge is running on a login node.
+            dict: Allocation summary with keys ``job_id``, ``partition``,
+                ``n_nodes``, ``nodelist``, ``cpus_per_node``,
+                ``gpus_per_node``, ``account``, ``job_name``, ``runtime``.
 
         Raises:
-            RuntimeError: Edge has ``SLURM_JOB_ID`` set but cannot determine
-                allocation details.
+            RuntimeError: Edge is inside an allocation but the scheduler did
+                not provide enough info to summarise it.
         """
         resp = self._http.get(self._url('job_allocation'))
         self._raise(resp, 'job_allocation')
         return resp.json().get('allocation')
+
+    def backend(self) -> str:
+        """Return the active batch backend name on the edge.
+
+        Returns:
+            str: ``'slurm'``, ``'pbs'``, or ``'none'``.
+        """
+        resp = self._http.get(self._url('backend'))
+        self._raise(resp, 'backend')
+        return resp.json().get('backend', 'none')
 
 
 class PluginQueueInfo(Plugin):
@@ -291,7 +269,11 @@ class PluginQueueInfo(Plugin):
 
     This plugin exposes batch system queue information, job listings, and
     allocation data via REST endpoints.  ``is_enabled()`` prevents loading on
-    edges where SLURM (sinfo) is not present.
+    edges where no recognised batch system is installed.
+
+    Backend selection is automatic: the plugin uses
+    :func:`make_queue_info` which dispatches to ``QueueInfoSlurm``,
+    ``QueueInfoPBSPro``, or ``QueueInfoNone`` based on what's available.
     """
 
     plugin_name = "queue_info"
@@ -302,7 +284,7 @@ class PluginQueueInfo(Plugin):
     ui_config = {
         "icon": "📋",
         "title": "Queue Info",
-        "description": "Inspect Slurm partitions, jobs and allocations.",
+        "description": "Inspect batch partitions, jobs and allocations.",
         "refresh_button": True,
         "monitors": [{
             "id": "partitions",
@@ -313,27 +295,34 @@ class PluginQueueInfo(Plugin):
         }]
     }
 
-    def __init__(self, app: FastAPI, instance_name='queue_info', slurm_conf=None):
+    def __init__(self, app: FastAPI, instance_name='queue_info',
+                 backend_conf=None, slurm_conf=None):
         """
         Initialize the QueueInfo plugin.
 
         Args:
             app (FastAPI): The FastAPI application instance.
-            instance_name (str): Plugin instance name (used in namespace). Defaults to
-                'queue_info'. Override for multi-cluster setups.
-            slurm_conf (str): Optional path to slurm.conf for the target
-                cluster. This will be passed to the shared backend.
+            instance_name (str): Plugin instance name (used in namespace).
+                Defaults to 'queue_info'. Override for multi-cluster setups.
+            backend_conf (str): Optional path to a scheduler config file
+                (e.g. slurm.conf). Forwarded to the backend; only the SLURM
+                backend uses it today.
+            slurm_conf (str): Deprecated alias for ``backend_conf``.
         """
         super().__init__(app, instance_name)
 
+        # Back-compat: prefer backend_conf when both are given.
+        conf = backend_conf if backend_conf is not None else slurm_conf
+
         # Create shared backend for all sessions
-        self._backend = QueueInfoSlurm(slurm_conf=slurm_conf)
+        self._backend = make_queue_info(conf_path=conf)
 
         # Start background prefetch to populate cache
         self._backend.start_prefetch()
 
         # Register QueueInfo-specific routes
         self.add_route_get('job_allocation', self.job_allocation_endpoint)
+        self.add_route_get('backend',        self.backend_endpoint)
         self.add_route_get('get_info/{sid}', self.get_info)
         self.add_route_get('list_jobs/{sid}/{queue}', self.list_jobs)
         self.add_route_get('list_all_jobs/{sid}', self.list_all_jobs)
@@ -355,104 +344,34 @@ class PluginQueueInfo(Plugin):
 
     @classmethod
     def is_enabled(cls, app: FastAPI) -> bool:
-        """Load only when SLURM is present and supports --json."""
-        if not shutil.which('sinfo'):
-            return False
-        result = subprocess.run(['sinfo', '--json'], capture_output=True, timeout=5)
-        return result.returncode == 0
+        """Load on edges with a recognised batch system (SLURM or PBSPro)."""
+        return detect_batch_system().name != 'none'
 
     def get_job_allocation(self) -> 'dict | None':
-        """Return edge job allocation info, or None if not inside a SLURM job.
+        """Return edge job allocation info, or None if not inside a job.
 
-        Checks SLURM environment variables to determine whether the edge process
-        is running inside a batch job allocation.  If it is, queries ``squeue``
-        for the walltime limit.
+        Delegates to the active :class:`BatchSystem`.
 
         Returns:
-            None: If the edge is running on a login node (no ``SLURM_JOB_ID``).
-            dict: ``{"n_nodes": int, "runtime": int | None}`` where ``n_nodes``
-                is the number of allocated nodes and ``runtime`` is the walltime
-                limit in seconds (``None`` for UNLIMITED).
+            None: Edge is running on a login node.
+            dict: Allocation details (see ``BatchSystem.job_allocation``).
 
         Raises:
-            RuntimeError: If ``SLURM_JOB_ID`` is set but node count or runtime
-                cannot be determined (missing env var, squeue failure, timeout).
+            RuntimeError: Edge is inside an allocation but the scheduler did
+                not provide enough info to summarise it.
         """
-        SLURM_VARS = [
-            'SLURM_JOB_ID', 'SLURM_NNODES', 'SLURM_JOB_NUM_NODES',
-            'SLURM_JOB_PARTITION', 'SLURM_JOB_ACCOUNT', 'SLURM_JOB_NAME',
-            'SLURM_JOB_NODELIST', 'SLURM_CPUS_ON_NODE',
-            'SLURM_GPUS_ON_NODE', 'SLURM_GPUS_PER_NODE',
-        ]
-        env_snapshot = {k: os.environ.get(k) for k in SLURM_VARS}
-        log.debug('[queue_info] get_job_allocation env: %s', env_snapshot)
-
-        job_id = os.environ.get('SLURM_JOB_ID')
-        if not job_id:
-            log.debug('[queue_info] SLURM_JOB_ID not set — reporting login node')
-            return None
-
-        n_nodes = (os.environ.get('SLURM_NNODES') or
-                   os.environ.get('SLURM_JOB_NUM_NODES'))
-        if not n_nodes:
-            raise RuntimeError(
-                f"SLURM_JOB_ID={job_id!r} is set but SLURM_NNODES is unavailable")
-
-        cmd = ['squeue', '--job', job_id, '--noheader', '--format=%l']
-        log.debug('[queue_info] running: %s', cmd)
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise RuntimeError(
-                f"Cannot query runtime for job {job_id}: {exc}") from exc
-
-        log.debug('[queue_info] squeue rc=%d stdout=%r stderr=%r',
-                  result.returncode, result.stdout, result.stderr)
-
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"squeue failed for job {job_id}: {result.stderr.strip()}")
-
-        runtime = _parse_slurm_time(result.stdout.strip())
-
-        def _intenv(key: str) -> 'int | None':
-            v = os.environ.get(key)
-            try:
-                return int(v) if v else None
-            except ValueError:
-                return None
-
-        # GPUs per node: prefer the per-node count on this specific node,
-        # fall back to the per-node request string (may be "4" or "a100:4").
-        # SLURM_GPUS_ON_NODE is a plain int; SLURM_GPUS_PER_NODE uses GRES format.
-        gpus_raw = (os.environ.get('SLURM_GPUS_ON_NODE') or
-                    os.environ.get('SLURM_GPUS_PER_NODE'))
-        if gpus_raw:
-            try:
-                # Plain integer (SLURM_GPUS_ON_NODE or bare SLURM_GPUS_PER_NODE)
-                gpus_per_node = int(gpus_raw)
-            except ValueError:
-                # "type:count" format from SLURM_GPUS_PER_NODE (e.g. "a100:2")
-                try:
-                    gpus_per_node = int(gpus_raw.split(':')[-1]) or None
-                except ValueError:
-                    gpus_per_node = None
-        else:
-            gpus_per_node = None
-
-        alloc = {
-            'job_id'       : job_id,
-            'partition'    : os.environ.get('SLURM_JOB_PARTITION'),
-            'n_nodes'      : int(n_nodes),
-            'nodelist'     : os.environ.get('SLURM_JOB_NODELIST'),
-            'cpus_per_node': _intenv('SLURM_CPUS_ON_NODE'),
-            'gpus_per_node': gpus_per_node if gpus_per_node else None,
-            'account'      : os.environ.get('SLURM_JOB_ACCOUNT'),
-            'job_name'     : os.environ.get('SLURM_JOB_NAME'),
-            'runtime'      : runtime,
-        }
+        alloc = detect_batch_system().job_allocation()
         log.debug('[queue_info] get_job_allocation result: %s', alloc)
         return alloc
+
+    async def backend_endpoint(self, request: Request) -> dict:
+        """Session-less endpoint: report which batch backend is active.
+
+        Response::
+
+            {"backend": "slurm" | "pbs" | "none"}
+        """
+        return {'backend': self._backend.backend_name}
 
     async def job_allocation_endpoint(self, request: Request) -> dict:
         """Session-less endpoint: returns current edge job allocation info.

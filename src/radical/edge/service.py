@@ -98,7 +98,8 @@ class EdgeService(PluginHostBase):
     """
 
     def __init__(self, bridge_url: Optional[str] = None, name: Optional[str] = None,
-                 plugins: Optional[list] = None, tunnel: bool = False):
+                 plugins: Optional[list] = None, tunnel: bool = False,
+                 tunnel_via: Optional[str] = None):
         """
         Initialize the Edge Service.
 
@@ -106,6 +107,12 @@ class EdgeService(PluginHostBase):
             bridge_url: WebSocket URL for the Bridge. Defaults to env var
                         'RADICAL_BRIDGE_URL' or internal default.
             name: Edge service name for identification. Defaults to hostname.
+            tunnel: When True, open an outbound SSH tunnel to the login host
+                    and route the bridge connection through it. See
+                    :mod:`radical.edge.tunnel`.
+            tunnel_via: Explicit login host to tunnel through. If unset,
+                    falls back to ``PBS_O_HOST`` (PBSPro) or
+                    ``SLURM_SUBMIT_HOST`` (SLURM).
         """
         self._bridge_url: str = bridge_url or os.environ.get("RADICAL_BRIDGE_URL", "")
         self._app: FastAPI = FastAPI(title="Embedded Edge Service")
@@ -121,6 +128,8 @@ class EdgeService(PluginHostBase):
         self._app.state.edge_service = self
         self._app.state.is_bridge    = False
         self._tunnel: bool = tunnel
+        self._tunnel_via: Optional[str] = tunnel_via
+        self._tunnel_proc = None     # subprocess.Popen of active SSH tunnel
         self._ws: Optional[websockets.WebSocketClientProtocol] = None
         self._send_lock: asyncio.Lock = asyncio.Lock()
         self._stop_event: asyncio.Event = asyncio.Event()
@@ -384,34 +393,16 @@ class EdgeService(PluginHostBase):
         self._stop_event.clear()
         self._running_task = asyncio.current_task()
 
-        # ── Reverse-tunnel relay (--tunnel flag) ─────────────────────────────
-        # When --tunnel is passed, a parent edge has set up a reverse SSH
-        # tunnel.  The tunnel port is written to a shared file derived from
-        # this edge's name; we wait for it and rewrite the bridge URL to go
-        # through localhost:<port>.
+        # ── Outbound SSH tunnel (--tunnel flag) ──────────────────────────────
+        # When --tunnel is passed we are running on a compute node and the
+        # bridge is only reachable from the login node. We open an outbound
+        # ssh -L tunnel to the login host ourselves and rewrite the bridge
+        # URL to localhost:<allocated_port>. Compute→login SSH is permitted
+        # on virtually all HPC sites; the reverse direction (login→compute)
+        # is blocked on Aurora and others.
         if self._tunnel:
-            relay_file = (
-                pathlib.Path.home() / '.radical' / 'edge' / 'tunnels'
-                / f'{self._name}.port'
-            )
-            log.info("[Edge] --tunnel: waiting for relay port file: %s", relay_file)
-            for _ in range(30):   # 30 × 2s = 60 s
-                if relay_file.exists():
-                    break
-                await asyncio.sleep(2)
-            else:
-                raise RuntimeError(
-                    f"Relay port file never appeared after 60 s: {relay_file}\n"
-                    f"  The parent edge's SSH reverse-tunnel watcher writes this file "
-                    f"once the tunnel is active.  Bridge URL: {self._bridge_url}")
-
-            relay_port = int(relay_file.read_text().strip())
-            from urllib.parse import urlparse, urlunparse
-            parsed = urlparse(self._bridge_url)
-            self._bridge_url = urlunparse(
-                parsed._replace(netloc=f'localhost:{relay_port}'))
-            log.info("[Edge] Relay active; using %s", self._bridge_url)
-        # ── End relay setup ───────────────────────────────────────────────────
+            await self._open_tunnel()
+        # ── End tunnel setup ──────────────────────────────────────────────────
 
         while not self._stop_event.is_set():
             try:
@@ -592,6 +583,46 @@ class EdgeService(PluginHostBase):
         self._stop_event.set()
         if self._running_task:
             self._running_task.cancel()
+        if self._tunnel_proc is not None:
+            from . import tunnel as _tunnel
+            _tunnel.cleanup_tunnel(self._tunnel_proc, self._name)
+            self._tunnel_proc = None
+
+    async def _open_tunnel(self) -> None:
+        """Open an outbound SSH tunnel to the login host (--tunnel mode).
+
+        Derives the login host from ``tunnel_via``, then ``PBS_O_HOST``,
+        then ``SLURM_SUBMIT_HOST``.  Spawns the SSH process, parses the
+        allocated port, and rewrites ``self._bridge_url`` to route through
+        ``localhost:<port>``.
+        """
+        from urllib.parse import urlparse, urlunparse
+        from . import tunnel as _tunnel
+
+        login_host = (self._tunnel_via
+                      or os.environ.get('PBS_O_HOST')
+                      or os.environ.get('SLURM_SUBMIT_HOST'))
+        if not login_host:
+            raise RuntimeError(
+                "--tunnel: no login host available. Pass --tunnel-via HOST or "
+                "set PBS_O_HOST / SLURM_SUBMIT_HOST.")
+
+        parsed      = urlparse(self._bridge_url)
+        bridge_host = parsed.hostname or 'localhost'
+        bridge_port = parsed.port or (443 if parsed.scheme == 'https' else 8000)
+
+        log.info("[Edge] --tunnel: opening ssh -L tunnel via %s to %s:%d",
+                 login_host, bridge_host, bridge_port)
+
+        proc, port = await asyncio.to_thread(
+            _tunnel.spawn_tunnel,
+            login_host, bridge_host, bridge_port, self._name)
+        self._tunnel_proc = proc
+
+        self._bridge_url = urlunparse(
+            parsed._replace(netloc=f'localhost:{port}'))
+        log.info("[Edge] Tunnel active on localhost:%d; bridge URL now %s",
+                 port, self._bridge_url)
 
 
 

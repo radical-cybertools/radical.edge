@@ -22,8 +22,9 @@ from typing import Dict, List, Any
 from fastapi import FastAPI
 from starlette.requests import Request
 
-from .plugin_base import Plugin, detect_scheduler
-from .client import PluginClient
+from .plugin_base   import Plugin
+from .client        import PluginClient
+from .batch_system  import detect_batch_system
 
 log = logging.getLogger("radical.edge")
 
@@ -612,16 +613,19 @@ class PluginSysInfo(Plugin):
 
         Role is one of ``bridge`` / ``login`` / ``compute``.  When the
         edge is running inside a batch allocation, ``scheduler`` and
-        ``job_id`` carry the detected scheduler and the allocation id.
+        ``job_id`` carry the detected scheduler name and the allocation
+        id; otherwise both are ``None`` (login nodes with a scheduler
+        installed but no active job report ``scheduler=None``).
         """
-        scheduler, job_id = detect_scheduler()
-        if self.is_bridge:    role = 'bridge'
-        elif job_id:          role = 'compute'
-        else:                 role = 'login'
+        bs       = detect_batch_system()
+        in_alloc = bs.in_allocation()
+        if   self.is_bridge: role = 'bridge'
+        elif in_alloc:       role = 'compute'
+        else:                role = 'login'
         return {
             'role'     : role,
-            'scheduler': scheduler,
-            'job_id'   : job_id,
+            'scheduler': bs.name    if in_alloc else None,
+            'job_id'   : bs.job_id() if in_alloc else None,
         }
 
     async def get_metrics_endpoint(self, request: Request) -> dict:

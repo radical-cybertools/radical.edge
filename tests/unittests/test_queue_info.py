@@ -119,6 +119,10 @@ class TestQueueInfoBase:
                 self.collect_count += 1
                 return {'jobs': [{'id': 1, 'name': 'test'}]}
 
+            def _collect_all_user_jobs(self, user):
+                self.collect_count += 1
+                return {'jobs': [{'id': 1, 'name': 'test'}]}
+
             def _collect_allocations(self, user):
                 self.collect_count += 1
                 return {'allocations': [{'account': 'test'}]}
@@ -618,14 +622,23 @@ class TestGetJobAllocation:
     """
 
     def _make_plugin(self):
-        """Construct a PluginQueueInfo without starting prefetch."""
-        with patch('radical.edge.plugin_queue_info.QueueInfoSlurm') as MockBackend:
-            MockBackend.return_value.start_prefetch = Mock()
-            from fastapi import FastAPI
-            app    = FastAPI()
-            plugin = PluginQueueInfo.__new__(PluginQueueInfo)
-            plugin._backend = MockBackend()
-            return plugin
+        """Construct a PluginQueueInfo without starting prefetch.
+
+        ``get_job_allocation()`` delegates to the active BatchSystem; we
+        force-detect SLURM so the underlying squeue/env-var path is
+        exercised regardless of the host running the tests.
+        """
+        from radical.edge import batch_system as _bs
+        from radical.edge.batch_system_slurm import SlurmBatchSystem
+        _bs._DETECTED = SlurmBatchSystem()
+        plugin = PluginQueueInfo.__new__(PluginQueueInfo)
+        plugin._backend = Mock()
+        return plugin
+
+    def teardown_method(self, method):
+        """Clear the cached batch system between tests."""
+        from radical.edge import batch_system as _bs
+        _bs._DETECTED = None
 
     def test_no_job_id_returns_none(self):
         plugin = self._make_plugin()

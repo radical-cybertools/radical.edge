@@ -113,12 +113,14 @@ export function init(page, api) {
     });
   }
 
-  // Pre-fill --url / --name args for first submission
+  // Pre-fill --url / --name args for first submission.
+  // Default to `-p all` because the compute node can host more plugins
+  // than the login node — using the login's plugin list as a default
+  // would needlessly restrict the sub-edge.
   const argsInput = page.querySelector('.p-args');
   if (argsInput && !argsInput.value) {
     const nextName = getNextEdgeChildName(api.edgeName);
-    const plugins  = api.getPluginNames().join(',');
-    argsInput.value = `--url ${api.bridgeUrl} --name ${nextName} -p ${plugins}`;
+    argsInput.value = `--url ${api.bridgeUrl} --name ${nextName} -p all`;
   }
 
   // Pre-populate tunnel port from bridge URL

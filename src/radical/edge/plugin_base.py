@@ -15,28 +15,6 @@ from .ui_schema import UIConfig, ui_config_to_dict
 log = logging.getLogger("radical.edge")
 
 
-# Map scheduler name -> environment variable carrying the job id when
-# running inside an allocation.  Order matters: the first match wins.
-_SCHEDULER_JOB_ENV = (
-    ('slurm', 'SLURM_JOB_ID'),
-    ('pbs',   'PBS_JOBID'),
-    ('lsf',   'LSB_JOBID'),
-)
-
-
-def detect_scheduler() -> tuple:
-    """Return ``(scheduler_name, job_id)`` if running inside an allocation.
-
-    Checks the environment for SLURM, PBS/PBSPro and LSF job-id variables
-    in that order.  Returns ``(None, None)`` when no allocation is detected.
-    """
-    for name, env_var in _SCHEDULER_JOB_ENV:
-        job_id = os.environ.get(env_var)
-        if job_id:
-            return name, job_id
-    return None, None
-
-
 class Plugin(object):
     """
     Base class for Edge plugins.
@@ -194,12 +172,9 @@ class Plugin(object):
 
     @property
     def is_compute_node(self) -> bool:
-        """True when running inside a batch job allocation (compute node).
-
-        Detects SLURM, PBS/PBSPro and LSF allocations via their canonical
-        job-id environment variables.
-        """
-        return detect_scheduler()[0] is not None
+        """True when running inside a batch job allocation (compute node)."""
+        from .batch_system import detect_batch_system
+        return detect_batch_system().in_allocation()
 
     @property
     def is_login_node(self) -> bool:
