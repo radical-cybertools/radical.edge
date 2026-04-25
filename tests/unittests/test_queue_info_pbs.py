@@ -163,7 +163,33 @@ class TestCollectJobs:
         assert j['time_limit'] == 3600
 
 
-def test_collect_allocations_returns_empty():
-    """PBSPro has no native sacctmgr equivalent."""
+def test_collect_allocations_returns_empty_without_sbank():
+    """When sbank-list-allocations is unavailable we degrade gracefully."""
     backend = QueueInfoPBSPro()
-    assert backend._collect_allocations('alice') == {'allocations': []}
+    with patch('shutil.which', return_value=None):
+        assert backend._collect_allocations('alice') == {'allocations': []}
+
+
+def test_collect_allocations_parses_sbank_output():
+    """Aurora-style sbank-list-allocations output is parsed into records."""
+    sample = (
+        " Allocation  Suballocation  Start       End         Resource  Project    Jobs  Charged  Available Balance \n"
+        " ----------  -------------  ----------  ----------  --------  ---------  ----  -------  ----------------- \n"
+        " 15370       15337          2025-11-17  2026-10-01  aurora    Fusion-FM    10      0.2           -5,533.5 \n"
+        "\n"
+        "Totals:\n"
+        "  Rows: 1\n"
+    )
+    backend = QueueInfoPBSPro()
+    fake_proc = MagicMock(returncode=0, stdout=sample, stderr='')
+    with patch('shutil.which', return_value='/usr/bin/sbank-list-allocations'), \
+         patch('radical.edge.queue_info_pbs.subprocess.run',
+               return_value=fake_proc):
+        result = backend._collect_allocations('alice')
+    assert len(result['allocations']) == 1
+    a = result['allocations'][0]
+    assert a['account']              == 'Fusion-FM'
+    assert a['allocation_id']        == 15370
+    assert a['used_node_hours']      == 0.2
+    assert a['remaining_node_hours'] == -5533.5
+    assert a['resource']             == 'aurora'

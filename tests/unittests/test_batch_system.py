@@ -49,11 +49,30 @@ class TestDetect:
     def test_detects_pbs_when_qstat_present_and_no_squeue(self):
         def _which(cmd):
             return '/usr/bin/qstat' if cmd == 'qstat' else None
-        with patch('shutil.which', side_effect=_which):
+        # Pin the Aurora marker absent so the generic PBS backend wins;
+        # without this, AuroraPBSBatchSystem (registered first) would
+        # match on hosts where /opt/aurora actually exists.
+        with patch('shutil.which', side_effect=_which), \
+             patch('radical.edge.batch_system_pbs.os.path.isdir',
+                   return_value=False):
             b = detect_batch_system()
         assert isinstance(b, PBSProBatchSystem)
         assert b.name == 'pbs'
         assert b.psij_executor == 'pbs'
+
+    def test_detects_aurora_pbs_when_marker_present(self):
+        from radical.edge.batch_system_pbs import AuroraPBSBatchSystem
+        def _which(cmd):
+            return '/usr/bin/qstat' if cmd == 'qstat' else None
+        with patch('shutil.which', side_effect=_which), \
+             patch('radical.edge.batch_system_pbs.os.path.isdir',
+                   return_value=True):
+            b = detect_batch_system()
+        assert isinstance(b, AuroraPBSBatchSystem)
+        assert b.name == 'pbs-aurora'
+        assert b.psij_executor == 'pbs'
+        assert b.default_custom_attributes() == {
+            'pbs.l': 'filesystems=home:flare'}
 
     def test_slurm_wins_when_both_present(self):
         with patch('shutil.which', return_value='/usr/bin/x'):
