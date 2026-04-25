@@ -12,15 +12,61 @@ Disconnect removes the dynamic instance and its sessions.
 import logging
 import os
 
-from typing import Dict
+from typing import Any, Dict
 
 from fastapi import FastAPI, HTTPException, Request
 
+from .client              import PluginClient
 from .plugin_base         import Plugin
-from .plugin_iri_instance import PluginIRIInstance
+from .plugin_iri_instance import PluginIRIInstance, IRIInstanceClient
 from .iri_endpoints       import IRI_ENDPOINTS
 
 log = logging.getLogger('radical.edge')
+
+
+class IRIConnectClient(PluginClient):
+    '''Client-side helper for the ``iri_connect`` bridge plugin.
+
+    ``connect()`` returns a ready-to-use :class:`IRIInstanceClient` bound to
+    the dynamically registered ``iri.<endpoint>`` plugin instance.
+    '''
+
+    def list_endpoints(self) -> Dict[str, Any]:
+        resp = self._http.get(self._url('endpoints'))
+        self._raise(resp)
+        return resp.json()
+
+    def get_status(self) -> Dict[str, Any]:
+        resp = self._http.get(self._url('status'))
+        self._raise(resp)
+        return resp.json()
+
+    def disconnect(self, endpoint: str) -> Dict[str, Any]:
+        name = endpoint if endpoint.startswith('iri.') else f'iri.{endpoint}'
+        resp = self._http.post(self._url(f'disconnect/{name}'))
+        self._raise(resp, f'disconnect {name!r}')
+        return resp.json()
+
+    def connect(self, endpoint: str, token: str) -> 'IRIInstanceClient':
+        '''Connect to an IRI endpoint and return a client for the new instance.
+
+        If the endpoint is already connected (409), returns a client for the
+        existing instance instead of raising.
+        '''
+        resp = self._http.post(self._url('connect'),
+                               json={'endpoint': endpoint, 'token': token})
+        if resp.status_code != 409:
+            self._raise(resp, f'connect {endpoint!r}')
+
+        iname     = f'iri.{endpoint}'
+        namespace = f'/{self._edge_id}/{iname}'
+        client    = IRIInstanceClient(
+            self._http, namespace,
+            bridge_client=self._bc,
+            edge_id=self._edge_id,
+            plugin_name=iname)
+        client.register_session()
+        return client
 
 
 class PluginIRIConnect(Plugin):
@@ -28,6 +74,7 @@ class PluginIRIConnect(Plugin):
 
     plugin_name   = 'iri_connect'
     session_class = None
+    client_class  = IRIConnectClient
     version       = '0.0.1'
     ui_module     = os.path.join(os.path.dirname(__file__),
                                  'data', 'plugins', 'iri_connect.js')
