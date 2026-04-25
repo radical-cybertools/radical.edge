@@ -203,6 +203,60 @@ async def test_deregister_unknown_is_noop():
     assert host._announce_called == 0
 
 
+@pytest.mark.asyncio
+async def test_deregister_strips_direct_routes():
+    """deregister must remove the plugin's entries from app.state.direct_routes.
+
+    Regression test: if stale routes from a deregistered instance are left
+    in the table, a subsequent register_dynamic_plugin under the same name
+    would leave the dead instance's routes ahead of the new ones in match
+    order, and requests would dispatch onto an object whose ``_sessions``
+    has been emptied.
+    """
+    app  = FastAPI()
+    host = _TestHost(app)
+
+    p1 = await host.register_dynamic_plugin(_DummyPlugin, 'dummy.one')
+    p1.add_route_get('probe', lambda req: {'ok': 1})
+    routes_after_register = list(app.state.direct_routes)
+    assert any(entry[3].__self__ is p1 for entry in routes_after_register), \
+        "test setup: expected at least one route bound to the new plugin"
+
+    await host.deregister_dynamic_plugin('dummy.one')
+
+    # No surviving route should be bound to the deregistered instance.
+    assert not any(entry[3].__self__ is p1
+                   for entry in app.state.direct_routes
+                   if hasattr(entry[3], '__self__')), \
+        "stale routes for deregistered plugin remained in direct_routes"
+
+
+@pytest.mark.asyncio
+async def test_reregister_replaces_routes_cleanly():
+    """register → deregister → re-register: requests hit the NEW instance."""
+    app  = FastAPI()
+    host = _TestHost(app)
+
+    p1 = await host.register_dynamic_plugin(_DummyPlugin, 'dummy.one')
+    p1.add_route_get('probe', lambda req: {'ok': 1})
+    await host.deregister_dynamic_plugin('dummy.one')
+
+    p2 = await host.register_dynamic_plugin(_DummyPlugin, 'dummy.one')
+    p2.add_route_get('probe', lambda req: {'ok': 2})
+
+    # The first matching 'probe' route in direct_routes must belong to p2.
+    for entry in app.state.direct_routes:
+        method, pattern, _, handler = entry
+        if method == 'GET' and pattern.match('/dummy.one/probe'):
+            assert getattr(handler, '__self__', None) is not p1, \
+                "stale route from p1 still ahead of p2 in match order"
+            # First match wins; p2's must be it.
+            assert handler({}) == {'ok': 2}
+            break
+    else:
+        pytest.fail("no route matched /dummy.one/probe after re-register")
+
+
 # ---------------------------------------------------------------------------
 # _announce_topology is abstract
 # ---------------------------------------------------------------------------

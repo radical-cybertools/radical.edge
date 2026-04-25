@@ -152,9 +152,13 @@ class Plugin(object):
         self._main_loop: Optional[asyncio.AbstractEventLoop] = None
         self._cleanup_task: Optional[asyncio.Task] = None
 
-        # Shared direct-dispatch route table (one list across all plugins)
+        # Shared direct-dispatch route table (one list across all plugins).
+        # We also track the entries this particular plugin instance owns,
+        # so a dynamic-plugin host can strip them on deregister without
+        # having to guess by handler identity or path prefix.
         if not hasattr(self._app.state, 'direct_routes'):
             self._app.state.direct_routes = []
+        self._owned_routes: list = []
 
         # Built-in session management routes
         self.add_route_post('register_session', self.register_session)
@@ -239,9 +243,9 @@ class Plugin(object):
             else:
                 regex_parts.append(re.escape(part))
         pattern = re.compile('^/' + '/'.join(regex_parts) + '$')
-        self._app.state.direct_routes.append(
-            (method, pattern, tuple(param_names), handler)
-        )
+        entry = (method, pattern, tuple(param_names), handler)
+        self._app.state.direct_routes.append(entry)
+        self._owned_routes.append(entry)
 
     def _create_session(self, sid: str, **kwargs) -> PluginSession:
         """

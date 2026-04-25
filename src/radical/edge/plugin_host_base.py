@@ -165,8 +165,11 @@ class PluginHostBase:
     async def deregister_dynamic_plugin(self, instance_name: str) -> None:
         """Remove a dynamically registered plugin instance.
 
-        Closes all sessions on the plugin and announces the topology change.
-        If *instance_name* is not found this is a silent no-op.
+        Closes all sessions on the plugin, strips the plugin's routes from
+        the host's direct-dispatch table (otherwise a re-register would
+        leave the dead plugin's stale routes ahead of the new ones in
+        match order), and announces the topology change.  If
+        *instance_name* is not found this is a silent no-op.
         """
         plugin = self._plugins.pop(instance_name, None)
         if plugin is None:
@@ -185,6 +188,23 @@ class PluginHostBase:
         # Cancel cleanup task if running
         if plugin._cleanup_task and not plugin._cleanup_task.done():
             plugin._cleanup_task.cancel()
+
+        # Strip the plugin's routes from the direct-dispatch table.
+        # ``Plugin._register_direct`` records every entry it adds in the
+        # plugin's own ``_owned_routes`` list, so we know exactly which
+        # entries to drop here.  Without this, a subsequent
+        # register_dynamic_plugin call would leave the dead plugin's
+        # routes ahead of the new ones, and requests would dispatch onto
+        # an instance whose ``_sessions`` is empty.
+        direct_routes = getattr(self._app.state, 'direct_routes', None)
+        owned         = getattr(plugin, '_owned_routes', None)
+        if direct_routes is not None and owned:
+            owned_ids = {id(entry) for entry in owned}
+            direct_routes[:] = [e for e in direct_routes
+                                  if id(e) not in owned_ids]
+            log.debug('[PluginHost] Stripped %d direct routes for %s',
+                      len(owned_ids), instance_name)
+            owned.clear()
 
         log.info('[PluginHost] Deregistered plugin: %s', instance_name)
         await self._announce_topology()
