@@ -94,6 +94,19 @@ class BatchSystem(ABC):
         """The set of normalized states that mean 'job is done'."""
         return TERMINAL_STATES
 
+    def default_custom_attributes(self) -> dict:
+        """Per-site PSIJ custom_attributes to merge into every submission.
+
+        Returned when the caller submits via the PSIJ executor that
+        corresponds to this backend (``psij_executor`` on the class).
+        Caller-provided attributes take precedence on key conflicts.
+
+        Default: no defaults.  Site-specific subclasses override to
+        encode hard requirements (e.g. Aurora's ``filesystems=home:flare``
+        resource is mandatory for qsub).
+        """
+        return {}
+
 
 class NullBatchSystem(BatchSystem):
     """Fallback when no scheduler is installed (e.g. dev laptop)."""

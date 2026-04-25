@@ -171,9 +171,28 @@ class PSIJSession(PluginSession):
                 if node_count:
                     spec.attributes.resource_count = int(node_count)
 
-            if 'custom_attributes' in job_spec_dict:
-                spec.attributes.custom_attributes = dict(
-                    job_spec_dict['custom_attributes'])
+            # Merge site defaults for PSIJ custom_attributes with the
+            # caller's (caller wins on conflict).  Defaults come from the
+            # detected batch_system backend — e.g. Aurora's PBS requires
+            # filesystems= on every submission, which the UI / Python API
+            # users are not expected to know.  Only applied when the
+            # chosen executor matches the detected backend.
+            from .batch_system import detect_batch_system
+            backend = detect_batch_system()
+            defaults = (backend.default_custom_attributes()
+                        if backend.psij_executor == executor_name else {})
+            caller_ca = dict(job_spec_dict.get('custom_attributes') or {})
+            merged_ca = {**defaults, **caller_ca}
+            if merged_ca:
+                if spec.attributes is None:
+                    spec.attributes = psij.JobAttributes()
+                spec.attributes.custom_attributes = merged_ca
+                if defaults:
+                    added = {k: v for k, v in defaults.items()
+                             if k not in caller_ca}
+                    if added:
+                        log.info("[psij] backend=%s injected defaults: %s",
+                                 backend.name, added)
 
             job = psij.Job(spec)
 
@@ -763,12 +782,8 @@ class PluginPSIJ(Plugin):
 
         if tunnel and relay_file is not None:
             native_id = resp.get('native_id')
-            log.info("[psij] submit_tunneled: edge=%s job_id=%s native_id=%s — starting tunnel watcher",
+            log.info("[psij] submit_tunneled: edge=%s job_id=%s native_id=%s -- watcher polling for relay file",
                      edge_name, resp.get('job_id'), native_id)
-            if native_id is None:
-                log.warning("[psij] native_id is None for edge '%s'; watcher will poll "
-                            "without a SLURM job ID (PsiJ may not have assigned one yet)",
-                            edge_name)
             task = asyncio.create_task(
                 self._tunnel_watcher(edge_name, native_id, relay_file))
             self._watchers[edge_name] = task
@@ -787,8 +802,10 @@ class PluginPSIJ(Plugin):
         - ``edge_name``  — echoed back.
         - ``status``     — one of ``"pending"``, ``"active"``, ``"failed"``,
                            ``"done"``, or ``"no_tunnel"``.
-        - ``port``       — allocated tunnel port (int) once active, else null.
-        - ``pid``        — SSH process PID, once spawned, else null.
+        - ``port``       — allocated tunnel port (int) once the child edge
+                           has published it, else null.
+        - ``pid``        — SSH process PID on the compute node (read from
+                           the pid rendezvous file) once active, else null.
         """
         edge_name  = request.path_params['edge_name']
         relay_file = _relay_dir() / f'{edge_name}.port'
@@ -807,10 +824,8 @@ class PluginPSIJ(Plugin):
             except (ValueError, OSError):
                 pass
 
-        task  = self._watchers.get(edge_name)
-
+        task = self._watchers.get(edge_name)
         if task is None:
-            # No watcher was ever started
             status = 'no_tunnel'
         elif port is not None:
             # Relay file present → child edge successfully published its port.
@@ -823,7 +838,7 @@ class PluginPSIJ(Plugin):
             # the child never published. Report as failed.
             status = 'failed'
         else:
-            # Watcher still running, waiting for the child to publish
+            # Watcher still running, waiting for the child to publish.
             status = 'pending'
 
         return {'edge_name': edge_name,
@@ -856,8 +871,9 @@ class PluginPSIJ(Plugin):
                                    TERMINAL_STATES)
         batch = detect_batch_system()
 
-        log.info("[psij] Watcher started for edge '%s' (job %s, backend=%s)",
-                 edge_name, native_id, batch.name)
+        log.info("[psij] Watcher started for edge '%s' (job %s, backend=%s) "
+                 "-- waiting for relay file %s",
+                 edge_name, native_id, batch.name, relay_file)
 
         last_state = None
         for attempt in range(300):          # up to ~10 min (2s × 300)

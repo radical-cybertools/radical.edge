@@ -22,8 +22,9 @@ from typing import Dict, List, Any
 from fastapi import FastAPI
 from starlette.requests import Request
 
-from .plugin_base import Plugin
-from .client import PluginClient
+from .plugin_base   import Plugin
+from .client        import PluginClient
+from .batch_system  import detect_batch_system
 
 log = logging.getLogger("radical.edge")
 
@@ -530,6 +531,19 @@ class SysInfoClient(PluginClient):
         self._raise(resp, 'homedir')
         return resp.json()['homedir']
 
+    def host_role(self) -> dict:
+        """Return ``{'role', 'scheduler', 'job_id'}`` for the edge host.
+
+        ``role`` is one of ``'bridge'``, ``'login'`` or ``'compute'``.
+        ``scheduler`` is ``'slurm' | 'pbs' | 'lsf' | None`` and ``job_id``
+        is the allocation id (``None`` outside an allocation).
+
+        No session is required.
+        """
+        resp = self._http.get(self._url('host_role'))
+        self._raise(resp, 'host_role')
+        return resp.json()
+
     def get_metrics(self) -> dict:
         """
         Return current system metrics.
@@ -581,6 +595,7 @@ class PluginSysInfo(Plugin):
 
         # Register routes
         self.add_route_get('homedir',        self.homedir_endpoint)
+        self.add_route_get('host_role',      self.host_role_endpoint)
         self.add_route_get('metrics/{sid}',  self.get_metrics_endpoint)
 
     def _create_session(self, sid: str, **kwargs) -> SysInfoSession:
@@ -592,6 +607,26 @@ class PluginSysInfo(Plugin):
     async def homedir_endpoint(self, request: Request) -> dict:
         """Return the home directory of the edge-side process."""
         return {'homedir': os.path.expanduser('~')}
+
+    async def host_role_endpoint(self, request: Request) -> dict:
+        """Return the role of the host this edge runs on.
+
+        Role is one of ``bridge`` / ``login`` / ``compute``.  When the
+        edge is running inside a batch allocation, ``scheduler`` and
+        ``job_id`` carry the detected scheduler name and the allocation
+        id; otherwise both are ``None`` (login nodes with a scheduler
+        installed but no active job report ``scheduler=None``).
+        """
+        bs       = detect_batch_system()
+        in_alloc = bs.in_allocation()
+        if   self.is_bridge: role = 'bridge'
+        elif in_alloc:       role = 'compute'
+        else:                role = 'login'
+        return {
+            'role'     : role,
+            'scheduler': bs.name    if in_alloc else None,
+            'job_id'   : bs.job_id() if in_alloc else None,
+        }
 
     async def get_metrics_endpoint(self, request: Request) -> dict:
         """

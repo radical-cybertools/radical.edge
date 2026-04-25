@@ -616,7 +616,7 @@ class EdgeService(PluginHostBase):
 
         proc, port = await asyncio.to_thread(
             _tunnel.spawn_tunnel,
-            login_host, bridge_host, bridge_port, self._name, 'L')
+            login_host, bridge_host, bridge_port, self._name)
         self._tunnel_proc = proc
 
         self._bridge_url = urlunparse(

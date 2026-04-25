@@ -82,3 +82,99 @@ async def test_endpoint():
     data = resp.json()
     assert 'system' in data
     assert 'cpu' in data
+
+
+# ---------------------------------------------------------------------------
+# host_role endpoint — exercises bridge / login / compute classification.
+#
+# Detection routes through batch_system.detect_batch_system(), which probes
+# the local PATH for ``squeue`` (SLURM) and ``qstat`` (PBS).  We patch
+# ``shutil.which`` to pin the backend per test, and reset the module-level
+# cache via the autouse fixture below.
+# ---------------------------------------------------------------------------
+
+from unittest.mock import patch
+from radical.edge.batch_system import reset_detection
+
+
+@pytest.fixture(autouse=True)
+def _reset_batch_system_cache():
+    """Each host_role test sees a freshly-probed batch system."""
+    reset_detection()
+    yield
+    reset_detection()
+
+
+def _host_role(app: FastAPI) -> dict:
+    plugin = PluginSysInfo(app)
+    client = TestClient(app)
+    resp   = client.get(f"{plugin.namespace}/host_role")
+    assert resp.status_code == 200
+    return resp.json()
+
+
+def test_host_role_login_no_scheduler(monkeypatch):
+    """No scheduler installed and not a bridge -> login node."""
+    for v in ('SLURM_JOB_ID', 'PBS_JOBID'):
+        monkeypatch.delenv(v, raising=False)
+    with patch('shutil.which', return_value=None):
+        role = _host_role(FastAPI())
+    assert role == {'role': 'login', 'scheduler': None, 'job_id': None}
+
+
+def test_host_role_login_slurm_no_alloc(monkeypatch):
+    """SLURM installed but no active job -> login node, scheduler=None."""
+    monkeypatch.delenv('SLURM_JOB_ID', raising=False)
+    def _which(cmd):
+        return '/usr/bin/squeue' if cmd == 'squeue' else None
+    with patch('shutil.which', side_effect=_which):
+        role = _host_role(FastAPI())
+    assert role == {'role': 'login', 'scheduler': None, 'job_id': None}
+
+
+def test_host_role_bridge():
+    """When app.state.is_bridge is True, role is 'bridge'."""
+    app = FastAPI()
+    app.state.is_bridge = True
+    with patch('shutil.which', return_value=None):
+        role = _host_role(app)
+    assert role['role'] == 'bridge'
+
+
+def test_host_role_compute_slurm(monkeypatch):
+    """SLURM installed + SLURM_JOB_ID set -> compute role."""
+    monkeypatch.setenv('SLURM_JOB_ID', '12345')
+    def _which(cmd):
+        return '/usr/bin/squeue' if cmd == 'squeue' else None
+    with patch('shutil.which', side_effect=_which):
+        role = _host_role(FastAPI())
+    assert role == {'role': 'compute', 'scheduler': 'slurm', 'job_id': '12345'}
+
+
+def test_host_role_compute_pbs(monkeypatch):
+    """PBS installed (no SLURM) + PBS_JOBID set -> compute role."""
+    monkeypatch.delenv('SLURM_JOB_ID', raising=False)
+    monkeypatch.setenv('PBS_JOBID', '7890.frontier')
+    def _which(cmd):
+        return '/usr/bin/qstat' if cmd == 'qstat' else None
+    # Pin the Aurora marker absent so the generic PBS backend is selected.
+    with patch('shutil.which', side_effect=_which), \
+         patch('radical.edge.batch_system_pbs.os.path.isdir',
+               return_value=False):
+        role = _host_role(FastAPI())
+    assert role == {'role': 'compute', 'scheduler': 'pbs',
+                    'job_id': '7890.frontier'}
+
+
+def test_host_role_client():
+    """SysInfoClient.host_role() returns the same shape as the route."""
+    from radical.edge.plugin_sysinfo import SysInfoClient
+    app = FastAPI()
+    plugin = PluginSysInfo(app)
+    http   = TestClient(app)
+    client = SysInfoClient(http, plugin.namespace)
+    with patch('shutil.which', return_value=None):
+        role = client.host_role()
+    assert role['role']      == 'login'
+    assert role['scheduler'] is None
+    assert role['job_id']    is None
