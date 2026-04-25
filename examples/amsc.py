@@ -244,13 +244,18 @@ def discover_targets(bc):
         except Exception:
             role, scheduler, executor = 'unknown', 'none', 'local'
 
-        # Login-node targets: any host with role='login' is, by definition
-        # of the role, an HPC host with a real scheduler installed.  No
-        # further string-matching needed — psij_executor is already the
-        # right name to hand to PsiJ (slurm / pbs / …).
-        if role == 'compute' and has_rhapsody:
+        # Compute-mode targets — the edge can run ROSE tasks directly.
+        # That covers compute-node edges (inside an allocation) and
+        # standalone hosts (laptops / workstations); both load Rhapsody by
+        # default per the plugin matrix.
+        #
+        # Login-mode targets — the edge has a real batch scheduler and can
+        # submit a child edge via PsiJ.  ``executor`` came straight from
+        # sysinfo.host_role()['psij_executor'] so it matches what PsiJ
+        # expects (slurm / pbs / …) regardless of subclass naming.
+        if role in ('compute', 'standalone') and has_rhapsody:
             targets.append((
-                f'[ready]    edge {name} (compute node, will run tasks here)',
+                f'[ready]    edge {name} ({role}, will run tasks here)',
                 {'kind': 'compute', 'edge_name': name}))
         elif role == 'login' and has_psij:
             targets.append((
@@ -259,7 +264,7 @@ def discover_targets(bc):
                 {'kind'     : 'login',
                  'edge_name': name,
                  'executor' : executor}))
-        # else: not a viable target for AMSC (standalone, missing plugins, …).
+        # else: not a viable target for AMSC (missing plugins, unknown role, …).
 
     # 2. IRI endpoints.  iri_connect lives on the bridge.
     try:
