@@ -238,22 +238,27 @@ def discover_targets(bc):
         # plugin_sysinfo for exactly this).  Tolerate sysinfo absence.
         try:
             info      = edge.get_plugin('sysinfo').host_role()
-            role      = info.get('role', 'unknown')
-            scheduler = info.get('scheduler', 'none')
+            role      = info.get('role',          'unknown')
+            scheduler = info.get('scheduler',     'none')
+            executor  = info.get('psij_executor', 'local')
         except Exception:
-            role, scheduler = 'unknown', 'none'
+            role, scheduler, executor = 'unknown', 'none', 'local'
 
+        # Login-node targets: any host with role='login' is, by definition
+        # of the role, an HPC host with a real scheduler installed.  No
+        # further string-matching needed — psij_executor is already the
+        # right name to hand to PsiJ (slurm / pbs / …).
         if role == 'compute' and has_rhapsody:
             targets.append((
                 f'[ready]    edge {name} (compute node, will run tasks here)',
                 {'kind': 'compute', 'edge_name': name}))
-        elif role == 'login' and has_psij and scheduler in ('slurm', 'pbs'):
+        elif role == 'login' and has_psij:
             targets.append((
                 f'[psij]     edge {name} (login node {scheduler}, '
                 f'will submit a child via PsiJ)',
                 {'kind'     : 'login',
                  'edge_name': name,
-                 'executor' : scheduler}))
+                 'executor' : executor}))
         # else: not a viable target for AMSC (standalone, missing plugins, …).
 
     # 2. IRI endpoints.  iri_connect lives on the bridge.

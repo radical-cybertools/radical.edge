@@ -611,11 +611,18 @@ class PluginSysInfo(Plugin):
     async def host_role_endpoint(self, request: Request) -> dict:
         """Return the role of the host this edge runs on.
 
-        Role is one of ``bridge`` / ``login`` / ``compute`` /
-        ``standalone``.  ``scheduler`` is the detected batch system name
-        (``'slurm'`` / ``'pbs'`` / ``'none'``) and is always populated.
-        ``job_id`` is the current allocation id, populated only on
-        compute nodes; ``None`` everywhere else.
+        Returned fields:
+
+        - ``role``: one of ``bridge`` / ``login`` / ``compute`` /
+          ``standalone``.
+        - ``scheduler``: the detected batch system's full name (e.g.
+          ``'slurm'``, ``'pbs'``, ``'pbs-aurora'``, ``'none'``).  May be
+          a site-specific subclass identifier.
+        - ``psij_executor``: the corresponding PsiJ executor name
+          (``'slurm'``, ``'pbs'``, ``'local'``).  Use this when actually
+          submitting via PsiJ; ``scheduler`` may be more specific.
+        - ``job_id``: the current allocation id (populated on compute
+          nodes only; ``None`` everywhere else).
         """
         bs       = detect_batch_system()
         in_alloc = bs.in_allocation()
@@ -624,9 +631,10 @@ class PluginSysInfo(Plugin):
         elif bs.name == 'none':     role = 'standalone'
         else:                       role = 'login'
         return {
-            'role'     : role,
-            'scheduler': bs.name,
-            'job_id'   : bs.job_id() if in_alloc else None,
+            'role'         : role,
+            'scheduler'    : bs.name,
+            'psij_executor': bs.psij_executor,
+            'job_id'       : bs.job_id() if in_alloc else None,
         }
 
     async def get_metrics_endpoint(self, request: Request) -> dict:

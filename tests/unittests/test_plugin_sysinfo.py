@@ -119,7 +119,8 @@ def test_host_role_standalone(monkeypatch):
         monkeypatch.delenv(v, raising=False)
     with patch('shutil.which', return_value=None):
         role = _host_role(FastAPI())
-    assert role == {'role': 'standalone', 'scheduler': 'none', 'job_id': None}
+    assert role == {'role': 'standalone', 'scheduler': 'none',
+                    'psij_executor': 'local', 'job_id': None}
 
 
 def test_host_role_login_slurm_no_alloc(monkeypatch):
@@ -129,7 +130,8 @@ def test_host_role_login_slurm_no_alloc(monkeypatch):
         return '/usr/bin/squeue' if cmd == 'squeue' else None
     with patch('shutil.which', side_effect=_which):
         role = _host_role(FastAPI())
-    assert role == {'role': 'login', 'scheduler': 'slurm', 'job_id': None}
+    assert role == {'role': 'login', 'scheduler': 'slurm',
+                    'psij_executor': 'slurm', 'job_id': None}
 
 
 def test_host_role_bridge():
@@ -148,7 +150,8 @@ def test_host_role_compute_slurm(monkeypatch):
         return '/usr/bin/squeue' if cmd == 'squeue' else None
     with patch('shutil.which', side_effect=_which):
         role = _host_role(FastAPI())
-    assert role == {'role': 'compute', 'scheduler': 'slurm', 'job_id': '12345'}
+    assert role == {'role': 'compute', 'scheduler': 'slurm',
+                    'psij_executor': 'slurm', 'job_id': '12345'}
 
 
 def test_host_role_compute_pbs(monkeypatch):
@@ -163,7 +166,22 @@ def test_host_role_compute_pbs(monkeypatch):
                return_value=False):
         role = _host_role(FastAPI())
     assert role == {'role': 'compute', 'scheduler': 'pbs',
-                    'job_id': '7890.frontier'}
+                    'psij_executor': 'pbs', 'job_id': '7890.frontier'}
+
+
+def test_host_role_compute_pbs_aurora(monkeypatch):
+    """Aurora's PBS subclass: scheduler='pbs-aurora' but psij_executor='pbs'."""
+    monkeypatch.delenv('SLURM_JOB_ID', raising=False)
+    monkeypatch.setenv('PBS_JOBID', '7890.aurora')
+    def _which(cmd):
+        return '/usr/bin/qstat' if cmd == 'qstat' else None
+    # Aurora marker present -> AuroraPBSBatchSystem wins.
+    with patch('shutil.which', side_effect=_which), \
+         patch('radical.edge.batch_system_pbs.os.path.isdir',
+               return_value=True):
+        role = _host_role(FastAPI())
+    assert role == {'role': 'compute', 'scheduler': 'pbs-aurora',
+                    'psij_executor': 'pbs', 'job_id': '7890.aurora'}
 
 
 def test_host_role_client():
@@ -175,6 +193,7 @@ def test_host_role_client():
     client = SysInfoClient(http, plugin.namespace)
     with patch('shutil.which', return_value=None):
         role = client.host_role()
-    assert role['role']      == 'standalone'
-    assert role['scheduler'] == 'none'
-    assert role['job_id']    is None
+    assert role['role']          == 'standalone'
+    assert role['scheduler']     == 'none'
+    assert role['psij_executor'] == 'local'
+    assert role['job_id']        is None
