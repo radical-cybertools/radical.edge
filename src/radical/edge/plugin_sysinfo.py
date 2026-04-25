@@ -22,7 +22,7 @@ from typing import Dict, List, Any
 from fastapi import FastAPI
 from starlette.requests import Request
 
-from .plugin_base import Plugin
+from .plugin_base import Plugin, detect_scheduler
 from .client import PluginClient
 
 log = logging.getLogger("radical.edge")
@@ -530,6 +530,19 @@ class SysInfoClient(PluginClient):
         self._raise(resp, 'homedir')
         return resp.json()['homedir']
 
+    def host_role(self) -> dict:
+        """Return ``{'role', 'scheduler', 'job_id'}`` for the edge host.
+
+        ``role`` is one of ``'bridge'``, ``'login'`` or ``'compute'``.
+        ``scheduler`` is ``'slurm' | 'pbs' | 'lsf' | None`` and ``job_id``
+        is the allocation id (``None`` outside an allocation).
+
+        No session is required.
+        """
+        resp = self._http.get(self._url('host_role'))
+        self._raise(resp, 'host_role')
+        return resp.json()
+
     def get_metrics(self) -> dict:
         """
         Return current system metrics.
@@ -581,6 +594,7 @@ class PluginSysInfo(Plugin):
 
         # Register routes
         self.add_route_get('homedir',        self.homedir_endpoint)
+        self.add_route_get('host_role',      self.host_role_endpoint)
         self.add_route_get('metrics/{sid}',  self.get_metrics_endpoint)
 
     def _create_session(self, sid: str, **kwargs) -> SysInfoSession:
@@ -592,6 +606,23 @@ class PluginSysInfo(Plugin):
     async def homedir_endpoint(self, request: Request) -> dict:
         """Return the home directory of the edge-side process."""
         return {'homedir': os.path.expanduser('~')}
+
+    async def host_role_endpoint(self, request: Request) -> dict:
+        """Return the role of the host this edge runs on.
+
+        Role is one of ``bridge`` / ``login`` / ``compute``.  When the
+        edge is running inside a batch allocation, ``scheduler`` and
+        ``job_id`` carry the detected scheduler and the allocation id.
+        """
+        scheduler, job_id = detect_scheduler()
+        if self.is_bridge:    role = 'bridge'
+        elif job_id:          role = 'compute'
+        else:                 role = 'login'
+        return {
+            'role'     : role,
+            'scheduler': scheduler,
+            'job_id'   : job_id,
+        }
 
     async def get_metrics_endpoint(self, request: Request) -> dict:
         """

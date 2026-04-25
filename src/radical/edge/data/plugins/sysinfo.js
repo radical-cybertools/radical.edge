@@ -11,6 +11,7 @@ export function template() {
     <div class="page-header">
       <div class="page-icon">🖥️</div>
       <h2>System Info — <span class="edge-label"></span></h2>
+      <span class="sysinfo-role-badge" title="Host role">…</span>
       <button class="btn btn-secondary btn-sm" style="margin-left:auto" data-action="refresh">↺ Refresh</button>
     </div>
     <div class="sysinfo-content">
@@ -24,6 +25,19 @@ export function template() {
 
 export function css() {
   return `
+    .sysinfo-role-badge {
+      margin-left: 12px;
+      padding: 2px 10px;
+      border-radius: 12px;
+      font-size: 0.78rem;
+      font-weight: 600;
+      background: var(--bg2);
+      color: var(--muted);
+      border: 1px solid var(--border, #ccc);
+    }
+    .sysinfo-role-badge.role-bridge  { background: #eef; color: #335; border-color: #ccd; }
+    .sysinfo-role-badge.role-login   { background: #efe; color: #353; border-color: #cdc; }
+    .sysinfo-role-badge.role-compute { background: #fee; color: #533; border-color: #dcc; }
     .sysinfo-content .metric-box {
       background: var(--bg2);
       padding: 12px;
@@ -56,6 +70,9 @@ export function init(page, api) {
     refreshBtn.addEventListener('click', () => loadSysinfo(page, api));
   }
 
+  // Host role rarely changes — fetch once on init.
+  loadHostRole(page, api);
+
   // Auto-load on init
   loadSysinfo(page, api);
 }
@@ -79,6 +96,32 @@ async function loadSysinfo(page, api) {
   } catch (e) {
     content.innerHTML = `<div class="card"><p style="color:var(--danger)">Error: ${api.escHtml(e.message)}</p></div>`;
     api.flash('SysInfo error: ' + e.message, false);
+  }
+}
+
+// Fetches the session-less host_role endpoint and renders the badge in
+// the page header.  Failure is non-fatal: we keep the placeholder and
+// log to the console so the rest of the page still works.
+async function loadHostRole(page, api) {
+  const badge = page.querySelector('.sysinfo-role-badge');
+  if (!badge) return;
+  try {
+    const r = await api.fetch('host_role');
+    const role = r.role || '?';
+    const icon = role === 'bridge'  ? '🌐'
+              : role === 'compute' ? '⚙️'
+              : role === 'login'   ? '🖥'
+              :                       '?';
+    let label = `${icon} ${role}`;
+    if (r.scheduler) {
+      label += r.job_id ? ` (${r.scheduler} job ${r.job_id})`
+                        : ` (${r.scheduler})`;
+    }
+    badge.textContent = label;
+    badge.className = `sysinfo-role-badge role-${role}`;
+  } catch (e) {
+    badge.textContent = '? unknown';
+    console.warn('sysinfo: host_role fetch failed:', e);
   }
 }
 
