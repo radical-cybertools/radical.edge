@@ -611,20 +611,21 @@ class PluginSysInfo(Plugin):
     async def host_role_endpoint(self, request: Request) -> dict:
         """Return the role of the host this edge runs on.
 
-        Role is one of ``bridge`` / ``login`` / ``compute``.  When the
-        edge is running inside a batch allocation, ``scheduler`` and
-        ``job_id`` carry the detected scheduler name and the allocation
-        id; otherwise both are ``None`` (login nodes with a scheduler
-        installed but no active job report ``scheduler=None``).
+        Role is one of ``bridge`` / ``login`` / ``compute`` /
+        ``standalone``.  ``scheduler`` is the detected batch system name
+        (``'slurm'`` / ``'pbs'`` / ``'none'``) and is always populated.
+        ``job_id`` is the current allocation id, populated only on
+        compute nodes; ``None`` everywhere else.
         """
         bs       = detect_batch_system()
         in_alloc = bs.in_allocation()
-        if   self.is_bridge: role = 'bridge'
-        elif in_alloc:       role = 'compute'
-        else:                role = 'login'
+        if   self.is_bridge:        role = 'bridge'
+        elif in_alloc:              role = 'compute'
+        elif bs.name == 'none':     role = 'standalone'
+        else:                       role = 'login'
         return {
             'role'     : role,
-            'scheduler': bs.name    if in_alloc else None,
+            'scheduler': bs.name,
             'job_id'   : bs.job_id() if in_alloc else None,
         }
 

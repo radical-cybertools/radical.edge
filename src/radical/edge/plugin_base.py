@@ -182,8 +182,24 @@ class Plugin(object):
 
     @property
     def is_login_node(self) -> bool:
-        """True when running on a login node (not inside a batch job)."""
-        return not self.is_bridge and not self.is_compute_node
+        """True when running on an HPC login node.
+
+        A login node has a batch scheduler installed (slurm/pbs/…) but no
+        currently active allocation.  Hosts without any scheduler are
+        ``standalone``, not login nodes.
+        """
+        from .batch_system import detect_batch_system
+        return (not self.is_bridge
+                and not self.is_compute_node
+                and detect_batch_system().name != 'none')
+
+    @property
+    def is_standalone(self) -> bool:
+        """True for a non-HPC host: no batch scheduler installed, not a bridge."""
+        from .batch_system import detect_batch_system
+        return (not self.is_bridge
+                and not self.is_compute_node
+                and detect_batch_system().name == 'none')
 
     @property
     def namespace(self) -> str:

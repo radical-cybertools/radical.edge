@@ -113,23 +113,23 @@ def _host_role(app: FastAPI) -> dict:
     return resp.json()
 
 
-def test_host_role_login_no_scheduler(monkeypatch):
-    """No scheduler installed and not a bridge -> login node."""
+def test_host_role_standalone(monkeypatch):
+    """No scheduler installed and not a bridge -> standalone (non-HPC host)."""
     for v in ('SLURM_JOB_ID', 'PBS_JOBID'):
         monkeypatch.delenv(v, raising=False)
     with patch('shutil.which', return_value=None):
         role = _host_role(FastAPI())
-    assert role == {'role': 'login', 'scheduler': None, 'job_id': None}
+    assert role == {'role': 'standalone', 'scheduler': 'none', 'job_id': None}
 
 
 def test_host_role_login_slurm_no_alloc(monkeypatch):
-    """SLURM installed but no active job -> login node, scheduler=None."""
+    """SLURM installed but no active job -> login role, scheduler reported."""
     monkeypatch.delenv('SLURM_JOB_ID', raising=False)
     def _which(cmd):
         return '/usr/bin/squeue' if cmd == 'squeue' else None
     with patch('shutil.which', side_effect=_which):
         role = _host_role(FastAPI())
-    assert role == {'role': 'login', 'scheduler': None, 'job_id': None}
+    assert role == {'role': 'login', 'scheduler': 'slurm', 'job_id': None}
 
 
 def test_host_role_bridge():
@@ -175,6 +175,6 @@ def test_host_role_client():
     client = SysInfoClient(http, plugin.namespace)
     with patch('shutil.which', return_value=None):
         role = client.host_role()
-    assert role['role']      == 'login'
-    assert role['scheduler'] is None
+    assert role['role']      == 'standalone'
+    assert role['scheduler'] == 'none'
     assert role['job_id']    is None
