@@ -43,15 +43,15 @@ class TestResolvePluginNames:
             _resolve_plugin_names(['foo'], available)
 
     def test_ambiguous(self):
-        available = ['iri', 'iri_info', 'psij']
+        available = ['iri_connect', 'iri_instance', 'psij']
         # Prefix 'ir' is ambiguous (matches iri, iri_info)
         with pytest.raises(ValueError, match="Ambiguous"):
             _resolve_plugin_names(['ir'], available)
 
     def test_exact_match_priority_over_prefix(self):
         """Exact match wins even when it is also a prefix of another name."""
-        available = ['iri', 'iri_info', 'psij']
-        assert _resolve_plugin_names(['iri'], available) == ['iri']
+        available = ['iri_connect', 'iri_connect_v2', 'psij']
+        assert _resolve_plugin_names(['iri_connect'], available) == ['iri_connect']
 
 
 # ---------------------------------------------------------------------------
