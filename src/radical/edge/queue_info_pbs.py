@@ -5,12 +5,93 @@ universal on PBSPro (Aurora's deployment supports it but older sites do
 not). Output formats follow the PBSPro 2024.x reference manual.
 """
 
+import logging
+import os
 import re
+import shutil
 import subprocess
 import time
 
 from .queue_info import QueueInfo
 from .batch_system_pbs import _parse_qstat_f, _parse_pbs_walltime, _parse_exec_host
+
+log = logging.getLogger("radical.edge")
+
+
+def _sbank_clean_env() -> dict:
+    """Env for invoking sbank without the caller's venv polluting sys.prefix.
+
+    ALCF's sbank wrapper reads its config from ``<sys.prefix>/etc/ni/...``,
+    so running it under a virtualenv makes it look in the wrong place and
+    it crashes.  Strip venv vars and pin PATH to the system defaults.
+    """
+    env = {k: v for k, v in os.environ.items()
+           if k not in ('VIRTUAL_ENV', 'PYTHONHOME', 'PYTHONPATH')}
+    env['PATH'] = '/usr/bin:/bin'
+    return env
+
+
+def _parse_sbank_list_allocations(stdout: str) -> list:
+    """Parse the whitespace-aligned table from ``sbank-list-allocations``.
+
+    The table uses a dashes row (``---``) below the header; we derive
+    column boundaries from the spans of dashes so the parser tolerates
+    variable widths.  Stops at the first blank line after the data (the
+    ``Totals:`` section is not an allocation record).
+    """
+    lines = stdout.splitlines()
+
+    # Locate the dashes row; it follows the header.
+    dash_idx = None
+    for i, line in enumerate(lines):
+        if line.strip() and set(line.strip()) <= {'-', ' '}:
+            dash_idx = i
+            break
+    if dash_idx is None or dash_idx == 0:
+        return []
+
+    # Column spans = dash runs on that line.
+    spans = [(m.start(), m.end()) for m in re.finditer(r'-+', lines[dash_idx])]
+    headers = [lines[dash_idx - 1][s:e].strip() for s, e in spans]
+
+    def _num(s: str, cast):
+        s = s.replace(',', '').strip()
+        if not s:
+            return None
+        try:
+            return cast(s)
+        except ValueError:
+            return None
+
+    allocs = []
+    for line in lines[dash_idx + 1:]:
+        if not line.strip():
+            break  # end of data; Totals section follows a blank line
+        cols = {h: line[s:e].strip() for h, (s, e) in zip(headers, spans)}
+        project = cols.get('Project', '')
+        if not project:
+            continue
+        allocs.append({
+            'account'             : project,
+            'user'                : '',     # sbank shows only the caller
+            'fairshare'           : None,
+            'qos'                 : '',
+            'max_jobs'            : None,
+            'max_submit'          : None,
+            'max_wall'            : None,
+            'grp_tres'            : None,
+            'allocated_node_hours': None,
+            'used_node_hours'     : _num(cols.get('Charged', ''), float),
+            'remaining_node_hours': _num(cols.get('Available Balance', ''),
+                                         float),
+            'allocation_id'       : _num(cols.get('Allocation', ''), int),
+            'suballocation_id'    : _num(cols.get('Suballocation', ''), int),
+            'start_date'          : cols.get('Start', ''),
+            'end_date'            : cols.get('End', ''),
+            'resource'            : cols.get('Resource', ''),
+            'jobs'                : _num(cols.get('Jobs', ''), int),
+        })
+    return allocs
 
 
 # Job state code → display string used by the existing queue_info UI.
@@ -28,6 +109,75 @@ _STATE_DISPLAY = {
     'M': 'MOVED',
     'U': 'SUSPENDED',
 }
+
+
+def _acl_match(acl_str: str, candidates: set) -> bool:
+    """Check a PBSPro ACL list against a set of identifier *candidates*.
+
+    Entries are comma-separated ``name[@host]`` with an optional ``+``
+    (allow) or ``-`` (deny) prefix.  Host suffixes are ignored for
+    matching purposes.  Returns True iff some entry allows one of the
+    candidates and no entry denies one of them.
+    """
+    denied = False
+    allowed = False
+    for entry in acl_str.split(','):
+        entry = entry.strip()
+        if not entry:
+            continue
+        prefix = ''
+        if entry[0] in '+-':
+            prefix = entry[0]
+            entry = entry[1:]
+        name = entry.split('@', 1)[0]
+        if name in candidates:
+            if prefix == '-':
+                denied = True
+            else:
+                allowed = True
+    return allowed and not denied
+
+
+def _user_groups(user: str) -> set:
+    """Return the set of group names *user* belongs to (incl. primary).
+
+    Returns an empty set on any resolver failure.
+    """
+    try:
+        import pwd, grp, os  # local import; stdlib only
+        pw = pwd.getpwnam(user)
+        gids = os.getgrouplist(user, pw.pw_gid)
+        names = set()
+        for gid in gids:
+            try:
+                names.add(grp.getgrgid(gid).gr_name)
+            except KeyError:
+                continue
+        return names
+    except (KeyError, OSError):
+        return set()
+
+
+def _user_can_submit(attrs: dict, user: str,
+                     user_groups: 'set | None' = None) -> bool:
+    """Decide whether *user* can submit to the queue described by *attrs*.
+
+    Applies PBSPro user and group ACLs conjunctively: if either ACL is
+    enabled and rejects the user, submission is denied; disabled ACLs
+    are skipped.  *user_groups* may be supplied to avoid re-resolving
+    group membership per queue.
+    """
+    if attrs.get('acl_user_enable', '').strip().lower() == 'true':
+        if not _acl_match(attrs.get('acl_users', ''), {user}):
+            return False
+
+    if attrs.get('acl_group_enable', '').strip().lower() == 'true':
+        if user_groups is None:
+            user_groups = _user_groups(user)
+        if not _acl_match(attrs.get('acl_groups', ''), user_groups):
+            return False
+
+    return True
 
 
 def _run(cmd, timeout=60):
@@ -128,15 +278,12 @@ class QueueInfoPBSPro(QueueInfo):
 
     backend_name = 'pbs'
 
-    def _collect_info(self):
-        """Collect queue/partition info via qstat -Qf and pbsnodes -a."""
+    def _collect_raw_queues(self):
+        """Return ``{queue_name: parsed_qstat_attributes}`` from ``qstat -Qf``.
 
-        # --- queue list ---
-        try:
-            stdout = _run(['qstat', '-Qf'])
-        except Exception:
-            return {'queues': {}}
-
+        Raises the underlying exception if qstat cannot be run.
+        """
+        stdout = _run(['qstat', '-Qf'])
         queues = {}
         cur = None
         cur_lines = []
@@ -150,6 +297,16 @@ class QueueInfoPBSPro(QueueInfo):
                 cur_lines.append(raw)
         if cur is not None:
             queues[cur] = _parse_qstat_f('\n'.join(cur_lines))
+        return queues
+
+    def _collect_info(self):
+        """Collect queue/partition info via qstat -Qf and pbsnodes -a."""
+
+        # --- queue list ---
+        try:
+            queues = self._collect_raw_queues()
+        except Exception:
+            return {'queues': {}}
 
         # --- node info ---
         try:
@@ -182,11 +339,20 @@ class QueueInfoPBSPro(QueueInfo):
             if not jobs_field:
                 node_idle += 1
 
+        def _safe_int(s):
+            try:
+                return int(s) if s else None
+            except (TypeError, ValueError):
+                return None
+
         result = {}
         for qname, qinfo in queues.items():
-            wall = _parse_pbs_walltime(
-                qinfo.get('resources_max.walltime', ''))
-            time_limit = wall if wall is not None else 'UNLIMITED'
+            wall_max = _parse_pbs_walltime(qinfo.get('resources_max.walltime', ''))
+            wall_min = _parse_pbs_walltime(qinfo.get('resources_min.walltime', ''))
+            time_limit = wall_max if wall_max is not None else 'UNLIMITED'
+
+            nodes_min = _safe_int(qinfo.get('resources_min.nodect', ''))
+            nodes_max = _safe_int(qinfo.get('resources_max.nodect', ''))
 
             enabled = qinfo.get('enabled', '').lower() == 'true'
             started = qinfo.get('started', '').lower() == 'true'
@@ -196,6 +362,10 @@ class QueueInfoPBSPro(QueueInfo):
                 'name'             : qname,
                 'state'            : state,
                 'time_limit'       : time_limit,
+                'walltime_min'     : wall_min,
+                'walltime_max'     : wall_max,
+                'nodes_min'        : nodes_min,
+                'nodes_max'        : nodes_max,
                 'default'          : None,
                 'nodes_total'      : node_total,
                 'nodes_available'  : node_available,
@@ -238,14 +408,58 @@ class QueueInfoPBSPro(QueueInfo):
         return {'jobs': [self._render_job(jid, info) for jid, info in records]}
 
 
-    def _collect_allocations(self, user):
-        """PBSPro has no native equivalent of sacctmgr.
+    def _get_user_partitions(self, user):
+        """Return the set of queue names *user* can submit to.
 
-        Some sites layer a project allocation system on top (e.g. Aurora's
-        ALCF accounting), but those tools are site-specific. We return an
-        empty list so the UI degrades gracefully.
+        Aurora's ``qstat -Qf`` reports every queue PBS knows about —
+        including per-reservation ``R<jobid>`` queues and project-scoped
+        ``M<jobid>``/workshop queues — which collectively dwarf the
+        handful of public queues most users actually see.  We use the
+        queue's ``acl_user_enable`` / ``acl_users`` attributes (already
+        returned by qstat) to filter.
+
+        Returns ``None`` if qstat cannot be run, to degrade gracefully
+        to the "show everything" path upstream.
         """
-        return {'allocations': []}
+        try:
+            queues = self._collect_raw_queues()
+        except Exception:
+            return None
+        groups = _user_groups(user)   # resolve once, reuse per queue
+        return {name for name, attrs in queues.items()
+                if _user_can_submit(attrs, user, user_groups=groups)}
+
+    def _collect_allocations(self, user):
+        """Collect project allocations.
+
+        PBSPro has no native sacctmgr, but ALCF layers an accounting
+        system on top (``sbank-list-allocations``) that returns the
+        caller's projects, node-hour balance, and charging info.  When
+        that tool is available we shell out; otherwise return an empty
+        list so the UI degrades gracefully.  The ``user`` arg is ignored
+        — sbank only ever reports the current user's allocations.
+        """
+        exe = shutil.which('sbank-list-allocations')
+        if not exe:
+            return {'allocations': []}
+
+        try:
+            r = subprocess.run([exe], capture_output=True, text=True,
+                               timeout=30, env=_sbank_clean_env())
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            log.debug("sbank-list-allocations failed: %s", exc)
+            return {'allocations': []}
+        if r.returncode != 0:
+            log.debug("sbank-list-allocations rc=%d stderr=%s",
+                      r.returncode, r.stderr.strip())
+            return {'allocations': []}
+
+        try:
+            allocs = _parse_sbank_list_allocations(r.stdout)
+        except Exception as exc:
+            log.debug("Failed to parse sbank output: %s", exc)
+            return {'allocations': []}
+        return {'allocations': allocs}
 
 
     @staticmethod

@@ -19,10 +19,9 @@ import asyncio
 import logging
 import os
 import pathlib
-import re
+import shlex
 import shutil
-import subprocess
-import threading
+import socket
 import time
 
 from datetime import timedelta
@@ -55,6 +54,119 @@ def _relay_dir() -> pathlib.Path:
     """Return (and create) the relay-file directory."""
     _RELAY_BASE.mkdir(parents=True, exist_ok=True)
     return _RELAY_BASE
+
+
+# --- Compute-side reverse tunnel preamble ---------------------------------
+#
+# On HPC systems where login -> compute ssh is blocked (Aurora, Polaris,
+# and similar ALCF PBS sites), the classic "login spawns ssh -R to the
+# compute node" pattern fails with a pam / sshd rejection.  Instead, we
+# run ssh from *inside* the job on the compute node itself, forwarding
+# localhost:<port> to bridge:<port> via the login host.  compute -> login
+# ssh is permitted on every HPC I'm aware of (shared home, outbound from
+# batch job), so this flip eliminates the site-specific failure.
+#
+# The preamble:
+#   1. picks a free local port on the compute node (via python3);
+#   2. opens a backgrounded `ssh -L <port>:<bridge>:<port> <login>`;
+#   3. waits until that listener is actually accepting connections;
+#   4. writes <port> to $HOME/.radical/edge/tunnels/<edge_name>.port
+#      (same path the child edge reads when --tunnel is set);
+#   5. exec's the real job command;
+#   6. on shell exit, tears the ssh tunnel down and removes the port file.
+
+_TUNNEL_PREAMBLE = r'''#!/bin/bash
+set -eu
+
+EDGE_NAME=__EDGE_NAME__
+BRIDGE_HOST=__BRIDGE_HOST__
+BRIDGE_PORT=__BRIDGE_PORT__
+LOGIN_HOST=__LOGIN_HOST__
+
+umask 077
+RELAY_DIR="$HOME/.radical/edge/tunnels"
+RELAY_FILE="$RELAY_DIR/${EDGE_NAME}.port"
+SSH_LOG="$RELAY_DIR/${EDGE_NAME}.ssh.log"
+mkdir -p "$RELAY_DIR"
+rm -f "$RELAY_FILE" "$SSH_LOG"
+
+PYBIN="$(command -v python3 2>/dev/null || echo /usr/bin/python3)"
+
+# Pick a free local port.  Tiny TOCTOU window before ssh binds, in practice fine.
+PORT=$("$PYBIN" -c 'import socket
+s = socket.socket(); s.bind(("", 0)); print(s.getsockname()[1]); s.close()')
+
+echo "[psij-tunnel] compute -> login tunnel: localhost:${PORT} -> ${BRIDGE_HOST}:${BRIDGE_PORT} via ${LOGIN_HOST}" >&2
+
+ssh -N \
+    -o StrictHostKeyChecking=no \
+    -o UserKnownHostsFile=/dev/null \
+    -o BatchMode=yes \
+    -o ServerAliveInterval=10 \
+    -o ServerAliveCountMax=3 \
+    -o ExitOnForwardFailure=yes \
+    -L "${PORT}:${BRIDGE_HOST}:${BRIDGE_PORT}" \
+    "$LOGIN_HOST" 2> "$SSH_LOG" &
+SSH_PID=$!
+
+trap 'kill $SSH_PID 2>/dev/null || true; wait $SSH_PID 2>/dev/null || true; rm -f "$RELAY_FILE"' EXIT
+
+# Wait up to 30s for ssh to start listening on localhost:$PORT.
+for _ in $(seq 1 60); do
+    if "$PYBIN" - <<PYEOF >/dev/null 2>&1
+import socket, sys
+s = socket.socket(); s.settimeout(0.5)
+try:
+    s.connect(("127.0.0.1", $PORT)); s.close()
+except Exception:
+    sys.exit(1)
+PYEOF
+    then
+        break
+    fi
+    if ! kill -0 $SSH_PID 2>/dev/null; then
+        echo "[psij-tunnel] ssh tunnel died before listener came up; stderr:" >&2
+        cat "$SSH_LOG" >&2
+        exit 42
+    fi
+    sleep 0.5
+done
+
+if ! kill -0 $SSH_PID 2>/dev/null; then
+    echo "[psij-tunnel] ssh tunnel is not alive after wait; stderr:" >&2
+    cat "$SSH_LOG" >&2
+    exit 42
+fi
+
+echo "$PORT" > "$RELAY_FILE"
+echo "[psij-tunnel] tunnel up; relay=$RELAY_FILE port=$PORT" >&2
+
+# Hand off to the real job executable.  Intentionally not exec'd, so the
+# trap above fires when the executable exits and we tear the tunnel down.
+"$@"
+'''
+
+
+def _build_tunnel_preamble(edge_name: str, bridge_host: str,
+                           bridge_port: int, login_host: str) -> str:
+    """Return a shell script wrapper that stands up the compute-side tunnel."""
+    return (_TUNNEL_PREAMBLE
+            .replace('__EDGE_NAME__',   shlex.quote(edge_name))
+            .replace('__BRIDGE_HOST__', shlex.quote(bridge_host))
+            .replace('__BRIDGE_PORT__', shlex.quote(str(bridge_port)))
+            .replace('__LOGIN_HOST__',  shlex.quote(login_host)))
+
+
+def _resolve_bridge_endpoint(app) -> 'tuple[str,int]':
+    """Return (host, port) for the bridge, for the preamble to ssh-forward to."""
+    from urllib.parse import urlparse as _urlparse
+    edge_svc   = getattr(app.state, 'edge_service', None)
+    svc_url    = getattr(edge_svc, '_bridge_url', '') if edge_svc else ''
+    bridge_url = svc_url or os.environ.get('RADICAL_BRIDGE_URL', '')
+    parsed     = _urlparse(bridge_url) if bridge_url else None
+    host = (parsed.hostname or 'localhost') if parsed else 'localhost'
+    port = (parsed.port or 8000)            if parsed else 8000
+    return host, port
 
 
 # Terminal states that don't need further polling
@@ -181,9 +293,28 @@ class PSIJSession(PluginSession):
                 if node_count:
                     spec.attributes.resource_count = int(node_count)
 
-            if 'custom_attributes' in job_spec_dict:
-                spec.attributes.custom_attributes = dict(
-                    job_spec_dict['custom_attributes'])
+            # Merge site defaults for PSIJ custom_attributes with the
+            # caller's (caller wins on conflict).  Defaults come from the
+            # detected batch_system backend — e.g. Aurora's PBS requires
+            # filesystems= on every submission, which the UI / Python API
+            # users are not expected to know.  Only applied when the
+            # chosen executor matches the detected backend.
+            from .batch_system import detect_batch_system
+            backend = detect_batch_system()
+            defaults = (backend.default_custom_attributes()
+                        if backend.psij_executor == executor_name else {})
+            caller_ca = dict(job_spec_dict.get('custom_attributes') or {})
+            merged_ca = {**defaults, **caller_ca}
+            if merged_ca:
+                if spec.attributes is None:
+                    spec.attributes = psij.JobAttributes()
+                spec.attributes.custom_attributes = merged_ca
+                if defaults:
+                    added = {k: v for k, v in defaults.items()
+                             if k not in caller_ca}
+                    if added:
+                        log.info("[psij] backend=%s injected defaults: %s",
+                                 backend.name, added)
 
             job = psij.Job(spec)
 
@@ -640,8 +771,6 @@ class PluginPSIJ(Plugin):
 
         # watcher tasks keyed by edge_name (plugin-level, survive session cleanup)
         self._watchers: dict = {}
-        # SSH tunnel processes keyed by edge_name
-        self._tunnel_procs: dict = {}
 
         # Ensure relay directory exists at startup
         _relay_dir()
@@ -750,20 +879,30 @@ class PluginPSIJ(Plugin):
                 status_code=409,
                 detail=f"Tunnel watcher already active for edge '{edge_name}'")
 
-        # --- prepare relay file and inject --tunnel / logging flags ---
+        # --- prepare relay file, inject --tunnel, wrap executable --------
         relay_file: pathlib.Path | None = None
         if tunnel:
             relay_file = _relay_dir() / f'{edge_name}.port'
-            relay_file.unlink(missing_ok=True)  # remove stale file from previous run
+            relay_file.unlink(missing_ok=True)  # clean stale file
 
-            # Inject flags so the child edge (a) waits for the relay port file
-            # and (b) writes DEBUG logs to a shared-filesystem path visible from
-            # the login node.
+            # Child edge reads this flag and waits for the relay port file.
             if '--tunnel' not in args:
                 args.append('--tunnel')
 
+            # Wrap the executable with the compute-side tunnel preamble.
+            # The wrapper runs on the compute node *inside* the batch job,
+            # opens compute -> login ssh, writes the relay file, then
+            # exec's the original executable + args.
+            orig_exec = job_spec.get('executable', '')
+            bridge_host, bridge_port = _resolve_bridge_endpoint(self._app)
+            login_host = socket.gethostname()
+            preamble = _build_tunnel_preamble(edge_name, bridge_host,
+                                              bridge_port, login_host)
+
             job_spec = dict(job_spec)
-            job_spec['arguments'] = args
+            job_spec['executable'] = '/bin/bash'
+            job_spec['arguments']  = ['-c', preamble, 'psij-tunnel-wrapper',
+                                      orig_exec, *args]
 
         resp = await self._forward(sid, PSIJSession.submit_job,
                                    job_spec_dict=job_spec,
@@ -771,12 +910,8 @@ class PluginPSIJ(Plugin):
 
         if tunnel and relay_file is not None:
             native_id = resp.get('native_id')
-            log.info("[psij] submit_tunneled: edge=%s job_id=%s native_id=%s — starting tunnel watcher",
+            log.info("[psij] submit_tunneled: edge=%s job_id=%s native_id=%s -- watcher polling for relay file",
                      edge_name, resp.get('job_id'), native_id)
-            if native_id is None:
-                log.warning("[psij] native_id is None for edge '%s'; watcher will poll "
-                            "without a SLURM job ID (PsiJ may not have assigned one yet)",
-                            edge_name)
             task = asyncio.create_task(
                 self._tunnel_watcher(edge_name, native_id, relay_file))
             self._watchers[edge_name] = task
@@ -795,55 +930,35 @@ class PluginPSIJ(Plugin):
         - ``edge_name``  — echoed back.
         - ``status``     — one of ``"pending"``, ``"active"``, ``"failed"``,
                            ``"done"``, or ``"no_tunnel"``.
-        - ``port``       — allocated tunnel port (int) once active, else null.
-        - ``pid``        — SSH process PID, once spawned, else null.
+        - ``port``       — allocated tunnel port (int) once the job has
+                           opened its compute-side tunnel, else null.
+        - ``pid``        — always null; the ssh process now lives inside
+                           the job, not the plugin.
         """
         edge_name  = request.path_params['edge_name']
         relay_file = _relay_dir() / f'{edge_name}.port'
-        pid_file   = _relay_dir() / f'{edge_name}.pid'
 
         port = None
-        pid  = None
         if relay_file.exists():
             try:
                 port = int(relay_file.read_text().strip())
             except (ValueError, OSError):
                 pass
-        if pid_file.exists():
-            try:
-                pid = int(pid_file.read_text().strip())
-            except (ValueError, OSError):
-                pass
 
-        task  = self._watchers.get(edge_name)
-        proc  = self._tunnel_procs.get(edge_name)
-        alive = proc is not None and proc.poll() is None
-
+        task = self._watchers.get(edge_name)
         if task is None:
-            # No watcher was ever started
             status = 'no_tunnel'
         elif port is not None:
-            # Relay file exists → tunnel successfully reported a port
-            if alive:
-                status = 'active'
-            elif proc is not None:
-                rc = proc.poll()
-                status = 'done' if rc == 0 else 'failed'
-            else:
-                # Port written but proc not tracked (e.g. migrated session)
-                status = 'active'
+            status = 'done' if task.done() else 'active'
         elif task.done():
-            # Watcher finished but no port was ever written → failed
-            exc = task.exception() if not task.cancelled() else None
-            status = 'failed' if exc else 'failed'
+            status = 'failed'
         else:
-            # Watcher still running, waiting for job to reach RUNNING state
             status = 'pending'
 
         return {'edge_name': edge_name,
                 'status':    status,
                 'port':      port,
-                'pid':       pid}
+                'pid':       None}
 
     # ─────────────────────────────────────────────────────────────────────────
     #  Internal tunnel helpers
@@ -851,190 +966,58 @@ class PluginPSIJ(Plugin):
 
     async def _tunnel_watcher(self, edge_name: str, native_id,
                               relay_file: pathlib.Path) -> None:
-        """Watch a batch job and spawn a reverse SSH tunnel once it starts.
+        """Wait for the job's compute-side tunnel to come up.
 
-        Polls the active batch system until the job is RUNNING, then calls
-        ``_spawn_tunnel`` to open the reverse SSH tunnel and write the
-        assigned port to *relay_file*.
+        With the compute-side tunnel design, the job's bash preamble
+        establishes the ssh tunnel and writes the allocated port to
+        *relay_file*.  This watcher just polls the file and the batch
+        system state for visibility / status reporting; it does not
+        spawn any ssh itself.
 
-        Args:
-            edge_name:  Logical name of the child edge service.
-            native_id:  Native job ID string/int (SLURM/PBS/...).
-            relay_file: Path where the tunnel port will be written.
+        Returns when the port file appears or the job reaches a terminal
+        state, whichever comes first.
         """
-        from .batch_system import (detect_batch_system, STATE_RUNNING,
-                                   TERMINAL_STATES)
+        from .batch_system import detect_batch_system, TERMINAL_STATES
         batch = detect_batch_system()
 
-        log.info("[psij] Watcher started for edge '%s' (job %s, backend=%s)",
-                 edge_name, native_id, batch.name)
+        log.info("[psij] Watcher started for edge '%s' (job %s, backend=%s) "
+                 "-- waiting for relay file %s",
+                 edge_name, native_id, batch.name, relay_file)
 
-        # --- wait for job to reach RUNNING ---
-        last_state = None
-        for attempt in range(120):          # up to ~4 min (2s × 120)
+        deadline = asyncio.get_event_loop().time() + 15 * 60   # 15 min cap
+        while asyncio.get_event_loop().time() < deadline:
             await asyncio.sleep(2)
-            state = await asyncio.to_thread(batch.job_state, native_id)
-            log.debug("[psij] watcher edge=%s job=%s state=%r attempt=%d",
-                      edge_name, native_id, state, attempt)
 
-            # Log every 60 s at INFO so state is visible without DEBUG logging
-            if state != last_state or attempt % 30 == 0:
-                log.info("[psij] watcher edge=%s job=%s state=%r (attempt %d/120)",
-                         edge_name, native_id, state or '(unknown)', attempt)
-                last_state = state
-
-            if state in TERMINAL_STATES and state != 'DONE':
-                log.warning("[psij] Job %s ended with state %s — aborting tunnel",
-                            native_id, state)
-                return
-
-            if state != STATE_RUNNING:
-                continue
-
-            # --- job is RUNNING: find its nodes ---
-            nodes = await asyncio.to_thread(batch.job_nodes, str(native_id))
-            if not nodes:
-                log.warning("[psij] Job %s RUNNING but no nodes found yet, retrying",
-                            native_id)
-                continue
-
-            compute_node = nodes[0]
-            log.info("[psij] Job %s running on %s — spawning tunnel",
-                     native_id, compute_node)
-
-            # Retry spawn: pam_slurm_adopt rejects SSH until the job's
-            # processes are live, which can lag a few seconds behind squeue
-            # reporting RUNNING.  Retry rapidly for up to 15 s.
-            deadline     = asyncio.get_event_loop().time() + 15
-            spawn_attempt = 0
-            while True:
+            if relay_file.exists():
                 try:
-                    await self._spawn_tunnel(compute_node, relay_file, edge_name)
-                    return   # success
-                except Exception as e:
-                    spawn_attempt += 1
-                    remaining = deadline - asyncio.get_event_loop().time()
-                    if remaining <= 0:
-                        log.error("[psij] Tunnel spawn failed for edge '%s' "
-                                  "after %d attempts: %s", edge_name, spawn_attempt, e)
-                        return
-                    log.warning("[psij] Tunnel spawn attempt %d failed, %.0f s left: %s",
-                                spawn_attempt, remaining, e)
-                    await asyncio.sleep(1)
+                    port = int(relay_file.read_text().strip())
+                    log.info("[psij] Tunnel up for edge '%s': port %d",
+                             edge_name, port)
+                    return
+                except (OSError, ValueError):
+                    continue   # partial write / transient — retry
 
-        log.warning("[psij] Watcher for edge '%s' timed out waiting for job %s to start",
-                    edge_name, native_id)
+            if native_id is not None:
+                state = await asyncio.to_thread(batch.job_state, native_id)
+                if state in TERMINAL_STATES:
+                    log.warning("[psij] Job %s reached terminal state %s "
+                                "before tunnel came up",
+                                native_id, state)
+                    return
+
+        log.warning("[psij] Watcher for edge '%s' timed out waiting for tunnel",
+                    edge_name)
 
     async def _cleanup_tunnels(self) -> None:
-        """Terminate all SSH tunnel processes on shutdown."""
-        for name, proc in list(self._tunnel_procs.items()):
-            try:
-                proc.terminate()
-                proc.wait(timeout=5)
-            except Exception:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
-            log.info("[psij] Terminated tunnel process for edge '%s'", name)
-        self._tunnel_procs.clear()
+        """Cancel outstanding tunnel-watcher tasks on shutdown.
 
+        Tunnel ssh processes now live inside the batch job (on compute
+        nodes), not on the login node — so there's nothing to terminate
+        here; they die with the job.
+        """
         for name, task in list(self._watchers.items()):
             task.cancel()
         self._watchers.clear()
-
-    async def _spawn_tunnel(self, node: str, relay_file: pathlib.Path,
-                            edge_name: str) -> None:
-        """Open a reverse SSH tunnel from *this* login node to *node*.
-
-        Uses ``ssh -R 0:<bridge_host>:<bridge_port> <node> -N`` so the OS
-        assigns a free port.  The assigned port is extracted from SSH stderr
-        and written to *relay_file* so the child edge can read it.
-
-        The SSH process runs detached (new session) so it outlives this
-        coroutine.  A PID file is written alongside the relay file.
-
-        Args:
-            node:       Compute node hostname.
-            relay_file: Path where the assigned port number will be written.
-            edge_name:  Used only for log messages and the PID file name.
-        """
-        from urllib.parse import urlparse as _urlparse
-
-        # Derive bridge host/port from the edge service (authoritative source),
-        # falling back to the RADICAL_BRIDGE_URL env var if not accessible.
-        edge_svc    = getattr(self._app.state, 'edge_service', None)
-        svc_url     = getattr(edge_svc, '_bridge_url', '') if edge_svc else ''
-        bridge_url  = svc_url or os.environ.get('RADICAL_BRIDGE_URL', '')
-        parsed      = _urlparse(bridge_url) if bridge_url else None
-        bridge_host = (parsed.hostname or 'localhost') if parsed else 'localhost'
-        bridge_port = (parsed.port or 8000)            if parsed else 8000
-        log.info("[psij] Tunnel bridge target: %s:%s (from url=%r)", bridge_host, bridge_port, bridge_url)
-
-        ssh_cmd = [
-            'ssh', '-N',
-            '-o', 'StrictHostKeyChecking=no',
-            '-o', 'UserKnownHostsFile=/dev/null',
-            '-o', 'BatchMode=yes',
-            '-o', 'ServerAliveInterval=10',
-            '-o', 'ServerAliveCountMax=3',
-            '-o', 'ExitOnForwardFailure=yes',
-            '-R', f'0:{bridge_host}:{bridge_port}',
-            node,
-        ]
-        log.info("[psij] Spawning reverse tunnel: %s", ' '.join(ssh_cmd))
-
-        proc = subprocess.Popen(
-            ssh_cmd,
-            stderr=subprocess.PIPE,
-            start_new_session=True,   # detach so it survives edge restart
-        )
-
-        # Extract the allocated port from SSH stderr.
-        # With -v, SSH prints: "Allocated port N for remote forward to ..."
-        # NOTE: some OpenSSH versions also print an earlier line like
-        #   "remote forward success. listening on port 0"
-        # (where 0 is a placeholder before the real port is announced).
-        # We must skip any match of port 0 and keep reading.
-        # This is blocking I/O; run it in a thread so the event loop stays free.
-        def _read_port() -> tuple[int | None, list[str]]:
-            lines: list[str] = []
-            assert proc.stderr is not None
-            for raw in proc.stderr:
-                line = raw.decode('utf-8', errors='replace').rstrip()
-                lines.append(line)
-                m = re.search(r'[Aa]llocated port (\d+)', line)
-                if m:
-                    port = int(m.group(1))
-                    if port > 0:
-                        return port, lines
-                if proc.poll() is not None:
-                    break
-            return None, lines
-
-        port, ssh_lines = await asyncio.get_event_loop().run_in_executor(None, _read_port)
-
-        # Drain SSH stderr in background so the pipe never fills and blocks SSH.
-        if proc.stderr:
-            threading.Thread(target=proc.stderr.read, daemon=True).start()
-
-        if port is None:
-            rc = proc.poll()
-            tail = '\n'.join(ssh_lines[-20:])
-            raise RuntimeError(
-                f"SSH tunnel for edge '{edge_name}' did not report a port "
-                f"(exit={rc})\nSSH output (last 20 lines):\n{tail}")
-
-        log.info("[psij] SSH allocated port %d for edge '%s' tunnel", port, edge_name)
-
-        # Write rendezvous files and register proc for live status checks
-        relay_file.write_text(str(port))
-        pid_file = relay_file.with_suffix('.pid')
-        pid_file.write_text(str(proc.pid))
-        self._tunnel_procs[edge_name] = proc
-
-        log.info("[psij] Reverse tunnel for edge '%s' active on port %d (pid=%d)",
-                 edge_name, port, proc.pid)
 
 
 

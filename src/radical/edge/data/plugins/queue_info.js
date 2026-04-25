@@ -152,9 +152,21 @@ async function loadQueueInfo(page, api) {
 
     // Bind view jobs buttons
     content.querySelectorAll('[data-action="view-jobs"]').forEach(btn => {
-      btn.addEventListener('click', () => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();   // don't also fire the row-click handler
         const queue = btn.dataset.queue;
         loadQueueJobs(api, sid, queue, btn);
+      });
+    });
+
+    // Click a queue row to see detailed constraints (walltime min/max,
+    // node count, per-node resources).
+    content.querySelectorAll('.qi-queue-row').forEach(row => {
+      row.addEventListener('click', () => {
+        const queueName = row.dataset.queue;
+        const queue = (queueDataCache[api.edgeName]?.queues || [])
+                      .find(q => (q.name || q.partition) === queueName);
+        if (queue) showQueueDetailOverlay(queue, api);
       });
     });
 
@@ -180,7 +192,7 @@ function renderQueueInfo(partitions, allocations, api, sid) {
       const state = p.state || p.avail || '-';
       const stateBadge = state.toLowerCase().includes('up') ? 'badge-green' : 'badge-orange';
       const eName = escHtml(name);
-      html += `<tr>
+      html += `<tr class="qi-queue-row" data-queue="${eName}" style="cursor:pointer">
         <td><strong>${eName}</strong></td>
         <td><span class="badge ${stateBadge}">${escHtml(state)}</span></td>
         <td>${p.nodes || p.total_nodes || '-'}</td>
@@ -513,6 +525,80 @@ function showJobDetailOverlay(jobId, api) {
   `;
 
   api.showOverlay(`📋 Job Details: ${escHtml(job.job_id || job.id || '-')}`, body);
+}
+
+function showQueueDetailOverlay(p, api) {
+  const fmtDur = (s) => (s == null ? '-' : formatDuration(s));
+  const fmtRange = (a, b, fmt = (x) => x) =>
+    (a == null && b == null) ? '-' :
+    (a == null) ? `≤ ${fmt(b)}` :
+    (b == null) ? `≥ ${fmt(a)}` :
+    (a === b)   ? `${fmt(a)}` :
+                  `${fmt(a)} – ${fmt(b)}`;
+
+  const name  = p.name || p.partition || '-';
+  const state = p.state || p.avail || '-';
+  const stateBadge = state.toLowerCase().includes('up') ? 'badge-green' : 'badge-orange';
+
+  const tlimitDisplay = (p.time_limit === 'UNLIMITED' || p.time_limit == null)
+    ? '-'
+    : (typeof p.time_limit === 'number' ? formatDuration(p.time_limit) : escHtml(String(p.time_limit)));
+
+  const memMb = p.mem_per_node_mb;
+  const memDisplay = (memMb && memMb > 0)
+    ? (memMb >= 1024 ? `${(memMb / 1024).toFixed(1)} GB` : `${memMb} MB`)
+    : '-';
+
+  const body = `
+    <div class="job-detail-grid">
+      <div class="job-detail-item">
+        <span class="label">Queue</span>
+        <span class="value"><strong>${escHtml(name)}</strong></span>
+      </div>
+      <div class="job-detail-item">
+        <span class="label">State</span>
+        <span class="value"><span class="badge ${stateBadge}">${escHtml(state)}</span></span>
+      </div>
+      <div class="job-detail-item">
+        <span class="label">Walltime</span>
+        <span class="value">${fmtRange(p.walltime_min, p.walltime_max, fmtDur)}</span>
+      </div>
+      <div class="job-detail-item">
+        <span class="label">Time Limit (default)</span>
+        <span class="value">${tlimitDisplay}</span>
+      </div>
+      <div class="job-detail-item">
+        <span class="label">Node count</span>
+        <span class="value">${fmtRange(p.nodes_min, p.nodes_max)}</span>
+      </div>
+      <div class="job-detail-item">
+        <span class="label">Nodes (total / available / idle)</span>
+        <span class="value">${p.nodes_total ?? '-'} / ${p.nodes_available ?? '-'} / ${p.nodes_idle ?? '-'}</span>
+      </div>
+      <div class="job-detail-item">
+        <span class="label">CPUs per node</span>
+        <span class="value">${p.cpus_per_node || '-'}</span>
+      </div>
+      <div class="job-detail-item">
+        <span class="label">GPUs per node</span>
+        <span class="value">${p.gpus_per_node || '-'}</span>
+      </div>
+      <div class="job-detail-item">
+        <span class="label">Memory per node</span>
+        <span class="value">${memDisplay}</span>
+      </div>
+      <div class="job-detail-item">
+        <span class="label">Max jobs per user</span>
+        <span class="value">${p.max_jobs_per_user || '-'}</span>
+      </div>
+      <div class="job-detail-item">
+        <span class="label">Features</span>
+        <span class="value">${(p.features && p.features.length) ? escHtml(p.features.join(', ')) : '-'}</span>
+      </div>
+    </div>
+  `;
+
+  api.showOverlay(`📋 Queue: ${escHtml(name)}`, body);
 }
 
 // ─────────────────────────────────────────────────────────────

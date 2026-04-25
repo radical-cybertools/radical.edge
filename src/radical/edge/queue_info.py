@@ -236,19 +236,22 @@ class QueueInfo(ABC):
 
         Returns:
             dict: {"queues": {<partition_name>: {...}, ...}}
+                  Queue names are sorted alphabetically for stable UI order.
         """
         info = self._collect_info()
+
         if user is None:
-            return info
+            allowed = None
+        else:
+            allowed = self._get_user_partitions(user)  # pylint: disable=E1128
 
-        allowed = self._get_user_partitions(user)  # pylint: disable=E1128
-        if allowed is None:
-            # Backend doesn't support filtering, return all
-            return info
-
-        filtered = {k: v for k, v in info.get('queues', {}).items()
-                    if k in allowed}
-        return {'queues': filtered}
+        queues = info.get('queues', {})
+        sorted_queues = {
+            k: queues[k]
+            for k in sorted(queues)
+            if allowed is None or k in allowed
+        }
+        return {'queues': sorted_queues}
 
     @abstractmethod
     def _collect_info(self):
@@ -299,10 +302,13 @@ def make_queue_info(batch=None, conf_path=None) -> 'QueueInfo':
         from .batch_system import detect_batch_system
         batch = detect_batch_system()
 
-    if batch.name == 'slurm':
+    # Key on psij_executor (scheduler family) rather than name, so that
+    # site specializations like AuroraPBSBatchSystem (name='pbs-aurora',
+    # psij_executor='pbs') still route to the PBS queue_info backend.
+    if batch.psij_executor == 'slurm':
         from .queue_info_slurm import QueueInfoSlurm
         return QueueInfoSlurm(slurm_conf=conf_path)
-    if batch.name == 'pbs':
+    if batch.psij_executor == 'pbs':
         from .queue_info_pbs import QueueInfoPBSPro
         return QueueInfoPBSPro()
 

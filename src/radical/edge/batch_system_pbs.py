@@ -292,4 +292,33 @@ class PBSProBatchSystem(BatchSystem):
         }
 
 
+class AuroraPBSBatchSystem(PBSProBatchSystem):
+    """Aurora (ALCF) specialization of PBSPro.
+
+    Aurora requires ``#PBS -l filesystems=<list>`` on every submission
+    (qsub rejects jobs without it), and the expected user base of
+    radical.edge is not expected to know PBS-level resource names.  This
+    class fills in the defaults so that the UI and the Python client API
+    both succeed out of the box; user-supplied values still win on
+    conflict.
+
+    Detection: the vendor-installed ``/opt/aurora`` directory is present
+    on both login and compute nodes and is unambiguous (no hostname
+    regex, no subprocess calls).
+    """
+
+    name = 'pbs-aurora'
+
+    @classmethod
+    def detect(cls) -> bool:
+        return (super().detect()
+                and os.path.isdir('/opt/aurora'))
+
+    def default_custom_attributes(self) -> dict:
+        return {'pbs.l': 'filesystems=home:flare'}
+
+
+# Register Aurora before the generic backend so detect_batch_system()
+# picks the specialization on ALCF hosts.
+register_backend(AuroraPBSBatchSystem)
 register_backend(PBSProBatchSystem)
