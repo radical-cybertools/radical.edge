@@ -73,9 +73,10 @@ from radical.asyncflow      import WorkflowEngine
 from rose.al.active_learner import SequentialActiveLearner
 from rose.metrics           import MEAN_SQUARED_ERROR_MSE
 
-from sklearn.gaussian_process          import GaussianProcessRegressor
-from sklearn.gaussian_process.kernels  import RBF, WhiteKernel
-from sklearn.metrics                   import mean_squared_error
+# Note: sklearn / mpi4py / dragon are NOT imported at module level.
+# They are imported inside the task bodies below, so they only have to
+# be installed on the HPC side (where the tasks actually execute), not
+# on the client where this script is launched from.
 
 # Quiet logging: this is a demo, the print() lines tell the story.
 rhapsody.enable_logging(level=logging.WARNING)
@@ -104,32 +105,75 @@ EDGE_WAIT_SECONDS  = 30 * 60
 
 IRI_DEFAULTS = {
     'nersc': {
+        'enabled'     : True,
         'iri_url'     : 'https://api.iri.nersc.gov',
         'resource_id' : 'perlmutter',
         'login_host'  : 'perlmutter.nersc.gov',
-        'tunnel'      : True,                 # default ON; user can toggle
-        'account'     : None,                 # *must* be provided
-        'workdir'     : None,                 # optional on NERSC
+        'tunnel'      : True,
+        'account'     : 'm5290',
+        'workdir'     : None,
         'queue_name'  : 'debug',
         'walltime_min': 30,
         'n_nodes'     : 1,
-        'constraint'  : 'cpu',                # perlmutter requires cpu/gpu
+        'constraint'  : 'cpu',
         'reservation' : None,
-        'environment' : {},                   # extra env merged into job spec
+        'environment' : {},
     },
     'olcf': {
+        'enabled'     : True,
         'iri_url'     : 'https://amsc-open.s3m.olcf.ornl.gov',
         'resource_id' : 'odo',
         'login_host'  : 'login1.frontier.olcf.ornl.gov',
         'tunnel'      : True,
-        'account'     : 'fus183',
-        'workdir'     : '/gpfs/wolf2/olcf/fus183/proj-shared',  # OLCF requires it
+        'account'     : 'Fusion-FM',
+        'workdir'     : '/gpfs/wolf2/olcf/fus183/proj-shared',
         'queue_name'  : 'batch',
         'walltime_min': 30,
         'n_nodes'     : 1,
         'constraint'  : None,
         'reservation' : None,
         'environment' : {},
+    },
+}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Per-machine defaults for PsiJ submission via existing edges, plus the
+#  ``enabled`` flag for compute / standalone edges.
+#
+#  Keys are edge names (as reported by ``bc.list_edges()``).  Anything not
+#  in this dict is treated as ``enabled=True`` with no per-host pre-fills
+#  — the prompts use their hard-coded fallback values.
+# ─────────────────────────────────────────────────────────────────────────────
+
+MACHINE_DEFAULTS = {
+    'aurora': {
+        'enabled'     : True,
+        'account'     : 'Fusion-FM',
+        'queue_name'  : 'debug',
+        'walltime_min': 30,
+        'n_nodes'     : 1,
+        'tunnel'      : True,
+    },
+    'perlmutter': {
+        'enabled'     : True,
+        'account'     : 'm5290',
+        'queue_name'  : 'debug',
+        'walltime_min': 30,
+        'n_nodes'     : 1,
+        'tunnel'      : True,
+    },
+    'odo': {
+        'enabled'     : True,
+        'account'     : 'fus183',
+        'queue_name'  : 'batch',
+        'walltime_min': 30,
+        'n_nodes'     : 1,
+        'tunnel'      : True,
+    },
+    'thinkie': {
+        # Standalone host, always ready for task execution
+        'enabled'     : True,
     },
 }
 
@@ -226,6 +270,9 @@ def discover_targets(bc):
     for name in bc.list_edges():
         if name == 'bridge':
             continue
+        if not MACHINE_DEFAULTS.get(name, {}).get('enabled', True):
+            print(f'  (skipped {name}: disabled in MACHINE_DEFAULTS)')
+            continue
         edge    = bc.get_edge_client(name)
         plugins = edge.list_plugins()
 
@@ -270,6 +317,9 @@ def discover_targets(bc):
     try:
         cx = bc.get_edge_client('bridge').get_plugin('iri_connect')
         for ep_key, ep_info in cx.list_endpoints().items():
+            if not IRI_DEFAULTS.get(ep_key, {}).get('enabled', True):
+                print(f'  (skipped iri:{ep_key}: disabled in IRI_DEFAULTS)')
+                continue
             note = ' (already connected)' if ep_info.get('connected') \
                                           else ' (will submit a job)'
             label = (f'[iri]      {ep_key} — IRI endpoint at '
@@ -312,19 +362,20 @@ def configure_iri(endpoint):
     d['login_host']   = ask     ('  login host (for --tunnel)', d['login_host'])
     d['tunnel']       = confirm ('  open SSH tunnel from compute node?', d['tunnel'])
     if not d['account']:
-        sys.exit(f'IRI {endpoint}: account/project is required')
+        raise RuntimeError(f'IRI {endpoint}: account/project is required')
     return d
 
 
 def read_token(endpoint):
-    """Read ``~/.amsc/token_<endpoint>``; exit with a clear message on error."""
+    """Read ``~/.amsc/token_<endpoint>``; raise with a clear message on error."""
     path = AMSC_DIR / f'token_{endpoint}'
     if not path.exists():
-        sys.exit(f'token file missing: {path}\n'
-                 f'  put your IRI bearer token there (the literal string only).')
+        raise RuntimeError(
+            f'token file missing: {path}  (put your IRI bearer token '
+            f'there, literal string only)')
     token = path.read_text().strip()
     if not token:
-        sys.exit(f'token file is empty: {path}')
+        raise RuntimeError(f'token file is empty: {path}')
     return token
 
 
@@ -406,20 +457,27 @@ def configure_psij(edge_name, executor):
 
     The PsiJ ``executor`` (slurm/pbs) was already detected from the
     edge's sysinfo.host_role() during discovery and is passed in here.
+    Per-host pre-fills come from ``MACHINE_DEFAULTS`` when present.
     """
+    d = MACHINE_DEFAULTS.get(edge_name, {})
     print(f'\n— Configure PsiJ submission via edge: {edge_name} '
           f'(executor: {executor}) —')
 
     cfg = {
         'executor'    : executor,
-        'queue_name'  : ask     ('  queue / partition',    'debug'),
-        'account'     : ask     ('  account / project',    '') or None,
-        'walltime_min': ask_int ('  walltime (minutes)',   30),
-        'n_nodes'     : ask_int ('  number of nodes',      1),
-        'tunnel'      : confirm ('  open SSH tunnel from compute node?', True),
+        'queue_name'  : ask     ('  queue / partition',
+                                  d.get('queue_name', 'debug')),
+        'account'     : ask     ('  account / project',
+                                  d.get('account', '') or '') or None,
+        'walltime_min': ask_int ('  walltime (minutes)',
+                                  d.get('walltime_min', 30)),
+        'n_nodes'     : ask_int ('  number of nodes',
+                                  d.get('n_nodes', 1)),
+        'tunnel'      : confirm ('  open SSH tunnel from compute node?',
+                                  d.get('tunnel', True)),
     }
     if not cfg['account']:
-        sys.exit(f'edge {edge_name}: account/project is required')
+        raise RuntimeError(f'edge {edge_name}: account/project is required')
     return cfg
 
 
@@ -578,7 +636,11 @@ async def run_rose_workflow(bridge_url, edge_name):
 
     @acl.training_task(as_executable=False)
     async def training(*args):
-        from dragon.data.ddict.ddict import DDict
+        # sklearn lives only on the HPC side; import inside the task.
+        from sklearn.gaussian_process         import GaussianProcessRegressor
+        from sklearn.gaussian_process.kernels import RBF, WhiteKernel
+        from sklearn.metrics                  import mean_squared_error
+        from dragon.data.ddict.ddict          import DDict
         ddict = DDict.attach(ddict_descriptor)
 
         iteration = 0
@@ -737,36 +799,50 @@ def main():
             sys.exit('No targets selected.')
 
         # 3. Configure + launch each pick.  Pre-existing compute-node edges
-        #    require no submission.
+        #    require no submission.  Each target's launch is wrapped in a
+        #    try/except: a failed launch (bad project, queue rejected, …)
+        #    logs a one-liner and the loop moves on to the next target.
+        #    Whatever WAS launched successfully is still tracked in
+        #    ``created`` so the teardown in the outer ``finally`` cleans
+        #    it up even if a later target raises.
         created        = []          # things we will need to tear down
         expected_edges = []          # edge names we expect to come up
 
-        for t in picks:
-            if t['kind'] == 'compute':
-                expected_edges.append(t['edge_name'])
-                print(f'\n— Reusing ready edge: {t["edge_name"]} —')
-
-            elif t['kind'] == 'iri':
-                cfg = configure_iri(t['endpoint'])
-                rec = launch_iri(bc, t['endpoint'], cfg, bridge_url)
-                created.append(rec)
-                expected_edges.append(rec['edge_name'])
-
-            elif t['kind'] == 'login':
-                cfg = configure_psij(t['edge_name'], t['executor'])
-                rec = launch_psij(bc, t['edge_name'], cfg, bridge_url)
-                created.append(rec)
-                expected_edges.append(rec['edge_name'])
-
-        # 4. Wait for the first edge to register, then run the workflow.
         try:
+            for t in picks:
+                try:
+                    if t['kind'] == 'compute':
+                        expected_edges.append(t['edge_name'])
+                        print(f'\n— Reusing ready edge: {t["edge_name"]} —')
+
+                    elif t['kind'] == 'iri':
+                        cfg = configure_iri(t['endpoint'])
+                        rec = launch_iri(bc, t['endpoint'], cfg, bridge_url)
+                        created.append(rec)
+                        expected_edges.append(rec['edge_name'])
+
+                    elif t['kind'] == 'login':
+                        cfg = configure_psij(t['edge_name'], t['executor'])
+                        rec = launch_psij(bc, t['edge_name'], cfg, bridge_url)
+                        created.append(rec)
+                        expected_edges.append(rec['edge_name'])
+                except Exception as exc:
+                    label = t.get('edge_name') or t.get('endpoint') or repr(t)
+                    print(f'\n— launch failed for {label}: {exc} —')
+                    print('  (continuing with remaining targets)')
+
+            # 4. Wait for the first edge to register, then run the workflow.
+            if not expected_edges:
+                sys.exit('No targets launched successfully — nothing to run.')
             first = wait_for_first_edge(bc, expected_edges)
             print(f'\n— First edge up: {first} —')
             asyncio.run(run_rose_workflow(bridge_url, first))
+
         finally:
-            # 5. Tear down only what we created.  Stragglers from our
-            #    submission set keep running idle until their walltime
-            #    expires — by design, simpler than racing cancels.
+            # 5. Tear down what we created — runs whether the workflow
+            #    finished, raised, or we never got that far.  Stragglers
+            #    from our submission set keep running idle until their
+            #    walltime expires (simpler than racing cancels).
             teardown(bc, created)
 
     finally:
