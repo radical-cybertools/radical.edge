@@ -83,6 +83,52 @@ _HANDSHAKE_TIMEOUT_SEC = 300.0  # 5 min, adjusted per observed lag history
 
 
 # ---------------------------------------------------------------------------
+# Local sibling-plugin client — bypasses the bridge for in-process calls
+# ---------------------------------------------------------------------------
+
+class _LocalPSIJClient:
+    '''In-process adapter for ``PluginPSIJ`` with the same surface the
+    dispatcher uses on ``PSIJClient``.
+
+    The dispatcher and ``PluginPSIJ`` live in the same process; routing
+    same-edge calls through the bridge would deadlock the asyncio loop
+    (sync HTTP → bridge → WS back to ourselves while the loop is blocked).
+    This adapter calls the underlying ``PSIJSession`` methods directly.
+
+    Only the no-tunnel ``submit_tunneled`` path is supported; the dispatcher
+    always passes ``tunnel=False`` (the child edge opens its own outbound
+    tunnel — see CLAUDE.md §Tunnel implementation).
+    '''
+
+    def __init__(self, plugin: Any) -> None:
+        self._plugin       = plugin
+        self.sid: str | None = None
+
+    async def register_session(self) -> None:
+        sid = f'session.{uuid.uuid4().hex[:8]}'
+        self._plugin._sessions[sid] = self._plugin._create_session(sid)
+        self._plugin._session_last_access[sid] = time.time()
+        self._plugin._ensure_cleanup_task()
+        self.sid = sid
+
+    async def submit_tunneled(self, job_spec: dict, executor: str,
+                              tunnel: bool) -> dict:
+        if tunnel:
+            raise NotImplementedError(
+                '_LocalPSIJClient: tunnel=True is not supported '
+                '(use bridge path or extend the local adapter)')
+        session = self._plugin._sessions[self.sid]
+        return await session.submit_job(job_spec, executor)
+
+    async def cancel_job(self, job_id: str) -> dict:
+        return await self._plugin._sessions[self.sid].cancel_job(job_id)
+
+    async def get_job_status(self, job_id: str, **kwargs: Any) -> dict:
+        return await self._plugin._sessions[self.sid].get_job_status(
+            job_id, **kwargs)
+
+
+# ---------------------------------------------------------------------------
 # PoolState — per-pool runtime state
 # ---------------------------------------------------------------------------
 
@@ -841,23 +887,22 @@ class PluginTaskDispatcher(Plugin):
     def _get_psij_client(self) -> Any:
         '''Return a :class:`PSIJClient`-shaped helper for our own edge.
 
-        Returns ``None`` on any failure (bridge not ready, self edge name
-        missing, psij not loaded on this edge).  Cross-plugin typing
-        follows the repo convention of returning ``Any`` — see
-        ``plugin_xgfabric.py::_get_plugin``.
+        Goes directly to the in-process ``PluginPSIJ`` instance — routing
+        same-edge calls through the bridge would deadlock (sync HTTP →
+        bridge → WS back to ourselves while the asyncio loop is blocked).
+
+        Returns ``None`` if the edge service or psij plugin is not
+        available locally.
         '''
-        bc = self._wait_for_bc()
-        if bc is None:
+        edge_svc = getattr(self._app.state, 'edge_service', None)
+        if edge_svc is None:
             return None
-        self_edge = self._self_edge()
-        if not self_edge:
+        psij_plugin = edge_svc._plugins.get('psij')
+        if psij_plugin is None:
+            log.warning('[%s] psij plugin not loaded on this edge',
+                        self.instance_name)
             return None
-        try:
-            return bc.get_edge_client(self_edge).get_plugin('psij')
-        except Exception as e:
-            log.warning('[%s] psij client unavailable: %s',
-                        self.instance_name, e)
-            return None
+        return _LocalPSIJClient(psij_plugin)
 
     def _get_rhapsody_client(self, child_edge: str,
                              backend: str | None = None) -> Any:
@@ -915,7 +960,7 @@ class PluginTaskDispatcher(Plugin):
 
         attributes: dict[str, Any] = {
             'queue_name': pool_state.config.queue,
-            'duration'  : {'seconds': size.walltime_sec},
+            'duration'  : size.walltime_sec,
         }
         if pool_state.config.account:
             attributes['project'] = pool_state.config.account
@@ -951,11 +996,11 @@ class PluginTaskDispatcher(Plugin):
 
         try:
             if not getattr(psij_c, 'sid', None):
-                psij_c.register_session()
+                await psij_c.register_session()
             from .batch_system import detect_batch_system
             executor = detect_batch_system().psij_executor
-            result   = await asyncio.to_thread(
-                psij_c.submit_tunneled, job_spec, executor, False)
+            result   = await psij_c.submit_tunneled(
+                job_spec, executor, False)
         except Exception as e:
             log.exception('[%s] psij submit_tunneled failed for %s: %s',
                           self.instance_name, record.pid, e)
@@ -989,8 +1034,8 @@ class PluginTaskDispatcher(Plugin):
             return
         try:
             if not getattr(psij_c, 'sid', None):
-                psij_c.register_session()
-            await asyncio.to_thread(psij_c.cancel_job, record.psij_job_id)
+                await psij_c.register_session()
+            await psij_c.cancel_job(record.psij_job_id)
         except Exception as e:
             log.warning('[%s] psij cancel failed for %s: %s',
                         self.instance_name, record.pid, e)
@@ -1006,9 +1051,8 @@ class PluginTaskDispatcher(Plugin):
             return
         try:
             if not getattr(psij_c, 'sid', None):
-                psij_c.register_session()
-            status = await asyncio.to_thread(
-                psij_c.get_job_status, record.psij_job_id)
+                await psij_c.register_session()
+            status = await psij_c.get_job_status(record.psij_job_id)
         except Exception as e:
             log.warning('[%s] psij get_job_status failed for %s: %s',
                         self.instance_name, record.pid, e)
@@ -1111,8 +1155,9 @@ class PluginTaskDispatcher(Plugin):
                                     'child edge unavailable')
             return
 
-        rh = self._get_rhapsody_client(pilot.child_edge_name,
-                                        pilot.rhapsody_backend)
+        rh = await asyncio.to_thread(
+            self._get_rhapsody_client, pilot.child_edge_name,
+            pilot.rhapsody_backend)
         if rh is None:
             self._mark_task_failed(pool_state, task,
                                     'rhapsody client unavailable')
@@ -1237,7 +1282,8 @@ class PluginTaskDispatcher(Plugin):
         # RUNNING — best-effort cancel on the pilot
         pilot = pool_state.pilots.get(task.pilot_id or '')
         if pilot and pilot.child_edge_name and task.rhapsody_uid:
-            rh = self._get_rhapsody_client(pilot.child_edge_name)
+            rh = await asyncio.to_thread(
+                self._get_rhapsody_client, pilot.child_edge_name)
             if rh is not None and getattr(rh, 'sid', None):
                 try:
                     await asyncio.to_thread(rh.cancel_task,

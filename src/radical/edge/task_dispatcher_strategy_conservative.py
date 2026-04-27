@@ -21,6 +21,8 @@ Knobs (``strategy_config``)
 - ``max_in_flight_submissions``: int   = 2
 - ``router_preference``        : str   = ``'least_loaded'``
                                   (or ``'youngest'``)
+- ``max_consecutive_failures`` : int   = 3
+- ``failure_backoff_sec``      : float = 60
 '''
 
 from __future__ import annotations
@@ -29,7 +31,7 @@ from typing import TYPE_CHECKING
 
 from .task_dispatcher_config   import PoolConfig
 from .task_dispatcher_state    import (
-    PILOT_ACTIVE, PILOT_PENDING, PILOT_STARTING,
+    PILOT_ACTIVE, PILOT_FAILED, PILOT_PENDING, PILOT_STARTING,
     PILOT_LIVE_STATES, TASK_QUEUED,
 )
 from .task_dispatcher_strategy import DispatchStrategy, StrategyContext
@@ -54,12 +56,23 @@ class ConservativeStrategy(DispatchStrategy):
             cfg.get('max_in_flight_submissions', 2))
         self._router_preference   : str   = str(
             cfg.get('router_preference', 'least_loaded'))
+        self._max_consecutive_failures: int = int(
+            cfg.get('max_consecutive_failures', 3))
+        self._failure_backoff_sec : float = float(
+            cfg.get('failure_backoff_sec', 60.0))
 
         if self._router_preference not in ('least_loaded', 'youngest'):
             raise ValueError(
                 f"ConservativeStrategy: unknown router_preference "
                 f"{self._router_preference!r}; expected 'least_loaded' "
                 f"or 'youngest'")
+
+        # Failure-backoff guard: pause submissions when N consecutive
+        # pilots fail without ever reaching ACTIVE.  Reset on any pilot
+        # transition into ACTIVE.
+        self._consecutive_failures: int   = 0
+        self._backoff_until       : float = 0.0
+        self._backoff_logged      : bool  = False
 
     # -- signals ---------------------------------------------------------
 
@@ -71,8 +84,32 @@ class ConservativeStrategy(DispatchStrategy):
     def on_pilot_state(self, ctx: StrategyContext,
                        pilot: 'PilotRecord',
                        old_state: str, new_state: str) -> None:
-        '''No direct action.  Freed/new capacity is picked up by the
-        dispatcher's next ``pick_dispatch`` loop.'''
+        '''Track consecutive pilot failures and trip the backoff guard.
+
+        Submission-side failure: pilot went PENDING/STARTING → FAILED
+        without ever reaching ACTIVE and without running any tasks.
+        After ``max_consecutive_failures`` such failures we pause
+        submissions for ``failure_backoff_sec``.  Any pilot reaching
+        ACTIVE resets the counter.
+        '''
+        if new_state == PILOT_ACTIVE:
+            self._consecutive_failures = 0
+            self._backoff_until        = 0.0
+            self._backoff_logged       = False
+            return None
+
+        if (new_state == PILOT_FAILED
+                and old_state in (PILOT_PENDING, PILOT_STARTING)
+                and pilot.started_tasks == 0):
+            self._consecutive_failures += 1
+            if self._consecutive_failures >= self._max_consecutive_failures:
+                self._backoff_until  = ctx.now() + self._failure_backoff_sec
+                self._backoff_logged = False
+                ctx.logger.warning(
+                    "conservative[%s]: %d consecutive pilot failures; "
+                    "pausing submissions for %.0fs",
+                    self.pool.name, self._consecutive_failures,
+                    self._failure_backoff_sec)
         return None
 
     def on_task_finished(self, ctx: StrategyContext,
@@ -91,6 +128,16 @@ class ConservativeStrategy(DispatchStrategy):
         pending      = ctx.pending_queue()
         pilots       = ctx.pilots()
         if not pending:
+            return
+
+        # Backoff guard: pause submissions while in failure backoff window.
+        now_ts = ctx.now()
+        if now_ts < self._backoff_until:
+            if not self._backoff_logged:
+                ctx.logger.info(
+                    "conservative[%s]: backoff active for %.0fs more",
+                    self.pool.name, self._backoff_until - now_ts)
+                self._backoff_logged = True
             return
 
         # Free capacity across active pilots

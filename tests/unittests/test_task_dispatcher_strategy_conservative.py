@@ -10,7 +10,7 @@ import pytest
 from radical.edge.task_dispatcher_config import PoolConfig, PilotSize
 from radical.edge.task_dispatcher_state import (
     PilotRecord, TaskRecord,
-    PILOT_PENDING, PILOT_STARTING, PILOT_ACTIVE, PILOT_DONE,
+    PILOT_PENDING, PILOT_STARTING, PILOT_ACTIVE, PILOT_DONE, PILOT_FAILED,
     TASK_QUEUED, TASK_DONE,
 )
 from radical.edge.task_dispatcher_strategy import (
@@ -290,6 +290,105 @@ class TestTermination:
         h.add_pilot(state=PILOT_ACTIVE, in_flight=0)
         s = ConservativeStrategy(h.pool, {})
         assert s.should_terminate_pilot(h.ctx, h.pilots[0]) is False
+
+
+# ---------------------------------------------------------------------------
+# Failure-backoff guard
+# ---------------------------------------------------------------------------
+
+class TestFailureBackoff:
+
+    def _failed_pilot(self, h: '_Harness') -> PilotRecord:
+        h.add_pilot(state=PILOT_FAILED, started_tasks=0)
+        return h.pilots[-1]
+
+    def test_below_threshold_does_not_pause(self):
+        h = _Harness(_pool())
+        for _ in range(5):
+            h.add_task()
+        s = ConservativeStrategy(h.pool, {
+            'min_dwell_sec'           : 0.0,
+            'max_consecutive_failures': 3,
+            'failure_backoff_sec'     : 60.0,
+        })
+        for _ in range(2):  # 2 < 3 threshold
+            p = self._failed_pilot(h)
+            s.on_pilot_state(h.ctx, p, PILOT_PENDING, PILOT_FAILED)
+        s.on_tick(h.ctx)
+        assert h.submitted == [None]
+
+    def test_threshold_pauses_submissions(self):
+        h = _Harness(_pool())
+        for _ in range(5):
+            h.add_task()
+        s = ConservativeStrategy(h.pool, {
+            'min_dwell_sec'           : 0.0,
+            'max_consecutive_failures': 3,
+            'failure_backoff_sec'     : 60.0,
+        })
+        for _ in range(3):
+            p = self._failed_pilot(h)
+            s.on_pilot_state(h.ctx, p, PILOT_PENDING, PILOT_FAILED)
+        s.on_tick(h.ctx)
+        assert h.submitted == []
+
+    def test_backoff_expires(self):
+        h = _Harness(_pool())
+        for _ in range(5):
+            h.add_task()
+        s = ConservativeStrategy(h.pool, {
+            'min_dwell_sec'           : 0.0,
+            'max_consecutive_failures': 2,
+            'failure_backoff_sec'     : 60.0,
+        })
+        for _ in range(2):
+            p = self._failed_pilot(h)
+            s.on_pilot_state(h.ctx, p, PILOT_PENDING, PILOT_FAILED)
+        s.on_tick(h.ctx)
+        assert h.submitted == []
+        h.advance(61.0)
+        s.on_tick(h.ctx)
+        assert h.submitted == [None]
+
+    def test_active_resets_failure_counter(self):
+        h = _Harness(_pool())
+        for _ in range(5):
+            h.add_task()
+        s = ConservativeStrategy(h.pool, {
+            'min_dwell_sec'           : 0.0,
+            'max_consecutive_failures': 3,
+            'failure_backoff_sec'     : 60.0,
+        })
+        for _ in range(2):
+            p = self._failed_pilot(h)
+            s.on_pilot_state(h.ctx, p, PILOT_PENDING, PILOT_FAILED)
+        h.add_pilot(state=PILOT_ACTIVE, started_tasks=0)
+        s.on_pilot_state(h.ctx, h.pilots[-1], PILOT_STARTING, PILOT_ACTIVE)
+        # one more failure should not trip the guard (counter reset)
+        p = self._failed_pilot(h)
+        s.on_pilot_state(h.ctx, p, PILOT_PENDING, PILOT_FAILED)
+        # ACTIVE pilot has 2 free capacity, but pending=5 > free=2,
+        # so on_tick should still submit
+        s.on_tick(h.ctx)
+        assert h.submitted == [None]
+
+    def test_failure_after_running_tasks_does_not_count(self):
+        h = _Harness(_pool())
+        for _ in range(5):
+            h.add_task()
+        s = ConservativeStrategy(h.pool, {
+            'min_dwell_sec'           : 0.0,
+            'max_consecutive_failures': 2,
+            'failure_backoff_sec'     : 60.0,
+        })
+        # pilots that ran tasks before failing don't count as
+        # "submission failure" — they did productive work
+        for _ in range(5):
+            h.add_pilot(state=PILOT_FAILED, started_tasks=3)
+            s.on_pilot_state(h.ctx, h.pilots[-1],
+                             PILOT_ACTIVE, PILOT_FAILED)
+        s.on_tick(h.ctx)
+        assert h.submitted == [None]
 
 
 # ---------------------------------------------------------------------------
