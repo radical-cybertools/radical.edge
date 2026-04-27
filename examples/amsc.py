@@ -497,17 +497,25 @@ def launch_psij(bc, edge_name, cfg, bridge_url):
         'duration'  : cfg['walltime_min'] * 60,
         'account'   : cfg['account'],
     }
+    # PsiJ's ``JobAttributes`` schema has no ``constraint`` field; raw
+    # ``attributes['constraint']`` would be silently dropped.  Backend-
+    # specific flags ride in ``custom_attributes`` keyed by
+    # ``<executor>.<flag>`` (e.g. ``slurm.constraint`` -> ``--constraint=…``,
+    # ``pbs.l`` -> ``-l …``).  Site defaults from BatchSystem are merged in
+    # bridge-side; this dict carries only what the caller explicitly set.
+    custom_attrs = {}
     if cfg.get('constraint'):
-        attrs['constraint'] = cfg['constraint']
+        custom_attrs[f'{cfg["executor"]}.constraint'] = cfg['constraint']
 
     job_spec = {
-        'executable' : str(EDGE_WRAPPER),
+        'executable'        : str(EDGE_WRAPPER),
         # ``--name`` is required by submit_tunneled; ``--tunnel`` and
         # ``--tunnel-via`` are appended for us when tunnel=True.
-        'arguments'  : ['--name', child_name, '--url', bridge_url],
-        'attributes' : attrs,
-        'resources'  : {'node_count': cfg['n_nodes'], 'process_count': 1},
-        'environment': {
+        'arguments'         : ['--name', child_name, '--url', bridge_url],
+        'attributes'        : attrs,
+        'custom_attributes' : custom_attrs,
+        'resources'         : {'node_count': cfg['n_nodes'], 'process_count': 1},
+        'environment'       : {
             'RADICAL_BRIDGE_URL' : bridge_url,
             'RADICAL_BRIDGE_CERT': str(CERT_PATH),
         },
