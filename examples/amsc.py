@@ -153,6 +153,7 @@ MACHINE_DEFAULTS = {
         'queue_name'  : 'debug',
         'walltime_min': 30,
         'n_nodes'     : 1,
+        'constraint'  : None,
         'tunnel'      : True,
     },
     'perlmutter': {
@@ -161,6 +162,7 @@ MACHINE_DEFAULTS = {
         'queue_name'  : 'debug',
         'walltime_min': 30,
         'n_nodes'     : 1,
+        'constraint'  : 'cpu',          # perlmutter requires cpu/gpu
         'tunnel'      : True,
     },
     'odo': {
@@ -169,6 +171,7 @@ MACHINE_DEFAULTS = {
         'queue_name'  : 'batch',
         'walltime_min': 30,
         'n_nodes'     : 1,
+        'constraint'  : None,
         'tunnel'      : True,
     },
     'thinkie': {
@@ -473,6 +476,8 @@ def configure_psij(edge_name, executor):
                                   d.get('walltime_min', 30)),
         'n_nodes'     : ask_int ('  number of nodes',
                                   d.get('n_nodes', 1)),
+        'constraint'  : ask     ('  constraint (or empty)',
+                                  d.get('constraint') or '') or None,
         'tunnel'      : confirm ('  open SSH tunnel from compute node?',
                                   d.get('tunnel', True)),
     }
@@ -488,16 +493,20 @@ def launch_psij(bc, edge_name, cfg, bridge_url):
     # Unique name for the child edge.
     child_name = f'amsc-{edge_name}-{uuid.uuid4().hex[:6]}'
 
+    attrs = {
+        'queue_name': cfg['queue_name'],
+        'duration'  : cfg['walltime_min'] * 60,
+        'account'   : cfg['account'],
+    }
+    if cfg.get('constraint'):
+        attrs['constraint'] = cfg['constraint']
+
     job_spec = {
         'executable' : str(EDGE_WRAPPER),
         # ``--name`` is required by submit_tunneled; ``--tunnel`` and
         # ``--tunnel-via`` are appended for us when tunnel=True.
         'arguments'  : ['--name', child_name, '--url', bridge_url],
-        'attributes' : {
-            'queue_name': cfg['queue_name'],
-            'duration'  : cfg['walltime_min'] * 60,
-            'account'   : cfg['account'],
-        },
+        'attributes' : attrs,
         'resources'  : {'node_count': cfg['n_nodes'], 'process_count': 1},
         'environment': {
             'RADICAL_BRIDGE_URL' : bridge_url,
@@ -847,7 +856,10 @@ def main():
 
     finally:
         bc.close()
-        print('\nDone.')
+
+    # Only printed when the run completed without an unhandled exception.
+    # If the workflow or teardown raised, the traceback is the last word.
+    print('\nDone.')
 
 
 if __name__ == '__main__':
