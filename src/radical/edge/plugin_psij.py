@@ -40,6 +40,10 @@ log = logging.getLogger("radical.edge")
 # Default poll interval for job status updates (in seconds)
 PSIJ_POLL_INTERVAL = 5.0
 
+# consecutive STATE_UNKNOWN polls tolerated after the job has been seen
+# RUNNING — beyond this we conclude the job left the queue and bail
+UNKNOWN_TOLERANCE = 3
+
 # Persistent directory for job stdout/stderr capture
 _OUTPUT_BASE = pathlib.Path.home() / '.radical' / 'edge' / 'psij' / 'output'
 
@@ -868,7 +872,7 @@ class PluginPSIJ(Plugin):
             relay_file: Shared-filesystem file the child will write.
         """
         from .batch_system import (detect_batch_system, STATE_RUNNING,
-                                   TERMINAL_STATES)
+                                   STATE_UNKNOWN, TERMINAL_STATES)
         batch = detect_batch_system()
 
         log.info("[psij] Watcher started for edge '%s' (job %s, backend=%s) "
@@ -876,6 +880,8 @@ class PluginPSIJ(Plugin):
                  edge_name, native_id, batch.name, relay_file)
 
         last_state = None
+        seen_running = False
+        unknown_streak = 0
         for attempt in range(300):          # up to ~10 min (2s × 300)
             await asyncio.sleep(2)
 
@@ -890,14 +896,30 @@ class PluginPSIJ(Plugin):
 
             state = await asyncio.to_thread(batch.job_state, native_id)
 
+            if state == STATE_RUNNING:
+                seen_running   = True
+                unknown_streak = 0
+            elif state == STATE_UNKNOWN:
+                unknown_streak += 1
+            else:
+                unknown_streak = 0
+
             if state != last_state or attempt % 30 == 0:
                 log.info("[psij] watcher edge=%s job=%s state=%r (attempt %d/300)",
                          edge_name, native_id, state or '(unknown)', attempt)
                 last_state = state
 
-            if state in TERMINAL_STATES and state != 'DONE':
-                log.warning("[psij] Job %s ended with state %s — aborting watch",
-                            native_id, state)
+            if state in TERMINAL_STATES:
+                log.warning("[psij] Job %s ended with state %s — aborting "
+                            "watch (relay file %s never appeared)",
+                            native_id, state, relay_file)
+                return
+
+            if seen_running and unknown_streak >= UNKNOWN_TOLERANCE:
+                log.warning("[psij] Job %s vanished from queue after RUNNING "
+                            "(state=UNKNOWN x %d) — aborting watch (relay file "
+                            "%s never appeared)",
+                            native_id, unknown_streak, relay_file)
                 return
 
             # We no longer spawn the tunnel from here; the child edge does.

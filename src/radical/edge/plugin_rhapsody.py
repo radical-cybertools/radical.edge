@@ -1288,9 +1288,15 @@ class PluginRhapsody(Plugin):
 
     @classmethod
     def is_enabled(cls, app: FastAPI) -> bool:
-        """Rhapsody loads on compute nodes only (task execution)."""
+        """Rhapsody loads on compute nodes (inside an allocation) and on
+        standalone hosts (no batch system at all).  Both can host Dragon
+        workers; bridges and login nodes deliberately don't load Rhapsody.
+        """
+        if getattr(app.state, 'is_bridge', False):
+            return False
         from .batch_system import detect_batch_system
-        return detect_batch_system().in_allocation()
+        bs = detect_batch_system()
+        return bs.in_allocation() or bs.name == 'none'
 
     def __init__(self, app: FastAPI, instance_name: str = "rhapsody"):
         super().__init__(app, instance_name)

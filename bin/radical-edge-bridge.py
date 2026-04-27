@@ -926,10 +926,14 @@ def main():
     import uvicorn
 
     parser = argparse.ArgumentParser(description='RADICAL Edge Bridge')
-    parser.add_argument('--plugins', '-p', default='',
+    parser.add_argument('--plugins', '-p', default='default',
                         help='Comma-separated plugins to host on the bridge '
-                             '(default: none). Use "all" for every registered '
-                             'plugin. Prefix matching supported.')
+                             '(default: the bridge role default set — see '
+                             'plugin_host_base.DEFAULT_PLUGINS_BY_ROLE).  '
+                             'Special tokens: "default" (role default), "all" '
+                             '(every registered plugin), "" (none). '
+                             'Wildcards allowed: "iri*". Prefix matching '
+                             'supported. Combine, e.g.: "-p default,rose".')
     args = parser.parse_args()
 
     # Stash on app.state so the lifespan handler can pick it up

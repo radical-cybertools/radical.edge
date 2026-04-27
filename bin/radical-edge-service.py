@@ -55,10 +55,13 @@ async def main():
     parser = argparse.ArgumentParser(description="Radical Edge Service")
     parser.add_argument("--name",      "-n", nargs="?", help="Edge name")
     parser.add_argument("--url",       "-u", nargs="?", help="Bridge URL")
-    parser.add_argument("--plugins",   "-p", default="all",
-                        help="Comma-separated plugins to load (default: all). "
-                             "Prefix matching supported: 'sys'→sysinfo, "
-                             "'q'→queue_info, 'ro'→rose, etc.")
+    parser.add_argument("--plugins",   "-p", default="default",
+                        help="Comma-separated plugins to load (default: the "
+                             "role-specific default set).  Special tokens: "
+                             "'default' (role's default set), 'all' (every "
+                             "registered plugin).  Wildcards allowed: 'iri*'. "
+                             "Prefix matching supported: 'sys'→sysinfo. "
+                             "Combine, e.g.: '-p default,rose'.")
     parser.add_argument("--log-level", "-l",
                         default=os.environ.get("RADICAL_EDGE_LOG_LEVEL", "INFO"),
                         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
