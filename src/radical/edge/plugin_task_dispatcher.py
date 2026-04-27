@@ -9,10 +9,12 @@ Hosts one :class:`PoolState` per pool declared in ``pools.json``.  Each
 - an arrivals ring buffer and pilot-lag history
 
 Pilots are submitted via ``plugin_psij.submit_tunneled`` on the same edge
-(routed through the bridge — see design doc §4.3).  When a pilot starts,
-its wrapper POSTs a handshake to :meth:`pilot_handshake`; the dispatcher
-then routes tasks to it by calling ``rhapsody.submit_tasks`` on the
-child edge.  Completion is observed via the bridge SSE stream.
+(routed through the bridge — see design doc §4.3).  When the child edge
+registers with the bridge, its appearance in the topology event is the
+dispatcher's signal that the pilot is ACTIVE — capacity is taken from
+the pool's pilot-size config.  Tasks then flow via
+``rhapsody.submit_tasks`` on the child edge; completion is observed via
+the bridge SSE stream.
 
 See:
 - ``plans/task_dispatcher_design.md`` for the architecture
@@ -444,7 +446,6 @@ class PluginTaskDispatcher(Plugin):
         self.add_route_post ('stage_in/{sid}/{task_id}',      self._route_stage_in)
         self.add_route_get  ('stage_out/{sid}/{task_id}/{filename}',
                              self._route_stage_out)
-        self.add_route_post ('pilot_handshake/{sid}',         self._route_pilot_handshake)
 
     # -- loading --------------------------------------------------------
 
@@ -784,72 +785,67 @@ class PluginTaskDispatcher(Plugin):
         raise HTTPException(status_code=404,
                             detail=f'unknown task: {task_id}')
 
-    async def _route_pilot_handshake(self, request: Request) -> dict:
-        '''Called by a freshly-booted pilot to bind its identity.'''
-        self._ensure_started()
-        self._require_known_session(request.path_params['sid'])
-        body = await request.json()
+    async def on_topology_change(self, edges: dict) -> None:
+        '''Bridge topology hook: detect pilot child-edges as they register.
 
-        pilot_id     = body.get('pilot_id')
-        child_edge   = body.get('child_edge')
-        capacity     = int(body.get('capacity', 0))
-        # Client-reported startup_time is retained for diagnostic logs
-        # only; authoritative lag is computed from our own monotonic
-        # clock (active_at - submitted_at).
-        startup_time = float(body.get('startup_time', 0.0))
-
-        if not pilot_id or not child_edge or capacity <= 0:
-            raise HTTPException(
-                status_code=400,
-                detail="handshake requires 'pilot_id', 'child_edge', "
-                       "positive 'capacity'")
-
+        Replaces the explicit handshake POST.  The dispatcher pre-binds
+        ``record.child_edge_name`` at submit time; when a matching edge
+        name appears in the bridge's topology, the pilot becomes ACTIVE.
+        Capacity is taken from the pool's pilot-size config (good enough
+        for the static-allocation case; runtime capacity discovery would
+        re-introduce a handshake).
+        '''
+        if not self._loops_started:
+            return
+        connected = set(edges or {})
         for ps in self._pool_states.values():
-            pilot = ps.pilots.get(pilot_id)
-            if pilot is None:
-                continue
-            if pilot.state in PILOT_TERMINAL_STATES:
-                # Late handshake for an already-failed pilot — ignore
-                log.warning('[%s] late handshake for terminal pilot %s '
-                            '(state=%s); ignoring',
-                            self.instance_name, pilot_id, pilot.state)
-                return {'ok': False, 'reason': 'pilot terminal'}
+            for pilot in list(ps.pilots.values()):
+                if pilot.state != PILOT_PENDING and \
+                        pilot.state != PILOT_STARTING:
+                    continue
+                if not pilot.child_edge_name:
+                    continue
+                if pilot.child_edge_name not in connected:
+                    continue
 
-            old_state = pilot.state
-            pilot.child_edge_name = child_edge
-            pilot.capacity        = capacity
-            pilot.state           = PILOT_ACTIVE
-            pilot.active_at       = time.monotonic()
-            ps.pilot_log.append(pilot)
+                size = ps.config.pilot_sizes.get(pilot.size_key)
+                capacity = (size.nodes * size.cpus_per_node) if size else 0
+                if capacity <= 0:
+                    log.warning('[%s] cannot bind pilot %s: pool size '
+                                '%r has zero capacity',
+                                self.instance_name, pilot.pid,
+                                pilot.size_key)
+                    continue
 
-            if pilot.active_at and pilot.submitted_at:
-                lag_observed = pilot.active_at - pilot.submitted_at
-                ps.record_pilot_lag(lag_observed)
-                log.info('[%s] pilot %s handshake; lag=%.1fs '
-                         '(client-reported=%.1fs)',
-                         self.instance_name, pilot_id,
-                         lag_observed, startup_time)
+                old_state = pilot.state
+                pilot.capacity  = capacity
+                pilot.state     = PILOT_ACTIVE
+                pilot.active_at = time.monotonic()
+                ps.pilot_log.append(pilot)
 
-            self._dispatch_notify('pilot_status', {
-                'pilot_id'  : pilot_id,
-                'pool'      : ps.config.name,
-                'state'     : pilot.state,
-                'child_edge': child_edge,
-                'capacity'  : capacity,
-            })
+                if pilot.active_at and pilot.submitted_at:
+                    lag_observed = pilot.active_at - pilot.submitted_at
+                    ps.record_pilot_lag(lag_observed)
+                    log.info('[%s] pilot %s registered as %s; lag=%.1fs',
+                             self.instance_name, pilot.pid,
+                             pilot.child_edge_name, lag_observed)
 
-            try:
-                ps.strategy.on_pilot_state(
-                    ps.ctx, pilot, old_state, PILOT_ACTIVE)
-            except Exception as e:
-                log.exception('[%s] on_pilot_state raised: %s',
-                              self.instance_name, e)
+                self._dispatch_notify('pilot_status', {
+                    'pilot_id'  : pilot.pid,
+                    'pool'      : ps.config.name,
+                    'state'     : pilot.state,
+                    'child_edge': pilot.child_edge_name,
+                    'capacity'  : capacity,
+                })
 
-            self._drain_pending(ps)
-            return {'ok': True}
+                try:
+                    ps.strategy.on_pilot_state(
+                        ps.ctx, pilot, old_state, PILOT_ACTIVE)
+                except Exception as e:
+                    log.exception('[%s] on_pilot_state raised: %s',
+                                  self.instance_name, e)
 
-        raise HTTPException(status_code=404,
-                            detail=f'unknown pilot_id: {pilot_id}')
+                self._drain_pending(ps)
 
     # -- pilot submission path -----------------------------------------
 
@@ -877,11 +873,6 @@ class PluginTaskDispatcher(Plugin):
         asyncio.run_coroutine_threadsafe(
             self._do_pilot_cancel(pool_state, record),
             self._main_loop)
-
-    def _self_edge(self) -> str | None:
-        '''Name of the edge this plugin runs on.  None if not yet known.'''
-        name = getattr(self._app.state, 'edge_name', None)
-        return str(name) if name else None
 
     def _get_psij_client(self) -> Any:
         '''Return a :class:`PSIJClient`-shaped helper for our own edge.
@@ -923,25 +914,25 @@ class PluginTaskDispatcher(Plugin):
             return None
 
     def _build_pilot_env(self, pool_state: PoolState,
-                         record: PilotRecord,
-                         child_edge: str,
-                         self_edge: str) -> dict[str, str]:
-        '''Bootstrap env vars for a pilot wrapper (design doc §6.1).'''
+                         record: PilotRecord) -> dict[str, str]:
+        '''Bootstrap env vars for the pilot's edge service.
+
+        The dispatcher signals "this is a pilot child edge" via
+        ``RADICAL_EDGE_POOL`` / ``RADICAL_EDGE_RHAPSODY_BACKEND`` /
+        ``RADICAL_EDGE_SCRATCH_BASE``.  Bridge/cert names use the same
+        ``RADICAL_BRIDGE_*`` vars that any plain edge service reads, so
+        the generic ``radical-edge-wrapper.sh`` works without renames.
+        '''
         bridge_url = getattr(self._app.state, 'bridge_url', '') or ''
         env: dict[str, str] = {
-            'RADICAL_EDGE_PILOT_ID'        : record.pid,
-            'RADICAL_EDGE_EDGE_NAME'       : child_edge,
-            'RADICAL_EDGE_PARENT_EDGE'     : self_edge,
-            'RADICAL_EDGE_DISPATCHER_SID'  : next(iter(self._sessions),
-                                                   '') or '',
-            'RADICAL_EDGE_BRIDGE_URL'      : str(bridge_url),
+            'RADICAL_BRIDGE_URL'           : str(bridge_url),
             'RADICAL_EDGE_POOL'            : pool_state.config.name,
             'RADICAL_EDGE_RHAPSODY_BACKEND': record.rhapsody_backend,
             'RADICAL_EDGE_SCRATCH_BASE'    : str(pool_state.scratch_base),
         }
         cert = os.environ.get('RADICAL_BRIDGE_CERT')
         if cert:
-            env['RADICAL_EDGE_BRIDGE_CA'] = cert
+            env['RADICAL_BRIDGE_CERT'] = cert
         return env
 
     def _build_job_spec(self, pool_state: PoolState,
@@ -964,8 +955,8 @@ class PluginTaskDispatcher(Plugin):
             attributes['project'] = pool_state.config.account
 
         return {
-            'executable' : 'radical-edge-pilot-wrapper.sh',
-            'arguments'  : ['-n', child_edge],
+            'executable' : 'radical-edge-wrapper.sh',
+            'arguments'  : ['-n', child_edge, '--plugins', 'default'],
             'environment': env,
             'resources'  : resources,
             'attributes' : attributes,
@@ -980,15 +971,12 @@ class PluginTaskDispatcher(Plugin):
             self._mark_pilot_failed(
                 pool_state, record, 'psij client unavailable')
             return
-        self_edge = self._self_edge()
-        if not self_edge:
-            self._mark_pilot_failed(
-                pool_state, record, 'self edge_name unknown')
-            return
 
         child_edge = f'{pool_state.config.name}_{record.pid}'
-        env        = self._build_pilot_env(
-            pool_state, record, child_edge, self_edge)
+        # Pre-bind so on_topology_change can match the registering child
+        # before the psij submit returns and we persist the next state.
+        record.child_edge_name = child_edge
+        env        = self._build_pilot_env(pool_state, record)
         job_spec   = self._build_job_spec(
             pool_state, size, child_edge, env)
 

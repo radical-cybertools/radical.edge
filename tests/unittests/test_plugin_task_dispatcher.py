@@ -8,6 +8,7 @@ All network paths (BridgeClient → psij / rhapsody on remote edges) are
 stubbed; the plugin's in-process state is exercised directly.
 """
 
+import asyncio
 import base64
 import json
 from pathlib import Path
@@ -112,7 +113,6 @@ class TestInit:
             f'{ns}/cancel/',
             f'{ns}/stage_in/',
             f'{ns}/stage_out/',
-            f'{ns}/pilot_handshake/',
         ]
         for frag in expected_fragments:
             assert any(frag in p for p in pats), \
@@ -403,66 +403,57 @@ class TestStagingRoutes:
 
 
 # ---------------------------------------------------------------------------
-# Pilot handshake
+# Pilot binding via topology hook
 # ---------------------------------------------------------------------------
 
-class TestHandshake:
+class TestTopologyBinding:
 
-    def test_rejects_missing_fields(self, tmp_path: Path):
-        app, plugin = _make_plugin(tmp_path)
-        client = TestClient(app)
-        sid = _register_session(client, plugin)
-        r = client.post(f'{plugin.namespace}/pilot_handshake/{sid}',
-                        json={'pilot_id': 'p.x'})
-        assert r.status_code == 400
-
-    def test_unknown_pilot_id(self, tmp_path: Path):
-        app, plugin = _make_plugin(tmp_path)
-        client = TestClient(app)
-        sid = _register_session(client, plugin)
-        r = client.post(f'{plugin.namespace}/pilot_handshake/{sid}', json={
-            'pilot_id': 'p.nope', 'child_edge': 'e1', 'capacity': 2})
-        assert r.status_code == 404
-
-    def test_binds_pending_pilot(self, tmp_path: Path):
-        app, plugin = _make_plugin(tmp_path)
-        client = TestClient(app)
-        sid = _register_session(client, plugin)
+    def _new_pending(self, plugin, pid='p.1', child='edge0_p.1',
+                    state=PILOT_PENDING):
         ps = plugin._pool_states['cpu']
-        ps.pilots['p.1'] = PilotRecord(
-            pid='p.1', pool='cpu', size_key='s',
+        ps.pilots[pid] = PilotRecord(
+            pid=pid, pool='cpu', size_key='s',
             rhapsody_backend='concurrent',
-            state=PILOT_PENDING, submitted_at=100.0)
+            state=state, submitted_at=100.0,
+            child_edge_name=child)
+        return ps
 
+    def test_topology_binds_pending_pilot(self, tmp_path: Path):
+        _, plugin = _make_plugin(tmp_path)
+        plugin._loops_started = True   # bypass the not-yet-started gate
+        ps = self._new_pending(plugin)
         with patch.object(ps.strategy, 'on_pilot_state') as spy:
-            r = client.post(
-                f'{plugin.namespace}/pilot_handshake/{sid}', json={
-                    'pilot_id': 'p.1', 'child_edge': 'edge0_p.1',
-                    'capacity': 8, 'startup_time': 42.0})
-        assert r.status_code == 200
-        assert r.json()['ok'] is True
+            asyncio.run(plugin.on_topology_change(
+                {'edge0_p.1': {'plugins': ['rhapsody']}}))
         assert ps.pilots['p.1'].state == PILOT_ACTIVE
-        assert ps.pilots['p.1'].capacity == 8
-        assert ps.pilots['p.1'].child_edge_name == 'edge0_p.1'
+        # capacity = nodes(1) * cpus_per_node(4) from _make_plugin's pool
+        assert ps.pilots['p.1'].capacity == 4
         assert ps.pilots['p.1'].active_at is not None
         spy.assert_called_once()
 
-    def test_handshake_for_terminal_pilot_is_ignored(self, tmp_path: Path):
-        app, plugin = _make_plugin(tmp_path)
-        client = TestClient(app)
-        sid = _register_session(client, plugin)
-        ps = plugin._pool_states['cpu']
-        ps.pilots['p.1'] = PilotRecord(
-            pid='p.1', pool='cpu', size_key='s',
-            rhapsody_backend='concurrent',
-            state=PILOT_FAILED)
-        r = client.post(
-            f'{plugin.namespace}/pilot_handshake/{sid}', json={
-                'pilot_id': 'p.1', 'child_edge': 'edge0_p.1',
-                'capacity': 8})
-        assert r.status_code == 200
-        assert r.json()['ok'] is False
+    def test_topology_ignores_unknown_edges(self, tmp_path: Path):
+        _, plugin = _make_plugin(tmp_path)
+        plugin._loops_started = True
+        ps = self._new_pending(plugin)
+        asyncio.run(plugin.on_topology_change(
+            {'someone_else': {'plugins': ['sysinfo']}}))
+        assert ps.pilots['p.1'].state == PILOT_PENDING
+
+    def test_topology_ignores_terminal_pilot(self, tmp_path: Path):
+        _, plugin = _make_plugin(tmp_path)
+        plugin._loops_started = True
+        ps = self._new_pending(plugin, state=PILOT_FAILED)
+        asyncio.run(plugin.on_topology_change(
+            {'edge0_p.1': {'plugins': ['rhapsody']}}))
         assert ps.pilots['p.1'].state == PILOT_FAILED   # unchanged
+
+    def test_topology_no_op_before_started(self, tmp_path: Path):
+        _, plugin = _make_plugin(tmp_path)
+        # Don't flip _loops_started — emulate startup race
+        ps = self._new_pending(plugin)
+        asyncio.run(plugin.on_topology_change(
+            {'edge0_p.1': {'plugins': ['rhapsody']}}))
+        assert ps.pilots['p.1'].state == PILOT_PENDING
 
 
 # ---------------------------------------------------------------------------
