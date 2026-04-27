@@ -296,6 +296,35 @@ def test_tunnel_status_active(tmp_path):
         assert data['port'] == 12345
 
 
-# Note: tests for the previous module-level _get_slurm_state helper were
-# removed when the tunnel watcher was migrated to BatchSystem.job_state().
-# Coverage for state lookup now lives in test_batch_system.py.
+@pytest.mark.asyncio
+async def test_tunnel_watcher_aborts_on_sustained_unknown(tmp_path, caplog):
+    """Watcher bails out after consecutive UNKNOWN polls following RUNNING."""
+    import logging as _logging
+    app = FastAPI()
+    plugin = PluginPSIJ(app)
+
+    seq  = ['PENDING', 'RUNNING', 'UNKNOWN', 'UNKNOWN', 'UNKNOWN']
+    idx  = {'i': 0}
+    def _next_state(_nid):
+        i = idx['i']
+        idx['i'] = i + 1
+        return seq[i] if i < len(seq) else 'UNKNOWN'
+
+    fake_batch = MagicMock()
+    fake_batch.name = 'slurm'
+    fake_batch.job_state = _next_state
+
+    relay_file = tmp_path / 'edge.port'
+
+    with patch('radical.edge.batch_system.detect_batch_system',
+               return_value=fake_batch), \
+         patch('radical.edge.plugin_psij.asyncio.sleep',
+               new=AsyncMock(return_value=None)):
+        caplog.set_level(_logging.WARNING, logger='radical.edge')
+        await asyncio.wait_for(
+            plugin._tunnel_watcher('edge1', '12345', relay_file),
+            timeout=5.0)
+
+    assert idx['i'] <= 6, f"watcher polled too many times: {idx['i']}"
+    assert any('vanished from queue after RUNNING' in r.message
+               for r in caplog.records)
