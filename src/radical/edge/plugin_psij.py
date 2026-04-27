@@ -879,8 +879,13 @@ class PluginPSIJ(Plugin):
                  "-- waiting for relay file %s",
                  edge_name, native_id, batch.name, relay_file)
 
-        last_state = None
-        seen_running = False
+        last_state     = None
+        # Did the scheduler ever acknowledge this job?  Any non-UNKNOWN
+        # state (PENDING / RUNNING / HELD / …) flips this to True.  We
+        # only treat sustained UNKNOWN as terminal once we've seen the
+        # job at all — initial UNKNOWN polls might be a transient
+        # squeue glitch before the job is committed.
+        seen_known     = False
         unknown_streak = 0
         for attempt in range(300):          # up to ~10 min (2s × 300)
             await asyncio.sleep(2)
@@ -896,12 +901,10 @@ class PluginPSIJ(Plugin):
 
             state = await asyncio.to_thread(batch.job_state, native_id)
 
-            if state == STATE_RUNNING:
-                seen_running   = True
-                unknown_streak = 0
-            elif state == STATE_UNKNOWN:
+            if state == STATE_UNKNOWN:
                 unknown_streak += 1
             else:
+                seen_known     = True
                 unknown_streak = 0
 
             if state != last_state or attempt % 30 == 0:
@@ -915,8 +918,8 @@ class PluginPSIJ(Plugin):
                             native_id, state, relay_file)
                 return
 
-            if seen_running and unknown_streak >= UNKNOWN_TOLERANCE:
-                log.warning("[psij] Job %s vanished from queue after RUNNING "
+            if seen_known and unknown_streak >= UNKNOWN_TOLERANCE:
+                log.warning("[psij] Job %s vanished from queue "
                             "(state=UNKNOWN x %d) — aborting watch (relay file "
                             "%s never appeared)",
                             native_id, unknown_streak, relay_file)

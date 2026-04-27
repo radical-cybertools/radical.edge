@@ -296,26 +296,22 @@ def test_tunnel_status_active(tmp_path):
         assert data['port'] == 12345
 
 
-@pytest.mark.asyncio
-async def test_tunnel_watcher_aborts_on_sustained_unknown(tmp_path, caplog):
-    """Watcher bails out after consecutive UNKNOWN polls following RUNNING."""
-    import logging as _logging
-    app = FastAPI()
-    plugin = PluginPSIJ(app)
+_VANISHED_MSG = 'vanished from queue'
 
-    seq  = ['PENDING', 'RUNNING', 'UNKNOWN', 'UNKNOWN', 'UNKNOWN']
-    idx  = {'i': 0}
+
+async def _drive_watcher(plugin, state_seq, tmp_path, caplog):
+    """Run the watcher with a scripted job_state sequence; UNKNOWN past the
+    end.  Returns the number of polls actually consumed."""
+    import logging as _logging
+    idx = {'i': 0}
     def _next_state(_nid):
         i = idx['i']
         idx['i'] = i + 1
-        return seq[i] if i < len(seq) else 'UNKNOWN'
-
+        return state_seq[i] if i < len(state_seq) else 'UNKNOWN'
     fake_batch = MagicMock()
     fake_batch.name = 'slurm'
     fake_batch.job_state = _next_state
-
     relay_file = tmp_path / 'edge.port'
-
     with patch('radical.edge.batch_system.detect_batch_system',
                return_value=fake_batch), \
          patch('radical.edge.plugin_psij.asyncio.sleep',
@@ -324,7 +320,48 @@ async def test_tunnel_watcher_aborts_on_sustained_unknown(tmp_path, caplog):
         await asyncio.wait_for(
             plugin._tunnel_watcher('edge1', '12345', relay_file),
             timeout=5.0)
+    return idx['i']
 
-    assert idx['i'] <= 6, f"watcher polled too many times: {idx['i']}"
-    assert any('vanished from queue after RUNNING' in r.message
-               for r in caplog.records)
+
+@pytest.mark.asyncio
+async def test_tunnel_watcher_aborts_on_unknown_after_running(tmp_path, caplog):
+    """Job runs, then disappears — watcher bails after the UNKNOWN streak."""
+    app = FastAPI()
+    plugin = PluginPSIJ(app)
+    polls = await _drive_watcher(
+        plugin, ['PENDING', 'RUNNING', 'UNKNOWN', 'UNKNOWN', 'UNKNOWN'],
+        tmp_path, caplog)
+    assert polls <= 6, f"watcher polled too many times: {polls}"
+    assert any(_VANISHED_MSG in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_tunnel_watcher_aborts_on_unknown_after_pending(tmp_path, caplog):
+    """Job cancelled while still pending — watcher bails after the UNKNOWN streak."""
+    app = FastAPI()
+    plugin = PluginPSIJ(app)
+    polls = await _drive_watcher(
+        plugin, ['PENDING', 'PENDING', 'UNKNOWN', 'UNKNOWN', 'UNKNOWN'],
+        tmp_path, caplog)
+    assert polls <= 6, f"watcher polled too many times: {polls}"
+    assert any(_VANISHED_MSG in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_tunnel_watcher_tolerates_initial_unknown(tmp_path, caplog):
+    """A short UNKNOWN streak BEFORE the scheduler ack must not bail out —
+    that's a transient squeue glitch.  Once PENDING is observed, future
+    UNKNOWNs reset the seen_known flag's protection."""
+    app = FastAPI()
+    plugin = PluginPSIJ(app)
+    # 3 UNKNOWNs, then PENDING — must NOT bail; needs another 3 UNKNOWNs
+    # AFTER PENDING to bail.  Sequence below has 3 leading UNKNOWN, then
+    # PENDING, then 3 UNKNOWN — should bail after the second streak.
+    polls = await _drive_watcher(
+        plugin, ['UNKNOWN', 'UNKNOWN', 'UNKNOWN', 'PENDING',
+                 'UNKNOWN', 'UNKNOWN', 'UNKNOWN'],
+        tmp_path, caplog)
+    # We tolerated the first UNKNOWN streak (3 polls), saw PENDING (1), then
+    # bailed on the second UNKNOWN streak (3 more polls) → ~7 polls total.
+    assert polls <= 8, f"watcher polled too many times: {polls}"
+    assert any(_VANISHED_MSG in r.message for r in caplog.records)

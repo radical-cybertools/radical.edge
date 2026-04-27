@@ -5,6 +5,8 @@ Anything with state, threads, side effects, or non-trivial domain logic
 belongs in its own module.
 """
 
+import sys
+
 from typing import Any, Dict
 
 
@@ -23,6 +25,12 @@ def host_role(app: Any) -> Dict[str, Any]:
                            (``'slurm'`` / ``'pbs'`` / ``'local'``).
     - ``job_id``         — current allocation id on compute nodes,
                            ``None`` everywhere else.
+    - ``python_version`` — the host's Python interpreter version as
+                           ``'<major>.<minor>.<micro>'``.  Consumed by
+                           remote-execution backends (e.g. rhapsody's
+                           Edge backend) to gate cloudpickle-based
+                           function-task submission against version
+                           skew between client and edge.
 
     Args:
         app: a FastAPI application.  ``app.state.is_bridge`` (when
@@ -36,8 +44,11 @@ def host_role(app: Any) -> Dict[str, Any]:
     elif bs.name == 'none':                      role = 'standalone'
     else:                                        role = 'login'
     return {
-        'role'         : role,
-        'scheduler'    : bs.name,
-        'psij_executor': bs.psij_executor,
-        'job_id'       : bs.job_id() if in_alloc else None,
+        'role'          : role,
+        'scheduler'     : bs.name,
+        'psij_executor' : bs.psij_executor,
+        'job_id'        : bs.job_id() if in_alloc else None,
+        'python_version': '%d.%d.%d' % (sys.version_info.major,
+                                         sys.version_info.minor,
+                                         sys.version_info.micro),
     }
