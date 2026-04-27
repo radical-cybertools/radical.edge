@@ -181,12 +181,23 @@ MACHINE_DEFAULTS = {
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  File-system layout on every target machine.
+#  File-system layout.
+#
+#  ``AMSC_DIR`` is resolved on the local host (the client running this
+#  script); we use it to read the IRI bearer tokens.
+#
+#  ``EDGE_WRAPPER`` and ``REMOTE_CERT_PATH`` are sent verbatim to the
+#  target host (PsiJ executor or IRI submission), where the spawned
+#  edge service runs.  The user's home there is *not* this client's
+#  home (NERSC: /global/u2/m/<u>, OLCF: /ccs/home/<u>, …), so we keep
+#  the literal ``~`` and rely on the target shell to expand it at exec
+#  time.  Both PsiJ's ``single_launch.sh`` and IRI's submission layer
+#  invoke the executable through bash, which expands a leading ``~``.
 # ─────────────────────────────────────────────────────────────────────────────
 
-AMSC_DIR     = Path.home() / '.amsc'
-CERT_PATH    = AMSC_DIR / 'radical.edge.cert'
-EDGE_WRAPPER = AMSC_DIR / 've' / 'bin' / 'radical-edge-wrapper.sh'
+AMSC_DIR         = Path.home() / '.amsc'
+EDGE_WRAPPER     = '~/.amsc/ve/bin/radical-edge-wrapper.sh'
+REMOTE_CERT_PATH = '~/.amsc/radical.edge.cert'
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -412,12 +423,12 @@ def launch_iri(bc, endpoint, cfg, bridge_url):
 
     env = {
         'RADICAL_BRIDGE_URL' : bridge_url,
-        'RADICAL_BRIDGE_CERT': str(CERT_PATH),
+        'RADICAL_BRIDGE_CERT': REMOTE_CERT_PATH,
     }
     env.update(cfg['environment'])
 
     job_spec = {
-        'executable' : str(EDGE_WRAPPER),
+        'executable' : EDGE_WRAPPER,
         'arguments'  : args,
         'name'       : edge_name,
         'resources'  : {'node_count': cfg['n_nodes'], 'process_count': 1},
@@ -508,7 +519,7 @@ def launch_psij(bc, edge_name, cfg, bridge_url):
         custom_attrs[f'{cfg["executor"]}.constraint'] = cfg['constraint']
 
     job_spec = {
-        'executable'        : str(EDGE_WRAPPER),
+        'executable'        : EDGE_WRAPPER,
         # ``--name`` is required by submit_tunneled; ``--tunnel`` and
         # ``--tunnel-via`` are appended for us when tunnel=True.
         'arguments'         : ['--name', child_name, '--url', bridge_url],
@@ -517,7 +528,7 @@ def launch_psij(bc, edge_name, cfg, bridge_url):
         'resources'         : {'node_count': cfg['n_nodes'], 'process_count': 1},
         'environment'       : {
             'RADICAL_BRIDGE_URL' : bridge_url,
-            'RADICAL_BRIDGE_CERT': str(CERT_PATH),
+            'RADICAL_BRIDGE_CERT': REMOTE_CERT_PATH,
         },
     }
 
