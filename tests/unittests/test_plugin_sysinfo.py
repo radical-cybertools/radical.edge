@@ -93,8 +93,13 @@ async def test_endpoint():
 # cache via the autouse fixture below.
 # ---------------------------------------------------------------------------
 
+import re
+
 from unittest.mock import patch
 from radical.edge.batch_system import reset_detection
+
+
+_PY_VERSION_RE = re.compile(r'^\d+\.\d+\.\d+$')
 
 
 @pytest.fixture(autouse=True)
@@ -106,11 +111,17 @@ def _reset_batch_system_cache():
 
 
 def _host_role(app: FastAPI) -> dict:
+    """Hit the host_role route, validate the python_version shape, then
+    pop that field so the remaining keys can be compared by exact equality
+    in the test bodies."""
     plugin = PluginSysInfo(app)
     client = TestClient(app)
     resp   = client.get(f"{plugin.namespace}/host_role")
     assert resp.status_code == 200
-    return resp.json()
+    body = resp.json()
+    assert _PY_VERSION_RE.match(body.pop('python_version')), \
+        f"python_version not in major.minor.micro form: {body!r}"
+    return body
 
 
 def test_host_role_standalone(monkeypatch):
@@ -197,3 +208,5 @@ def test_host_role_client():
     assert role['scheduler']     == 'none'
     assert role['psij_executor'] == 'local'
     assert role['job_id']        is None
+    assert _PY_VERSION_RE.match(role['python_version']), \
+        f"python_version not in major.minor.micro form: {role!r}"
