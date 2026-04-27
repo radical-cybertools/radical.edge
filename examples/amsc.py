@@ -109,6 +109,7 @@ IRI_DEFAULTS = {
         'iri_url'     : 'https://api.iri.nersc.gov',
         'resource_id' : 'perlmutter',
         'login_host'  : 'perlmutter.nersc.gov',
+        'home_dir'    : '/global/u2/m/merzky',         # target's $HOME
         'tunnel'      : True,
         'account'     : 'm5290',
         'workdir'     : None,
@@ -124,6 +125,7 @@ IRI_DEFAULTS = {
         'iri_url'     : 'https://amsc-open.s3m.olcf.ornl.gov',
         'resource_id' : 'odo',
         'login_host'  : 'login1.frontier.olcf.ornl.gov',
+        'home_dir'    : '/autofs/nccsopen-svm1_home/merzky',
         'tunnel'      : True,
         'account'     : 'Fusion-FM',
         'workdir'     : '/gpfs/wolf2/olcf/fus183/proj-shared',
@@ -183,21 +185,27 @@ MACHINE_DEFAULTS = {
 # ─────────────────────────────────────────────────────────────────────────────
 #  File-system layout.
 #
-#  ``AMSC_DIR`` is resolved on the local host (the client running this
-#  script); we use it to read the IRI bearer tokens.
+#  ``AMSC_DIR`` is resolved on the *local* host (the client running this
+#  script); we use it only to read the IRI bearer tokens.
 #
-#  ``EDGE_WRAPPER`` and ``REMOTE_CERT_PATH`` are sent verbatim to the
-#  target host (PsiJ executor or IRI submission), where the spawned
-#  edge service runs.  The user's home there is *not* this client's
-#  home (NERSC: /global/u2/m/<u>, OLCF: /ccs/home/<u>, …), so we keep
-#  the literal ``~`` and rely on the target shell to expand it at exec
-#  time.  Both PsiJ's ``single_launch.sh`` and IRI's submission layer
-#  invoke the executable through bash, which expands a leading ``~``.
+#  Paths on the *target* host (the wrapper, the bridge cert) are derived
+#  per target at submit time:
+#    - PsiJ path: ``sysinfo.homedir()`` on the submitting login-node
+#      edge — login and compute share $HOME via NFS/Lustre on every site
+#      we care about.
+#    - IRI path: the ``home_dir`` field on each entry of
+#      ``IRI_DEFAULTS`` — there is no pre-existing edge to query, so the
+#      caller supplies it once.
+#
+#  Why not pass ``~/.amsc/...`` and let bash expand it?  PsiJ's
+#  ``single_launch.sh`` quotes the executable arg, so the literal ``~``
+#  reaches ``bash`` as a path component and never expands.  Tested,
+#  doesn't work — keep paths absolute.
 # ─────────────────────────────────────────────────────────────────────────────
 
-AMSC_DIR         = Path.home() / '.amsc'
-EDGE_WRAPPER     = '~/.amsc/ve/bin/radical-edge-wrapper.sh'
-REMOTE_CERT_PATH = '~/.amsc/radical.edge.cert'
+AMSC_DIR        = Path.home() / '.amsc'
+EDGE_WRAPPER_REL = '.amsc/ve/bin/radical-edge-wrapper.sh'
+CERT_REL         = '.amsc/radical.edge.cert'
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -367,6 +375,8 @@ def configure_iri(endpoint):
     # accepts an empty value.  Empty input means "do not send the field".
     d['workdir']      = ask     ('  working directory (or empty)',
                                   d['workdir'] or '') or None
+    d['home_dir']     = ask     ('  user $HOME on the target',
+                                  d.get('home_dir') or '') or None
     d['queue_name']   = ask     ('  queue / partition',    d['queue_name'])
     d['walltime_min'] = ask_int ('  walltime (minutes)',   d['walltime_min'])
     d['n_nodes']      = ask_int ('  number of nodes',      d['n_nodes'])
@@ -376,6 +386,9 @@ def configure_iri(endpoint):
     d['tunnel']       = confirm ('  open SSH tunnel from compute node?', d['tunnel'])
     if not d['account']:
         raise RuntimeError(f'IRI {endpoint}: account/project is required')
+    if not d['home_dir']:
+        raise RuntimeError(f'IRI {endpoint}: home_dir on target is required '
+                           f'(used to resolve {EDGE_WRAPPER_REL!r})')
     return d
 
 
@@ -421,14 +434,22 @@ def launch_iri(bc, endpoint, cfg, bridge_url):
     if cfg['constraint']:  attrs['constraint']  = cfg['constraint']
     if cfg['reservation']: attrs['reservation'] = cfg['reservation']
 
+    # Compose absolute paths against the target's $HOME (configured in
+    # IRI_DEFAULTS).  We can't rely on bash to expand ``~`` — PsiJ's
+    # launchers quote the executable arg, so the literal tilde reaches
+    # bash as a path component and never expands.
+    home     = cfg['home_dir'].rstrip('/')
+    wrapper  = f'{home}/{EDGE_WRAPPER_REL}'
+    cert     = f'{home}/{CERT_REL}'
+
     env = {
         'RADICAL_BRIDGE_URL' : bridge_url,
-        'RADICAL_BRIDGE_CERT': REMOTE_CERT_PATH,
+        'RADICAL_BRIDGE_CERT': cert,
     }
     env.update(cfg['environment'])
 
     job_spec = {
-        'executable' : EDGE_WRAPPER,
+        'executable' : wrapper,
         'arguments'  : args,
         'name'       : edge_name,
         'resources'  : {'node_count': cfg['n_nodes'], 'process_count': 1},
@@ -498,7 +519,15 @@ def configure_psij(edge_name, executor):
 
 def launch_psij(bc, edge_name, cfg, bridge_url):
     """Submit a child edge via the parent edge's PsiJ plugin."""
-    psij = bc.get_edge_client(edge_name).get_plugin('psij')
+    edge = bc.get_edge_client(edge_name)
+    psij = edge.get_plugin('psij')
+
+    # Resolve $HOME on the target via the login-edge's sysinfo plugin.
+    # Login and compute share $HOME via NFS/Lustre on every site we
+    # care about, so the login-edge's home is also the compute job's.
+    home    = edge.get_plugin('sysinfo').homedir().rstrip('/')
+    wrapper = f'{home}/{EDGE_WRAPPER_REL}'
+    cert    = f'{home}/{CERT_REL}'
 
     # Unique name for the child edge.
     child_name = f'amsc-{edge_name}-{uuid.uuid4().hex[:6]}'
@@ -519,7 +548,7 @@ def launch_psij(bc, edge_name, cfg, bridge_url):
         custom_attrs[f'{cfg["executor"]}.constraint'] = cfg['constraint']
 
     job_spec = {
-        'executable'        : EDGE_WRAPPER,
+        'executable'        : wrapper,
         # ``--name`` is required by submit_tunneled; ``--tunnel`` and
         # ``--tunnel-via`` are appended for us when tunnel=True.
         'arguments'         : ['--name', child_name, '--url', bridge_url],
@@ -528,7 +557,7 @@ def launch_psij(bc, edge_name, cfg, bridge_url):
         'resources'         : {'node_count': cfg['n_nodes'], 'process_count': 1},
         'environment'       : {
             'RADICAL_BRIDGE_URL' : bridge_url,
-            'RADICAL_BRIDGE_CERT': REMOTE_CERT_PATH,
+            'RADICAL_BRIDGE_CERT': cert,
         },
     }
 
