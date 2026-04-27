@@ -1292,11 +1292,8 @@ class PluginRhapsody(Plugin):
         standalone hosts (no batch system at all).  Both can host Dragon
         workers; bridges and login nodes deliberately don't load Rhapsody.
         """
-        if getattr(app.state, 'is_bridge', False):
-            return False
-        from .batch_system import detect_batch_system
-        bs = detect_batch_system()
-        return bs.in_allocation() or bs.name == 'none'
+        from .utils import host_role
+        return host_role(app)['role'] in ('compute', 'standalone')
 
     def __init__(self, app: FastAPI, instance_name: str = "rhapsody"):
         super().__init__(app, instance_name)

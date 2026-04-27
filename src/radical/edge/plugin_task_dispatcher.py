@@ -393,15 +393,14 @@ class PluginTaskDispatcher(Plugin):
 
     @classmethod
     def is_enabled(cls, app: FastAPI) -> bool:
-        '''Login-node edges only.
+        '''Login or standalone hosts only.
 
         The dispatcher submits pilot jobs; pilots are *other* edges that
         run inside allocations.  Running the dispatcher on a compute
-        node would be a category error.
+        node would be a category error; the bridge has its own role.
         '''
-        from .batch_system import detect_batch_system
-        bs = detect_batch_system()
-        return not bs.in_allocation()
+        from .utils import host_role
+        return host_role(app)['role'] in ('login', 'standalone')
 
     def __init__(self, app: FastAPI,
                  instance_name: str = 'task_dispatcher',
@@ -915,10 +914,9 @@ class PluginTaskDispatcher(Plugin):
         if bc is None:
             return None
         try:
-            rh = bc.get_edge_client(child_edge).get_plugin('rhapsody')
-            if not getattr(rh, 'sid', None) and backend:
-                rh.register_session(backends=[backend])
-            return rh
+            session_kwargs = {'backends': [backend]} if backend else {}
+            return bc.get_edge_client(child_edge).get_plugin(
+                'rhapsody', **session_kwargs)
         except Exception as e:
             log.warning('[%s] rhapsody client unavailable on %s: %s',
                         self.instance_name, child_edge, e)
@@ -1168,6 +1166,11 @@ class PluginTaskDispatcher(Plugin):
             'executable': task.cmd[0] if task.cmd else '',
             'arguments' : task.cmd[1:] if len(task.cmd) > 1 else [],
             'cwd'       : task.cwd,
+            # rhapsody's concurrent backend reads cwd from
+            # task_backend_specific_kwargs (BaseTask's top-level cwd is
+            # ignored).  Mirror it here so the task runs in its scratch
+            # dir and stage_out can find the outputs.
+            'task_backend_specific_kwargs': {'cwd': task.cwd},
         }
         try:
             result = await asyncio.to_thread(rh.submit_tasks, [task_dict])
