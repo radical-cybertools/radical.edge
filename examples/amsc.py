@@ -148,7 +148,7 @@ IRI_DEFAULTS = {
 
 MACHINE_DEFAULTS = {
     'aurora': {
-        'enabled'     : True,
+        'enabled'     : False,          # disabled for IRI-focused test
         'account'     : 'Fusion-FM',
         'queue_name'  : 'debug',
         'walltime_min': 30,
@@ -166,7 +166,7 @@ MACHINE_DEFAULTS = {
         'tunnel'      : True,
     },
     'odo': {
-        'enabled'     : True,
+        'enabled'     : False,          # disabled for IRI-focused test
         'account'     : 'fus183',
         'queue_name'  : 'batch',
         'walltime_min': 30,
@@ -175,8 +175,7 @@ MACHINE_DEFAULTS = {
         'tunnel'      : True,
     },
     'thinkie': {
-        # Standalone host, always ready for task execution
-        'enabled'     : True,
+        'enabled'     : False,          # disabled for IRI-focused test
     },
 }
 
