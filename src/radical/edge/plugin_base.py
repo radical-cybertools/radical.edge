@@ -169,37 +169,33 @@ class Plugin(object):
         self.add_route_get('ui_config', self.get_ui_config)
         self._log_routes()
 
+    # Role classification — all four properties delegate to a single
+    # helper so the role / scheduler / executor decision lives in
+    # exactly one place (utils.host_role).
     @property
     def is_bridge(self) -> bool:
         """True when this plugin is hosted on the bridge (not on an edge)."""
-        return getattr(self._app.state, 'is_bridge', False)
+        from .utils import host_role
+        return host_role(self._app)['role'] == 'bridge'
 
     @property
     def is_compute_node(self) -> bool:
         """True when running inside a batch job allocation (compute node)."""
-        from .batch_system import detect_batch_system
-        return detect_batch_system().in_allocation()
+        from .utils import host_role
+        return host_role(self._app)['role'] == 'compute'
 
     @property
     def is_login_node(self) -> bool:
-        """True when running on an HPC login node.
-
-        A login node has a batch scheduler installed (slurm/pbs/…) but no
-        currently active allocation.  Hosts without any scheduler are
-        ``standalone``, not login nodes.
-        """
-        from .batch_system import detect_batch_system
-        return (not self.is_bridge
-                and not self.is_compute_node
-                and detect_batch_system().name != 'none')
+        """True on an HPC login node — a real scheduler is installed but
+        no allocation is active."""
+        from .utils import host_role
+        return host_role(self._app)['role'] == 'login'
 
     @property
     def is_standalone(self) -> bool:
-        """True for a non-HPC host: no batch scheduler installed, not a bridge."""
-        from .batch_system import detect_batch_system
-        return (not self.is_bridge
-                and not self.is_compute_node
-                and detect_batch_system().name == 'none')
+        """True for a non-HPC host (no batch scheduler installed)."""
+        from .utils import host_role
+        return host_role(self._app)['role'] == 'standalone'
 
     @property
     def namespace(self) -> str:

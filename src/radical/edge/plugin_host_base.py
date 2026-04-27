@@ -32,21 +32,6 @@ DEFAULT_PLUGINS_BY_ROLE: Dict[str, List[str]] = {
 # Utility functions (shared by BridgePluginHost and EdgeService)
 # ---------------------------------------------------------------------------
 
-def _detect_host_role(app: FastAPI) -> str:
-    """Return the role string the host should use for default-plugin lookup.
-
-    Mirrors ``plugin_sysinfo.host_role_endpoint`` but does not require the
-    sysinfo plugin to be loaded (it isn't yet at this point in startup).
-    """
-    if getattr(app.state, 'is_bridge', False):
-        return 'bridge'
-    from .batch_system import detect_batch_system
-    bs = detect_batch_system()
-    if bs.in_allocation(): return 'compute'
-    if bs.name == 'none':  return 'standalone'
-    return 'login'
-
-
 def _expand_special_tokens(requested: list, app: FastAPI,
                            available: list) -> list:
     """Expand the special tokens ``'all'`` and ``'default'`` in a plugin list.
@@ -66,7 +51,8 @@ def _expand_special_tokens(requested: list, app: FastAPI,
         if token == 'all':
             expanded.extend(available)
         elif token == 'default':
-            role = _detect_host_role(app)
+            from .utils import host_role
+            role = host_role(app)['role']
             for name in DEFAULT_PLUGINS_BY_ROLE.get(role, []):
                 if '*' in name:
                     expanded.extend(fnmatch.filter(available, name))
