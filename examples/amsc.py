@@ -125,9 +125,7 @@ IRI_DEFAULTS = {
         # entry is a single shell command; they are joined with ``;``
         # and shipped via the ``$RADICAL_EDGE_SETUP`` env var.
         'setup'       : [
-            # 'source /etc/profile.d/zz-cray-pe.sh',
-            # 'module load cray-mpich',
-            # 'export LD_LIBRARY_PATH="$CRAY_LD_LIBRARY_PATH:${LD_LIBRARY_PATH:-}"',
+            'module load openmpi',
         ],
     },
     'olcf': {
@@ -161,7 +159,7 @@ IRI_DEFAULTS = {
 
 MACHINE_DEFAULTS = {
     'aurora': {
-        'enabled'     : False,          # disabled for IRI-focused test
+        'enabled'     : True,
         'account'     : 'Fusion-FM',
         'queue_name'  : 'debug',
         'walltime_min': 30,
@@ -176,19 +174,14 @@ MACHINE_DEFAULTS = {
         'queue_name'  : 'debug',
         'walltime_min': 30,
         'n_nodes'     : 1,
-        'constraint'  : 'cpu',          # perlmutter requires cpu/gpu
+        'constraint'  : 'cpu',
         'tunnel'      : True,
-        # See IRI_DEFAULTS['nersc']['setup'] for the meaning.  Cray
-        # MPICH lives outside ``~/.amsc/ve``, so mpi4py needs the
-        # site's MPI module loaded before any task that uses it runs.
         'setup'       : [
-            'source /etc/profile.d/zz-cray-pe.sh',
-            'module load cray-mpich',
-            'export LD_LIBRARY_PATH="$CRAY_LD_LIBRARY_PATH:${LD_LIBRARY_PATH:-}"',
+            'module load openmpi',
         ],
     },
     'odo': {
-        'enabled'     : False,          # disabled for IRI-focused test
+        'enabled'     : True,
         'account'     : 'fus183',
         'queue_name'  : 'batch',
         'walltime_min': 30,
@@ -198,7 +191,7 @@ MACHINE_DEFAULTS = {
         'setup'       : [],
     },
     'thinkie': {
-        'enabled'     : False,          # disabled for IRI-focused test
+        'enabled'     : False,
         'setup'       : [],
     },
 }
