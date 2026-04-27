@@ -12,6 +12,17 @@
 export PATH="@BINDIR@:${PATH}"
 export PYTHONPATH="@SITEPKGS@:${PYTHONPATH:-}"
 
+# Site-specific setup hook.  Evaluated *before* dragon-vs-python is
+# decided so the chosen interpreter inherits any module loads / env
+# tweaks the snippet performs.  The trust boundary is the same as the
+# rest of the job submission: whoever can put strings into the job
+# spec's environment can already control the exec target, so eval'ing
+# the snippet adds no new attack surface.
+if [ -n "${RADICAL_EDGE_SETUP:-}" ]; then
+    echo "[radical-edge] applying RADICAL_EDGE_SETUP: $RADICAL_EDGE_SETUP" >&2
+    eval "$RADICAL_EDGE_SETUP"
+fi
+
 DRAGON_PATH=$(command -v dragon  2>/dev/null)
 PYTHON_PATH=$(command -v python3 2>/dev/null)
 

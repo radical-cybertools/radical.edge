@@ -119,6 +119,16 @@ IRI_DEFAULTS = {
         'constraint'  : 'cpu',
         'reservation' : None,
         'environment' : {},
+        # Site-specific shell commands run by the edge wrapper *before*
+        # exec-ing dragon / python.  Use to ``module load`` MPI, set
+        # ``LD_LIBRARY_PATH``, source environment scripts, etc.  Each
+        # entry is a single shell command; they are joined with ``;``
+        # and shipped via the ``$RADICAL_EDGE_SETUP`` env var.
+        'setup'       : [
+            # 'source /etc/profile.d/zz-cray-pe.sh',
+            # 'module load cray-mpich',
+            # 'export LD_LIBRARY_PATH="$CRAY_LD_LIBRARY_PATH:${LD_LIBRARY_PATH:-}"',
+        ],
     },
     'olcf': {
         'enabled'     : True,
@@ -127,7 +137,7 @@ IRI_DEFAULTS = {
         'login_host'  : 'login1.frontier.olcf.ornl.gov',
         'home_dir'    : '/autofs/nccsopen-svm1_home/merzky',
         'tunnel'      : True,
-        'account'     : 'Fusion-FM',
+        'account'     : 'fus183',
         'workdir'     : '/gpfs/wolf2/olcf/fus183/proj-shared',
         'queue_name'  : 'batch',
         'walltime_min': 30,
@@ -135,6 +145,7 @@ IRI_DEFAULTS = {
         'constraint'  : None,
         'reservation' : None,
         'environment' : {},
+        'setup'       : [],
     },
 }
 
@@ -157,6 +168,7 @@ MACHINE_DEFAULTS = {
         'n_nodes'     : 1,
         'constraint'  : None,
         'tunnel'      : True,
+        'setup'       : [],
     },
     'perlmutter': {
         'enabled'     : True,
@@ -166,6 +178,14 @@ MACHINE_DEFAULTS = {
         'n_nodes'     : 1,
         'constraint'  : 'cpu',          # perlmutter requires cpu/gpu
         'tunnel'      : True,
+        # See IRI_DEFAULTS['nersc']['setup'] for the meaning.  Cray
+        # MPICH lives outside ``~/.amsc/ve``, so mpi4py needs the
+        # site's MPI module loaded before any task that uses it runs.
+        'setup'       : [
+            'source /etc/profile.d/zz-cray-pe.sh',
+            'module load cray-mpich',
+            'export LD_LIBRARY_PATH="$CRAY_LD_LIBRARY_PATH:${LD_LIBRARY_PATH:-}"',
+        ],
     },
     'odo': {
         'enabled'     : False,          # disabled for IRI-focused test
@@ -175,9 +195,11 @@ MACHINE_DEFAULTS = {
         'n_nodes'     : 1,
         'constraint'  : None,
         'tunnel'      : True,
+        'setup'       : [],
     },
     'thinkie': {
         'enabled'     : False,          # disabled for IRI-focused test
+        'setup'       : [],
     },
 }
 
@@ -447,6 +469,10 @@ def launch_iri(bc, endpoint, cfg, bridge_url):
         'RADICAL_BRIDGE_CERT': cert,
     }
     env.update(cfg['environment'])
+    # Site-specific shell snippet — module loads, env exports, etc.
+    # The wrapper ``eval``s this *before* exec-ing dragon / python.
+    if cfg.get('setup'):
+        env['RADICAL_EDGE_SETUP'] = '; '.join(cfg['setup'])
 
     job_spec = {
         'executable' : wrapper,
@@ -547,6 +573,15 @@ def launch_psij(bc, edge_name, cfg, bridge_url):
     if cfg.get('constraint'):
         custom_attrs[f'{cfg["executor"]}.constraint'] = cfg['constraint']
 
+    env = {
+        'RADICAL_BRIDGE_URL' : bridge_url,
+        'RADICAL_BRIDGE_CERT': cert,
+    }
+    # Site-specific shell snippet — module loads, env exports, etc.
+    # The wrapper ``eval``s this *before* exec-ing dragon / python.
+    if cfg.get('setup'):
+        env['RADICAL_EDGE_SETUP'] = '; '.join(cfg['setup'])
+
     job_spec = {
         'executable'        : wrapper,
         # ``--name`` is required by submit_tunneled; ``--tunnel`` and
@@ -555,10 +590,7 @@ def launch_psij(bc, edge_name, cfg, bridge_url):
         'attributes'        : attrs,
         'custom_attributes' : custom_attrs,
         'resources'         : {'node_count': cfg['n_nodes'], 'process_count': 1},
-        'environment'       : {
-            'RADICAL_BRIDGE_URL' : bridge_url,
-            'RADICAL_BRIDGE_CERT': cert,
-        },
+        'environment'       : env,
     }
 
     print(f'  submitting PsiJ job via {edge_name} (executor: {cfg["executor"]}, '
@@ -838,6 +870,16 @@ def main():
     """Top-level driver.  Synchronous on purpose: only the ROSE workflow
     body needs an event loop, and that's spun up explicitly with
     ``asyncio.run()`` further down."""
+    # Single-instance guard.  Concurrent amsc.py runs interleave their log
+    # output and step on each other's plugin sessions; refuse to start a
+    # second one.  flock is held until this process exits (kernel auto-
+    # releases on close).
+    import fcntl
+    _lock = open('/tmp/amsc.lock', 'w')
+    try:    fcntl.flock(_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        sys.exit('another amsc.py is already running; kill it first.')
+
     bridge_url = os.environ.get('RADICAL_BRIDGE_URL', 'https://localhost:8000')
     print(f'Bridge: {bridge_url}')
 
