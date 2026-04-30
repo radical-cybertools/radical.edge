@@ -729,12 +729,15 @@ async def run_rose_workflow(bridge_url, edge_name):
             iteration += 1
         iteration -= 1
 
-        meta = ddict[f"sim_meta_iter_{iteration}"]
+        # Accumulate samples from ALL completed iterations — active learning
+        # trains on the cumulative labeled set, not just the latest batch.
         X_parts, y_parts = [], []
-        for rank in range(meta["n_ranks"]):
-            data = ddict[f"sim_rank_{rank}_iter_{iteration}"]
-            X_parts.append(data["X"])
-            y_parts.append(data["y"])
+        for it in range(iteration + 1):
+            meta = ddict[f"sim_meta_iter_{it}"]
+            for rank in range(meta["n_ranks"]):
+                data = ddict[f"sim_rank_{rank}_iter_{it}"]
+                X_parts.append(data["X"])
+                y_parts.append(data["y"])
         X_train = np.vstack(X_parts)
         y_train = np.vstack(y_parts).ravel()
 
