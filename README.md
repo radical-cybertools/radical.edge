@@ -12,13 +12,18 @@ Radical Edge consists of three primary layers:
 ## Usage (Command Line)
 
 ### 1. Generating Certificates (Dev)
-For the bridge to securely operate on HTTPs/WSS:
+For the bridge to securely operate on HTTPs/WSS, and running on IP
+`95.217.193.116`:
+
 ```sh
 openssl req -x509 -nodes -days 3650 -newkey rsa:4096 \
-  -keyout bridge_key.pem -out bridge_cert.pem \
-  -subj "/CN=RADICAL" \
-  -addext "subjectAltName = IP:127.0.0.1,DNS:localhost"
+        -keyout edge_key.pem -out edge_cert.pem \
+        -subj "/CN=95.217.193.116" \
+        -addext "subjectAltName = IP:95.217.193.116,DNS:localhost,IP:127.0.0.1"
 ```
+
+
+
 
 Set the appropriate environment variables:
 ```sh
