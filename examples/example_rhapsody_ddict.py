@@ -52,20 +52,15 @@ async def consumer(dd_serial):
 
 async def main():
 
-    from radical.edge import BridgeClient
-    bc       = BridgeClient()    # self-resolves URL + cert
-    edge_url = bc.url
-    eids     = bc.list_edges()
-    bc.close()
-
-    assert eids, "No edges found"
-
-    edge_name = eids[0]
-    print(f"Bridge: {edge_url}")
-    print(f"Edge:   {edge_name}")
-
-    backend = rhapsody.get_backend('edge', bridge_url=edge_url, edge_name=edge_name)
+    # Edge auto-discovery: ``get_backend('edge')`` with no args resolves
+    # the bridge URL via radical.edge.utils and selects the first
+    # connected edge advertising the rhapsody plugin.  ``await backend``
+    # raises RuntimeError if no candidate is found.
+    backend = rhapsody.get_backend('edge')
     backend = await backend
+    print(f"Bridge: {backend._bridge_url}")
+    print(f"Edge:   {backend._edge_name}")
+
     session = rhapsody.Session(backends=[backend])
 
     # -- Step 1: producer creates DDict and writes data --------------------
