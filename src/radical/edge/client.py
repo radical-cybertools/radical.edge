@@ -208,6 +208,11 @@ class BridgeClient:
         self._listener_stop: threading.Event = threading.Event()
         self._listener_connected: threading.Event = threading.Event()
 
+    @property
+    def url(self) -> str:
+        """Resolved bridge URL (trailing slash stripped)."""
+        return self._url
+
     def register_callback(self, edge_id: Optional[str] = None, plugin_name: Optional[str] = None,
                           topic: Optional[str] = None, callback: Callable = None) -> None:
         """
