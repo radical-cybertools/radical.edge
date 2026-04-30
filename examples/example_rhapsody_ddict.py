@@ -20,7 +20,6 @@ Usage:
 """
 
 import asyncio
-import os
 
 import rhapsody
 
@@ -53,11 +52,10 @@ async def consumer(dd_serial):
 
 async def main():
 
-    edge_url = os.environ.get('RADICAL_BRIDGE_URL', 'https://localhost:8000')
-
     from radical.edge import BridgeClient
-    bc   = BridgeClient()
-    eids = bc.list_edges()
+    bc       = BridgeClient()    # self-resolves URL + cert
+    edge_url = bc.url
+    eids     = bc.list_edges()
     bc.close()
 
     assert eids, "No edges found"

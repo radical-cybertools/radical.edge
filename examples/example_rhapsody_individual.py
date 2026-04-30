@@ -23,7 +23,6 @@ Usage:
 
 import argparse
 import asyncio
-import os
 import time
 
 import rhapsody
@@ -54,12 +53,10 @@ async def main():
     args = parse_args()
 
     # ---- discover bridge / edge ---
-    bridge_url = os.environ.get('RADICAL_BRIDGE_URL',
-                                'https://localhost:8000')
-
     from radical.edge import BridgeClient
-    bc   = BridgeClient()
-    eids = bc.list_edges()
+    bc         = BridgeClient()  # self-resolves URL + cert
+    bridge_url = bc.url
+    eids       = bc.list_edges()
     bc.close()
 
     if not eids:

@@ -119,8 +119,12 @@ def test_cleanup_tunnel_falls_back_to_kill():
 # EdgeService._open_tunnel
 # ---------------------------------------------------------------------------
 
-def _make_edge_service(bridge_url='https://bridge:8000', tunnel_via=None):
-    """Build an EdgeService without going through the plugin loader."""
+def _make_edge_service(bridge_url='http://bridge:8000', tunnel_via=None):
+    """Build an EdgeService without going through the plugin loader.
+
+    Default URL uses ``http://`` (not ``https://``) so the cert
+    resolution path is skipped — these tests don't exercise TLS.
+    """
     from radical.edge.service import EdgeService
     with patch('radical.edge.service.EdgeService._load_plugins_from_filter'):
         svc = EdgeService(bridge_url=bridge_url, name='edge1', tunnel=True,

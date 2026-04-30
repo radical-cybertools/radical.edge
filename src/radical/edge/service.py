@@ -97,29 +97,61 @@ class EdgeService(PluginHostBase):
         app (FastAPI): The internal FastAPI application hosting the plugins.
     """
 
-    def __init__(self, bridge_url: Optional[str] = None, name: Optional[str] = None,
-                 plugins: Optional[list] = None, tunnel: bool = False,
-                 tunnel_via: Optional[str] = None):
+    def __init__(self, bridge_url: Optional[str] = None,
+                 cert:       Optional[str]      = None,
+                 name:       Optional[str]      = None,
+                 plugins:    Optional[list]     = None,
+                 tunnel:     bool               = False,
+                 tunnel_via: Optional[str]      = None,
+                 app:        Optional[FastAPI]  = None):
         """
         Initialize the Edge Service.
 
         Args:
-            bridge_url: WebSocket URL for the Bridge. Defaults to env var
-                        'RADICAL_BRIDGE_URL' or internal default.
-            name: Edge service name for identification. Defaults to hostname.
-            tunnel: When True, open an outbound SSH tunnel to the login host
-                    and route the bridge connection through it. See
-                    :mod:`radical.edge.tunnel`.
-            tunnel_via: Explicit login host to tunnel through. If unset,
-                    falls back to ``PBS_O_HOST`` (PBSPro) or
+            bridge_url: WebSocket URL for the Bridge.  CLI > env
+                        (``RADICAL_BRIDGE_URL``) > file
+                        (``~/.radical/edge/bridge.url``).
+            cert: Path to the bridge's TLS cert.  Same precedence using
+                  ``RADICAL_BRIDGE_CERT`` and
+                  ``~/.radical/edge/bridge_cert.pem``.
+            name: Edge service name for identification.  Defaults to
+                  hostname.
+            tunnel: When True, open an outbound SSH tunnel to the login
+                    host and route the bridge connection through it.
+                    See :mod:`radical.edge.tunnel`.
+            tunnel_via: Explicit login host to tunnel through.  If
+                    unset, falls back to ``PBS_O_HOST`` (PBSPro) or
                     ``SLURM_SUBMIT_HOST`` (SLURM).
+            app: existing ``FastAPI`` instance to register plugin
+                 routes on.  When ``None`` the edge constructs its own.
         """
-        self._bridge_url: str = bridge_url or os.environ.get("RADICAL_BRIDGE_URL", "")
-        self._app: FastAPI = FastAPI(title="Embedded Edge Service")
-        self._app.state.bridge_url = self._bridge_url
+        from urllib.parse import urlparse
+        from . import utils
+        # Resolve bridge URL + cert via the shared helper.  When the
+        # env var was the source we update the URL fallback file as
+        # well, so subsequent runs (or other tools on this host) can
+        # find the bridge without the env being set.
+        env_url_was_set = bool(os.environ.get(utils.ENV_URL, '').strip())
+        resolved_url, _ = utils.resolve_bridge_url(cli=bridge_url, role='edge')
+        if env_url_was_set:
+            try:    utils.write_bridge_url_file(resolved_url)
+            except Exception as _e:
+                log.debug("[Edge] could not refresh bridge.url file: %s", _e)
+        self._bridge_url: str = resolved_url
 
-        if not self._bridge_url:
-            raise ValueError("Bridge URL missing as argument or RADICAL_BRIDGE_URL")
+        # Cert is required for TLS schemes (https/wss) and ignored for
+        # plain (http/ws) — mirrors BridgeClient.  Test setups that
+        # don't exercise the TLS handshake use the plain forms.
+        scheme = urlparse(self._bridge_url).scheme
+        if scheme in ('https', 'wss'):
+            resolved_cert, _    = utils.resolve_bridge_cert(cli=cert, role='edge')
+            self._cert: Optional[str] = str(resolved_cert)
+        else:
+            self._cert = None
+
+        self._app: FastAPI = app if app is not None \
+                                 else FastAPI(title="Embedded Edge Service")
+        self._app.state.bridge_url = self._bridge_url
 
         self._plugins: Dict[str, Plugin] = {}
         self._name: str = name or socket.gethostname()
@@ -425,9 +457,9 @@ class EdgeService(PluginHostBase):
                     ssl_ctx = ssl.create_default_context()
                     ssl_ctx.check_hostname = False
                     ssl_ctx.verify_mode = ssl.CERT_NONE
-                    certfile = os.environ.get("RADICAL_BRIDGE_CERT")
-                    if certfile and os.path.exists(certfile):
-                        ssl_ctx.load_verify_locations(certfile)
+                    # Cert path was already resolved + validated in __init__.
+                    if self._cert and os.path.exists(self._cert):
+                        ssl_ctx.load_verify_locations(self._cert)
 
                 async with websockets.connect(ws_url,
                                               ssl=ssl_ctx,

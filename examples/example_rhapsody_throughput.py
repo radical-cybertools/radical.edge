@@ -23,7 +23,6 @@ Usage:
 """
 
 import asyncio
-import os
 import sys
 import time
 
@@ -133,12 +132,12 @@ async def main():
                        ]
 
     # ---- discover bridge / edge ---
-    bridge_url = os.environ.get('RADICAL_BRIDGE_URL', 'https://localhost:8000')
-
-    # Use a temporary BridgeClient just to find the first edge name
+    # Use a temporary BridgeClient to self-resolve URL/cert and find
+    # the first edge.
     from radical.edge import BridgeClient
-    bc   = BridgeClient()
-    eids = bc.list_edges()
+    bc         = BridgeClient()
+    bridge_url = bc.url
+    eids       = bc.list_edges()
     bc.close()
 
     if not eids:

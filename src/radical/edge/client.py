@@ -170,14 +170,25 @@ class BridgeClient:
         Initialize the Bridge Client.
 
         Args:
-            url: The bridge URL. Defaults to env 'RADICAL_BRIDGE_URL'.
-            cert: Path to CA cert. Defaults to env 'RADICAL_BRIDGE_CERT'.
+            url: The bridge URL.  CLI > env (``RADICAL_BRIDGE_URL``) >
+                 file (``~/.radical/edge/bridge.url``).
+            cert: Path to CA cert.  Same precedence using
+                  ``RADICAL_BRIDGE_CERT`` and
+                  ``~/.radical/edge/bridge_cert.pem``.  Required when
+                  the URL scheme is ``https``; ignored for ``http``.
         """
-        self._url: str = (url or os.environ.get("RADICAL_BRIDGE_URL", "")).rstrip('/')
-        self._cert: Optional[str] = cert or os.environ.get("RADICAL_BRIDGE_CERT")
+        from urllib.parse import urlparse
+        from . import utils
+        resolved_url, _      = utils.resolve_bridge_url(cli=url, role='client')
+        self._url: str       = resolved_url
 
-        if not self._url:
-            raise ValueError("Bridge URL required (arg or RADICAL_BRIDGE_URL)")
+        # Cert is only meaningful for HTTPS.  HTTP URLs bypass cert
+        # resolution entirely (no TLS in play).
+        if urlparse(self._url).scheme == 'https':
+            resolved_cert, _ = utils.resolve_bridge_cert(cli=cert, role='client')
+            self._cert: Optional[str] = str(resolved_cert)
+        else:
+            self._cert = None
 
         self._prof = rprof.Profiler('client', ns='radical.edge')
         self._req_counter = itertools.count()

@@ -66,7 +66,6 @@ Run::
 
 import asyncio
 import logging
-import os
 import re
 import sys
 import time
@@ -1144,11 +1143,11 @@ def main():
     except BlockingIOError:
         sys.exit('another matey.py is already running; kill it first.')
 
-    bridge_url = os.environ.get('RADICAL_BRIDGE_URL', 'https://localhost:8000')
+    # 1. Connect to the bridge.  BridgeClient self-resolves URL + cert
+    #    via radical.edge.utils (CLI > env > file).
+    bc         = BridgeClient()
+    bridge_url = bc.url
     print(f'Bridge: {bridge_url}')
-
-    # 1. Connect to the bridge.
-    bc = BridgeClient()
     try:
         # 2. Discover targets and prompt for selection.
         targets = discover_targets(bc)
