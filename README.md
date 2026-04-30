@@ -179,11 +179,12 @@ precedence:
 
 > **CLI flag > environment variable > file under `~/.radical/edge/`**
 
-| Item | Env var               | Default file                       | Used by                |
-|------|-----------------------|------------------------------------|------------------------|
-| URL  | `RADICAL_BRIDGE_URL`  | `~/.radical/edge/bridge.url`       | bridge / edge / client |
-| Cert | `RADICAL_BRIDGE_CERT` | `~/.radical/edge/bridge_cert.pem`  | bridge / edge / client |
-| Key  | `RADICAL_BRIDGE_KEY`  | `~/.radical/edge/bridge_key.pem`   | bridge only            |
+| Item | Env var               | Default file                      |
+|------|-----------------------|-----------------------------------|
+| URL  | `RADICAL_BRIDGE_URL`  | `~/.radical/edge/bridge.url`      |
+| Cert | `RADICAL_BRIDGE_CERT` | `~/.radical/edge/bridge_cert.pem` |
+| Key  | `RADICAL_BRIDGE_KEY`  | `~/.radical/edge/bridge_key.pem`  |
+
 
 Behaviour notes:
 
@@ -194,8 +195,8 @@ Behaviour notes:
 - **Cert / key**: never auto-written; the operator places them.
   Required for `https://` / `wss://` URLs; ignored entirely for
   `http://` / `ws://`.
-- **Key mode**: the bridge refuses to start if `bridge_key.pem` is
-  more permissive than `0o600`.
+- **Key**: The key is only needed by the bridge.  The bridge refuses
+  to start if `bridge_key.pem` is more permissive than `0o600`.  
 
 ### Bridge CLI Args
 
