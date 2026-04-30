@@ -56,6 +56,7 @@ Run::
 
 import asyncio
 import logging
+import os
 import sys
 import time
 import uuid
@@ -109,6 +110,11 @@ IRI_DEFAULTS = {
         'resource_id' : 'perlmutter',
         'login_host'  : 'perlmutter.nersc.gov',
         'home_dir'    : '/global/u2/m/merzky',         # target's $HOME
+        # ``amsc_dir`` is the path component (relative to the target's
+        # $HOME) under which the install script laid down
+        # ``ve/bin/radical-edge-wrapper.sh``.  ``None`` falls back to
+        # the literal default ``.amsc`` — applied at submit time.
+        'amsc_dir'    : None,
         'tunnel'      : True,
         'account'     : 'm5290',
         'workdir'     : None,
@@ -118,11 +124,10 @@ IRI_DEFAULTS = {
         'constraint'  : 'cpu',
         'reservation' : None,
         'environment' : {},
-        # Site-specific shell commands run by the edge wrapper *before*
-        # exec-ing dragon / python.  Use to ``module load`` MPI, set
-        # ``LD_LIBRARY_PATH``, source environment scripts, etc.  Each
-        # entry is a single shell command; they are joined with ``;``
-        # and shipped via the ``$RADICAL_EDGE_SETUP`` env var.
+        # ``setup`` is a list of shell commands the edge wrapper
+        # ``eval``s before exec'ing dragon / python (module loads,
+        # LD_LIBRARY_PATH tweaks, ...).  Joined with ``;`` and shipped
+        # via $RADICAL_EDGE_SETUP.  ``None`` is treated as empty.
         'setup'       : [
             'module load openmpi',
         ],
@@ -133,6 +138,7 @@ IRI_DEFAULTS = {
         'resource_id' : 'odo',
         'login_host'  : 'login1.frontier.olcf.ornl.gov',
         'home_dir'    : '/autofs/nccsopen-svm1_home/merzky',
+        'amsc_dir'    : None,
         'tunnel'      : True,
         'account'     : 'fus183',
         'workdir'     : '/gpfs/wolf2/olcf/fus183/proj-shared',
@@ -142,7 +148,7 @@ IRI_DEFAULTS = {
         'constraint'  : None,
         'reservation' : None,
         'environment' : {},
-        'setup'       : [],
+        'setup'       : None,
     },
 }
 
@@ -165,7 +171,8 @@ MACHINE_DEFAULTS = {
         'n_nodes'     : 1,
         'constraint'  : None,
         'tunnel'      : True,
-        'setup'       : [],
+        'amsc_dir'    : None,
+        'setup'       : None,
     },
     'perlmutter': {
         'enabled'     : True,
@@ -175,6 +182,7 @@ MACHINE_DEFAULTS = {
         'n_nodes'     : 1,
         'constraint'  : 'cpu',
         'tunnel'      : True,
+        'amsc_dir'    : None,
         'setup'       : [
             'module load openmpi',
         ],
@@ -187,11 +195,13 @@ MACHINE_DEFAULTS = {
         'n_nodes'     : 1,
         'constraint'  : None,
         'tunnel'      : True,
-        'setup'       : [],
+        'amsc_dir'    : None,
+        'setup'       : None,
     },
     'thinkie': {
         'enabled'     : False,
-        'setup'       : [],
+        'amsc_dir'    : None,
+        'setup'       : None,
     },
 }
 
@@ -199,17 +209,18 @@ MACHINE_DEFAULTS = {
 # ─────────────────────────────────────────────────────────────────────────────
 #  File-system layout.
 #
-#  ``AMSC_DIR`` is resolved on the *local* host (the client running this
-#  script); we use it only to read the IRI bearer tokens.
+#  ``AMSC_DIR`` (client-side) is the directory where we read IRI bearer
+#  tokens (``token_<endpoint>``).  Defaults to ``~/.amsc``; override by
+#  setting ``$AMSC_DIR`` before launching.
 #
-#  Paths on the *target* host (the wrapper, the bridge cert) are derived
-#  per target at submit time:
-#    - PsiJ path: ``sysinfo.homedir()`` on the submitting login-node
-#      edge — login and compute share $HOME via NFS/Lustre on every site
-#      we care about.
-#    - IRI path: the ``home_dir`` field on each entry of
-#      ``IRI_DEFAULTS`` — there is no pre-existing edge to query, so the
-#      caller supplies it once.
+#  Per-target ``amsc_dir`` (target-side) is a path component (relative
+#  to the target's ``$HOME``) under which the install script laid down
+#  ``ve/bin/radical-edge-wrapper.sh``.  Defaults to ``.amsc``; override
+#  per target via the ``amsc_dir`` field in IRI_DEFAULTS / MACHINE_DEFAULTS.
+#
+#  Bridge cert is no longer plumbed by this script — child edges
+#  resolve it via radical.edge's CLI > env > file precedence (default
+#  file path: ``~/.radical/edge/bridge_cert.pem`` on each target).
 #
 #  Why not pass ``~/.amsc/...`` and let bash expand it?  PsiJ's
 #  ``single_launch.sh`` quotes the executable arg, so the literal ``~``
@@ -217,9 +228,7 @@ MACHINE_DEFAULTS = {
 #  doesn't work — keep paths absolute.
 # ─────────────────────────────────────────────────────────────────────────────
 
-AMSC_DIR        = Path.home() / '.amsc'
-EDGE_WRAPPER_REL = '.amsc/ve/bin/radical-edge-wrapper.sh'
-CERT_REL         = '.amsc/radical.edge.cert'
+AMSC_DIR = Path(os.environ.get('AMSC_DIR') or Path.home() / '.amsc').expanduser()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -402,12 +411,13 @@ def configure_iri(endpoint):
         raise RuntimeError(f'IRI {endpoint}: account/project is required')
     if not d['home_dir']:
         raise RuntimeError(f'IRI {endpoint}: home_dir on target is required '
-                           f'(used to resolve {EDGE_WRAPPER_REL!r})')
+                           f'(used to resolve <home>/{d.get("amsc_dir") or ".amsc"}'
+                           f'/ve/bin/radical-edge-wrapper.sh)')
     return d
 
 
 def read_token(endpoint):
-    """Read ``~/.amsc/token_<endpoint>``; raise with a clear message on error."""
+    """Read ``$AMSC_DIR/token_<endpoint>``; raise with a clear message on error."""
     path = AMSC_DIR / f'token_{endpoint}'
     if not path.exists():
         raise RuntimeError(
@@ -452,14 +462,15 @@ def launch_iri(bc, endpoint, cfg, bridge_url):
     # IRI_DEFAULTS).  We can't rely on bash to expand ``~`` — PsiJ's
     # launchers quote the executable arg, so the literal tilde reaches
     # bash as a path component and never expands.
-    home     = cfg['home_dir'].rstrip('/')
-    wrapper  = f'{home}/{EDGE_WRAPPER_REL}'
-    cert     = f'{home}/{CERT_REL}'
+    home    = cfg['home_dir'].rstrip('/')
+    amsc    = (cfg.get('amsc_dir') or '.amsc').strip('/')
+    wrapper = f'{home}/{amsc}/ve/bin/radical-edge-wrapper.sh'
 
-    env = {
-        'RADICAL_BRIDGE_URL' : bridge_url,
-        'RADICAL_BRIDGE_CERT': cert,
-    }
+    # Cert resolution is delegated to the child edge: it falls back to
+    # ``~/.radical/edge/bridge_cert.pem`` (or $RADICAL_BRIDGE_CERT if
+    # set on the target side).  We only inject the bridge URL — that
+    # changes per bridge run and the file fallback would be stale.
+    env = {'RADICAL_BRIDGE_URL': bridge_url}
     env.update(cfg['environment'])
     # Site-specific shell snippet — module loads, env exports, etc.
     # The wrapper ``eval``s this *before* exec-ing dragon / python.
@@ -529,6 +540,9 @@ def configure_psij(edge_name, executor):
                                   d.get('constraint') or '') or None,
         'tunnel'      : confirm ('  open SSH tunnel from compute node?',
                                   d.get('tunnel', True)),
+        # Carried verbatim from MACHINE_DEFAULTS — not prompted.
+        'amsc_dir'    : d.get('amsc_dir'),
+        'setup'       : list(d.get('setup') or []),
     }
     if not cfg['account']:
         raise RuntimeError(f'edge {edge_name}: account/project is required')
@@ -544,8 +558,8 @@ def launch_psij(bc, edge_name, cfg, bridge_url):
     # Login and compute share $HOME via NFS/Lustre on every site we
     # care about, so the login-edge's home is also the compute job's.
     home    = edge.get_plugin('sysinfo').homedir().rstrip('/')
-    wrapper = f'{home}/{EDGE_WRAPPER_REL}'
-    cert    = f'{home}/{CERT_REL}'
+    amsc    = (cfg.get('amsc_dir') or '.amsc').strip('/')
+    wrapper = f'{home}/{amsc}/ve/bin/radical-edge-wrapper.sh'
 
     # Unique name for the child edge.
     child_name = f'amsc-{edge_name}-{uuid.uuid4().hex[:6]}'
@@ -565,10 +579,11 @@ def launch_psij(bc, edge_name, cfg, bridge_url):
     if cfg.get('constraint'):
         custom_attrs[f'{cfg["executor"]}.constraint'] = cfg['constraint']
 
-    env = {
-        'RADICAL_BRIDGE_URL' : bridge_url,
-        'RADICAL_BRIDGE_CERT': cert,
-    }
+    # Cert is left to the child edge to resolve from
+    # ``~/.radical/edge/bridge_cert.pem`` on the target (or via
+    # $RADICAL_BRIDGE_CERT if explicitly set there).  Only the bridge
+    # URL — which changes per bridge run — is injected here.
+    env = {'RADICAL_BRIDGE_URL': bridge_url}
     # Site-specific shell snippet — module loads, env exports, etc.
     # The wrapper ``eval``s this *before* exec-ing dragon / python.
     if cfg.get('setup'):
