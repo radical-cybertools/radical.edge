@@ -52,13 +52,15 @@ class Bridge:
     blocking :meth:`run` method that starts uvicorn with the resolved
     TLS config.
 
+    The advertised URL is *derived* from ``(host, port)`` — the bridge
+    never reads ``bridge.url``, it only writes it.  Wildcard binds
+    advertise the local FQDN (with an outbound-IPv4 fallback shown on
+    stdout); specific binds advertise that literal address.
+
     Args:
       app:     existing ``FastAPI`` instance to register routes on; if
                ``None``, the bridge constructs its own with the lifespan
                handler attached.
-      url:     CLI override for the advertised bridge URL.  Falls back
-               to ``$RADICAL_BRIDGE_URL`` → ``~/.radical/edge/bridge.url``
-               → derived FQDN URL.
       cert:    CLI override for the TLS cert path.  Falls back to
                ``$RADICAL_BRIDGE_CERT`` → ``~/.radical/edge/bridge_cert.pem``.
       key:     CLI override for the TLS key path.  Falls back to
@@ -73,24 +75,25 @@ class Bridge:
 
     def __init__(self,
                  app:     Optional[FastAPI] = None,
-                 url:     Optional[str]     = None,
                  cert:    Optional[str]     = None,
                  key:     Optional[str]     = None,
                  host:    str = '0.0.0.0',
                  port:    int = 8000,
                  plugins: str = 'default'):
         # ── Resolve TLS config (cert/key) ────────────────────────────
-        cert_path, _ = utils.resolve_bridge_cert(cli=cert, role='bridge')
-        key_path,  _ = utils.resolve_bridge_key (cli=key,  cert=cert_path)
+        cert_path, _ = utils.resolve_bridge_cert(cli=cert)
+        key_path,  _ = utils.resolve_bridge_key (cli=key, cert=cert_path)
         self._cert: str = str(cert_path)
         self._key : str = str(key_path)
 
-        # ── Resolve advertised URL (CLI > env > file > FQDN fallback) ─
+        # ── Derive advertised URL from (host, port) ──────────────────
+        # The bridge produces its URL — it never reads ``bridge.url``.
+        # Wildcard binds (0.0.0.0 / :: / '') yield FQDN- and IPv4-derived
+        # forms; specific binds (e.g. 127.0.0.1) advertise that literal.
         self._host = host
         self._port = port
-        resolved_url, _ = utils.resolve_bridge_url(
-            cli=url, role='bridge', fqdn_fallback_port=port)
-        self._url: str = resolved_url
+        self._url_forms = utils.public_url_forms(self._host, self._port)
+        self._url: str  = self._url_forms[0]
 
         # ── Instance state (was module-level in the old script) ──────
         self.edges:               Dict[str, WebSocket] = {}
@@ -152,18 +155,26 @@ class Bridge:
         """
         import uvicorn
 
-        # Print all URL forms so the operator can pick whichever is
-        # reachable from their client side.
-        for form in utils.public_url_forms(self._port):
+        # Print all URL forms (canonical first, alternates after) so
+        # the operator can copy whichever is reachable from clients.
+        for form in self._url_forms:
             print(f'[Bridge] URL: {form}', flush=True)
 
-        # Always overwrite the URL file with the canonical (first) form.
-        try:
-            utils.write_bridge_url_file(self._url)
-            log.info('[Bridge] wrote URL file: %s', utils.URL_FILE)
-        except Exception as e:
-            log.warning('[Bridge] could not write URL file %s: %s',
-                        utils.URL_FILE, e)
+        # Write the URL file only when it does not already exist —
+        # never clobber a file the operator may have placed there
+        # (e.g. for a different bridge they want consumers to default
+        # to).  An operator who wants this bridge's URL recorded just
+        # deletes the file before starting.
+        if not utils.URL_FILE.exists():
+            try:
+                utils.write_bridge_url_file(self._url)
+                log.info('[Bridge] wrote URL file: %s', utils.URL_FILE)
+            except Exception as e:
+                log.warning('[Bridge] could not write URL file %s: %s',
+                            utils.URL_FILE, e)
+        else:
+            log.info('[Bridge] URL file already present, leaving it: %s',
+                     utils.URL_FILE)
 
         # Suppress CancelledError noise during graceful shutdown.
         class _ShutdownFilter(logging.Filter):

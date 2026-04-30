@@ -1298,7 +1298,7 @@ class PluginXGFabric(Plugin):
         edge_service = getattr(self._app.state, 'edge_service', None)
         bridge_url   = getattr(edge_service, '_bridge_url', None) if edge_service else None
         try:
-            cert_path, _ = utils.resolve_bridge_cert(role='client')
+            cert_path, _ = utils.resolve_bridge_cert()
             bridge_cert  = str(cert_path)
         except (ValueError, FileNotFoundError):
             bridge_cert  = None

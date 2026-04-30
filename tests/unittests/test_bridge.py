@@ -60,9 +60,7 @@ def make_bridge(self_signed, tmp_path, monkeypatch):
 
     def _build(**kwargs):
         from radical.edge import Bridge
-        defaults = dict(url='https://localhost:8000',
-                        cert=str(cert),
-                        key=str(key))
+        defaults = dict(cert=str(cert), key=str(key))
         defaults.update(kwargs)
         return Bridge(**defaults)
 

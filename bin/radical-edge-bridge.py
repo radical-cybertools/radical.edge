@@ -12,11 +12,6 @@ from radical.edge.bridge import Bridge
 
 def main():
     parser = argparse.ArgumentParser(description='RADICAL Edge Bridge')
-    parser.add_argument('--url',  '-u', default=None,
-                        help='Advertised bridge URL.  CLI > '
-                             '$RADICAL_BRIDGE_URL > '
-                             '~/.radical/edge/bridge.url > '
-                             'https://<fqdn>:<port> derived fallback.')
     parser.add_argument('--cert', default=None,
                         help='TLS cert path.  CLI > $RADICAL_BRIDGE_CERT > '
                              '~/.radical/edge/bridge_cert.pem.')
@@ -40,8 +35,7 @@ def main():
                              'supported. Combine, e.g.: "-p default,rose".')
     args = parser.parse_args()
 
-    Bridge(url=args.url,
-           cert=args.cert,
+    Bridge(cert=args.cert,
            key=args.key,
            host=args.host,
            port=args.port,

@@ -13,15 +13,16 @@ import sys
 import tempfile
 
 from pathlib import Path
-from typing  import Any, Dict, List, Literal, Optional, Tuple
+from typing  import Any, Dict, List, Optional, Tuple
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Bridge connection config: env > file precedence, optional CLI override.
+#  Bridge connection config (consumer side: edge / client / cert+key reads).
 #
-#  Env vars (already in use across the codebase):
-#    RADICAL_BRIDGE_URL  — bridge URL for clients/edges to connect to
-#    RADICAL_BRIDGE_CERT — TLS cert path
+#  Env vars:
+#    RADICAL_BRIDGE_URL  — bridge URL for edges / clients to connect to
+#    RADICAL_BRIDGE_CERT — TLS cert path (bridge serves with it; edges /
+#                          clients verify against it)
 #    RADICAL_BRIDGE_KEY  — TLS key path (bridge only)
 #
 #  Fallback files (placed by the operator; never auto-written from env):
@@ -29,16 +30,12 @@ from typing  import Any, Dict, List, Literal, Optional, Tuple
 #    ~/.radical/edge/bridge_cert.pem
 #    ~/.radical/edge/bridge_key.pem
 #
-#  Roles:
-#    'bridge' — needs URL/CERT/KEY.  No URL anywhere → falls back to
-#               the locally-derived FQDN URL (caller supplies the port).
-#    'edge'   — needs URL/CERT.  Hard error if neither env nor file has it.
-#    'client' — needs URL/CERT.  Hard error if neither env nor file has it.
+#  Precedence (consumer side): CLI arg > env var > file > error.
 #
-#  Cert/key files are never written by code — operator places them.
-#  URL file:
-#    - bridge always overwrites at startup with its in-use URL
-#    - edge overwrites whenever its env var is set
+#  The bridge process itself does NOT consume a URL — it derives its
+#  advertised URL from its own (host, port).  ``bridge.url`` is a write-
+#  side artefact only: bridge writes; edges / clients read.
+#  Cert / key files are never written by code — operator places them.
 # ─────────────────────────────────────────────────────────────────────────────
 
 DEFAULT_DIR  = Path.home() / '.radical' / 'edge'
@@ -49,8 +46,6 @@ KEY_FILE     = DEFAULT_DIR / 'bridge_key.pem'
 ENV_URL      = 'RADICAL_BRIDGE_URL'
 ENV_CERT     = 'RADICAL_BRIDGE_CERT'
 ENV_KEY      = 'RADICAL_BRIDGE_KEY'
-
-Role = Literal['bridge', 'edge', 'client']
 
 
 def _read_url_file(path: Optional[Path] = None) -> Optional[str]:
@@ -109,19 +104,28 @@ def _outbound_ipv4() -> Optional[str]:
         return None
 
 
-def public_url_forms(port: int, *, scheme: str = 'https') -> List[str]:
-    """Return plausible advertised URLs for a bridge listening on *port*.
+def public_url_forms(host: str, port: int, *,
+                     scheme: str = 'https') -> List[str]:
+    """Return URLs to advertise for a bridge listening on ``(host, port)``.
 
-    Two forms when both are available:
+    For wildcard binds (``''`` / ``0.0.0.0`` / ``::``), returns up to
+    two forms:
 
-      * ``<scheme>://<fqdn>:<port>``   — DNS-resolvable, the canonical form
-                                          written to ``bridge.url``.
-      * ``<scheme>://<ipv4>:<port>``   — fallback for hosts where FQDN
-                                          isn't routable from the client.
+      * ``<scheme>://<fqdn>:<port>``  — DNS-resolvable canonical form.
+      * ``<scheme>://<ipv4>:<port>``  — fallback for hosts where FQDN
+                                         isn't routable from the client.
 
-    Filters out useless values (``localhost`` / non-FQDN hostnames /
-    duplicate IP/FQDN).  Always returns at least one form.
+    For specific binds (any IP or hostname), returns a single form
+    using that host literally — including loopback (``127.0.0.1``)
+    and IPv6 (which is bracket-wrapped for URL embedding).
+
+    Always returns at least one form.
     """
+    if host not in ('', '0.0.0.0', '::'):
+        # Specific bind — advertise it as-is, bracketing IPv6 literals.
+        host_in_url = f'[{host}]' if ':' in host else host
+        return [f'{scheme}://{host_in_url}:{port}']
+
     forms = []
     fqdn  = socket.getfqdn()
     if fqdn and fqdn not in ('localhost', 'localhost.localdomain') \
@@ -141,53 +145,28 @@ def public_url_forms(port: int, *, scheme: str = 'https') -> List[str]:
     return forms
 
 
-def _resolve_url_value(cli: Optional[str]) -> Tuple[Optional[str], str]:
-    """Apply CLI > env > file precedence.
+def resolve_bridge_url(cli: Optional[str] = None) -> Tuple[str, str]:
+    """Resolve the bridge URL for a *consumer* (edge / client).
 
-    Returns ``(url, source)`` where ``source`` is one of
-    ``'cli'`` / ``'env'`` / ``'file'`` / ``''`` (nothing found).
+    Precedence: CLI arg > ``$RADICAL_BRIDGE_URL`` > ``~/.radical/edge/bridge.url``.
+
+    Returns ``(url, source)`` with source one of
+    ``'cli'`` / ``'env'`` / ``'file'``.  Raises ``ValueError`` if no
+    source resolves.
+
+    The bridge process itself does *not* call this — it derives its
+    advertised URL from its own ``(host, port)``.
     """
     if cli:
-        return cli.strip(), 'cli'
+        return cli.strip().rstrip('/'), 'cli'
     env_url = os.environ.get(ENV_URL, '').strip()
     if env_url:
-        return env_url, 'env'
+        return env_url.rstrip('/'), 'env'
     file_url = _read_url_file()
     if file_url:
-        return file_url, 'file'
-    return None, ''
-
-
-def resolve_bridge_url(cli: Optional[str] = None, *,
-                       role: Role,
-                       fqdn_fallback_port: Optional[int] = None,
-                       fqdn_fallback_scheme: str = 'https'
-                       ) -> Tuple[str, str]:
-    """Resolve the bridge URL.
-
-    Args:
-      cli:    explicit value from a command-line flag (highest precedence).
-      role:   one of ``'bridge'`` / ``'edge'`` / ``'client'``.
-      fqdn_fallback_port:    port to use when role='bridge' and no URL is
-                             configured anywhere — derive an FQDN URL.
-      fqdn_fallback_scheme:  scheme for the FQDN fallback.
-
-    Returns ``(url, source)``.  Sources: ``'cli'`` / ``'env'`` / ``'file'``
-    / ``'fqdn'`` (bridge only).
-
-    Raises ``ValueError`` for non-bridge roles when nothing is configured.
-    """
-    url, source = _resolve_url_value(cli)
-    if url:
-        return url.rstrip('/'), source
-
-    if role == 'bridge' and fqdn_fallback_port is not None:
-        forms = public_url_forms(fqdn_fallback_port, scheme=fqdn_fallback_scheme)
-        return forms[0].rstrip('/'), 'fqdn'
-
-    raise ValueError(
-        f"Bridge URL required for role={role!r} (no CLI arg, "
-        f"${ENV_URL} unset, no file at {URL_FILE})")
+        return file_url.rstrip('/'), 'file'
+    raise ValueError(f"Bridge URL required (no CLI arg, ${ENV_URL} unset, "
+                     f"no file at {URL_FILE})")
 
 
 def _resolve_path_value(cli: Optional[str], env_var: str,
@@ -204,13 +183,17 @@ def _resolve_path_value(cli: Optional[str], env_var: str,
     return None, ''
 
 
-def resolve_bridge_cert(cli: Optional[str] = None, *,
-                        role: Role) -> Tuple[Path, str]:
+def resolve_bridge_cert(cli: Optional[str] = None) -> Tuple[Path, str]:
     """Resolve the TLS cert path.
 
-    Validates the file is loadable as a TLS cert (``ssl.create_default_context().
-    load_verify_locations`` for clients / edges; bridges defer pairing
-    with the key to :func:`resolve_bridge_key`).
+    Validates the file is loadable as a CA cert
+    (``ssl.create_default_context().load_verify_locations``).
+    Bridges that need to pair cert + key call :func:`resolve_bridge_key`
+    with the resolved cert path; that does the server-side pairing
+    via ``load_cert_chain``.
+
+    Precedence: CLI arg > ``$RADICAL_BRIDGE_CERT`` >
+    ``~/.radical/edge/bridge_cert.pem``.
 
     Returns ``(path, source)``.  Raises ``ValueError`` if no source
     yields a path, ``FileNotFoundError`` if the path does not exist,
@@ -218,16 +201,12 @@ def resolve_bridge_cert(cli: Optional[str] = None, *,
     """
     path, source = _resolve_path_value(cli, ENV_CERT, CERT_FILE)
     if path is None:
-        raise ValueError(
-            f"TLS cert required for role={role!r} (no CLI arg, "
-            f"${ENV_CERT} unset, no file at {CERT_FILE})")
+        raise ValueError(f"TLS cert required (no CLI arg, ${ENV_CERT} unset, "
+                         f"no file at {CERT_FILE})")
     if not path.exists():
         raise FileNotFoundError(f"TLS cert not found: {path}")
-    if role in ('edge', 'client'):
-        # Verify it loads as a CA cert.  Bridges check via load_cert_chain
-        # in resolve_bridge_key (since they need cert+key paired).
-        ctx = ssl.create_default_context()
-        ctx.load_verify_locations(str(path))
+    ctx = ssl.create_default_context()
+    ctx.load_verify_locations(str(path))
     return path, source
 
 

@@ -188,21 +188,23 @@ precedence:
 
 Behaviour notes:
 
-- **URL**: the bridge writes its in-use URL to `bridge.url` on
-  startup, so subsequent edges / clients on the same host find it
-  without env vars.  No URL anywhere → bridge derives one from the
-  FQDN; edges / clients raise `ValueError`.
+- **URL** (consumer side only): the bridge derives its own advertised
+  URL from `(host, port)` — wildcard binds use the local FQDN
+  (printing both FQDN and outbound-IPv4 forms on stdout); specific
+  binds advertise that literal address.  The bridge writes
+  `bridge.url` only when the file does not already exist, so a stale
+  file the operator placed for a different bridge is never clobbered.
+  Edges / clients raise `ValueError` if no URL resolves.
 - **Cert / key**: never auto-written; the operator places them.
   Required for `https://` / `wss://` URLs; ignored entirely for
   `http://` / `ws://`.
 - **Key**: The key is only needed by the bridge.  The bridge refuses
-  to start if `bridge_key.pem` is more permissive than `0o600`.  
+  to start if `bridge_key.pem` is more permissive than `0o600`.
 
 ### Bridge CLI Args
 
 ```
 radical-edge-bridge.py [options]
-  --url  URL     Advertised bridge URL          (CLI > env > file > FQDN)
   --cert CERT    TLS cert path                  (CLI > env > file)
   --key  KEY     TLS key path; mode 0o600       (CLI > env > file)
   --host HOST    Bind address (default: 0.0.0.0)

@@ -127,16 +127,11 @@ class EdgeService(PluginHostBase):
         """
         from urllib.parse import urlparse
         from . import utils
-        # Resolve bridge URL + cert via the shared helper.  When the
-        # env var was the source we update the URL fallback file as
-        # well, so subsequent runs (or other tools on this host) can
-        # find the bridge without the env being set.
-        env_url_was_set = bool(os.environ.get(utils.ENV_URL, '').strip())
-        resolved_url, _ = utils.resolve_bridge_url(cli=bridge_url, role='edge')
-        if env_url_was_set:
-            try:    utils.write_bridge_url_file(resolved_url)
-            except Exception as _e:
-                log.debug("[Edge] could not refresh bridge.url file: %s", _e)
+        # Resolve bridge URL + cert via the shared helper.  No
+        # side-effect on the local URL file: a one-off ``RADICAL_BRIDGE_URL``
+        # to point at a different bridge must not clobber the file
+        # the operator may rely on for the *default* bridge.
+        resolved_url, _ = utils.resolve_bridge_url(cli=bridge_url)
         self._bridge_url: str = resolved_url
 
         # Cert is required for TLS schemes (https/wss) and ignored for
@@ -144,7 +139,7 @@ class EdgeService(PluginHostBase):
         # don't exercise the TLS handshake use the plain forms.
         scheme = urlparse(self._bridge_url).scheme
         if scheme in ('https', 'wss'):
-            resolved_cert, _    = utils.resolve_bridge_cert(cli=cert, role='edge')
+            resolved_cert, _    = utils.resolve_bridge_cert(cli=cert)
             self._cert: Optional[str] = str(resolved_cert)
         else:
             self._cert = None

@@ -74,8 +74,7 @@ def test_url_cli_wins_over_env_and_file(isolated_dir, monkeypatch):
     """CLI > env > file when all three are set."""
     monkeypatch.setenv(utils.ENV_URL, 'https://from-env:8000')
     (isolated_dir / 'bridge.url').write_text('https://from-file:8000\n')
-    url, src = utils.resolve_bridge_url(cli='https://from-cli:8000',
-                                        role='client')
+    url, src = utils.resolve_bridge_url(cli='https://from-cli:8000')
     assert url == 'https://from-cli:8000'
     assert src == 'cli'
 
@@ -84,7 +83,7 @@ def test_url_env_wins_over_file(isolated_dir, monkeypatch):
     """Env > file when CLI is absent."""
     monkeypatch.setenv(utils.ENV_URL, 'https://from-env:8000')
     (isolated_dir / 'bridge.url').write_text('https://from-file:8000\n')
-    url, src = utils.resolve_bridge_url(role='client')
+    url, src = utils.resolve_bridge_url()
     assert url == 'https://from-env:8000'
     assert src == 'env'
 
@@ -92,7 +91,7 @@ def test_url_env_wins_over_file(isolated_dir, monkeypatch):
 def test_url_file_used_when_no_cli_no_env(isolated_dir):
     """File is the lowest precedence successful source."""
     (isolated_dir / 'bridge.url').write_text('https://from-file:8000\n')
-    url, src = utils.resolve_bridge_url(role='client')
+    url, src = utils.resolve_bridge_url()
     assert url == 'https://from-file:8000'
     assert src == 'file'
 
@@ -100,36 +99,14 @@ def test_url_file_used_when_no_cli_no_env(isolated_dir):
 def test_url_trailing_slash_stripped(isolated_dir, monkeypatch):
     """Resolver strips a single trailing slash for consistency."""
     monkeypatch.setenv(utils.ENV_URL, 'https://x:8000/')
-    url, _ = utils.resolve_bridge_url(role='client')
+    url, _ = utils.resolve_bridge_url()
     assert url == 'https://x:8000'
 
 
-def test_url_edge_role_errors_when_unconfigured(isolated_dir):
-    """Edge / client role → ValueError when nothing is set."""
-    with pytest.raises(ValueError, match="role='edge'"):
-        utils.resolve_bridge_url(role='edge')
-
-
-def test_url_client_role_errors_when_unconfigured(isolated_dir):
-    """Client role → ValueError when nothing is set."""
-    with pytest.raises(ValueError, match="role='client'"):
-        utils.resolve_bridge_url(role='client')
-
-
-def test_url_bridge_role_falls_back_to_fqdn(isolated_dir):
-    """Bridge with no env/file/CLI gets a derived FQDN URL, not an error."""
-    url, src = utils.resolve_bridge_url(role='bridge', fqdn_fallback_port=8000)
-    assert url.startswith('https://')
-    assert url.endswith(':8000')
-    assert src == 'fqdn'
-
-
-def test_url_bridge_cli_overrides_fqdn_fallback(isolated_dir):
-    """A passed CLI URL wins over the FQDN fallback."""
-    url, src = utils.resolve_bridge_url(cli='https://explicit:9000',
-                                        role='bridge', fqdn_fallback_port=8000)
-    assert url == 'https://explicit:9000'
-    assert src == 'cli'
+def test_url_errors_when_unconfigured(isolated_dir):
+    """Nothing set anywhere → ValueError."""
+    with pytest.raises(ValueError, match='Bridge URL required'):
+        utils.resolve_bridge_url()
 
 
 # ---------------------------------------------------------------------------
@@ -156,9 +133,9 @@ def test_write_bridge_url_file_overwrites(tmp_path):
 # public_url_forms
 # ---------------------------------------------------------------------------
 
-def test_public_url_forms_returns_at_least_one():
-    """Even with no FQDN and no IPv4, fallback to hostname/localhost."""
-    forms = utils.public_url_forms(8000)
+def test_public_url_forms_wildcard_returns_at_least_one():
+    """Wildcard bind: at least one form, fallback to hostname/localhost."""
+    forms = utils.public_url_forms('0.0.0.0', 8000)
     assert forms
     for f in forms:
         assert f.startswith('https://')
@@ -167,8 +144,26 @@ def test_public_url_forms_returns_at_least_one():
 
 def test_public_url_forms_scheme_arg():
     """Custom scheme is honoured in every returned URL."""
-    forms = utils.public_url_forms(80, scheme='http')
+    forms = utils.public_url_forms('0.0.0.0', 80, scheme='http')
     assert all(f.startswith('http://') for f in forms)
+
+
+def test_public_url_forms_specific_host_uses_literal():
+    """Non-wildcard host is advertised literally — single form, no FQDN."""
+    forms = utils.public_url_forms('127.0.0.1', 8000)
+    assert forms == ['https://127.0.0.1:8000']
+
+
+def test_public_url_forms_specific_hostname_uses_literal():
+    """Hostname is also literal — no FQDN substitution."""
+    forms = utils.public_url_forms('my-bridge', 8000)
+    assert forms == ['https://my-bridge:8000']
+
+
+def test_public_url_forms_ipv6_bracket_wrapped():
+    """IPv6 literal hosts get bracket-wrapped per RFC 3986."""
+    forms = utils.public_url_forms('::1', 8000)
+    assert forms == ['https://[::1]:8000']
 
 
 # ---------------------------------------------------------------------------
@@ -183,7 +178,7 @@ def test_cert_cli_wins(isolated_dir, self_signed, monkeypatch):
     monkeypatch.setenv(utils.ENV_CERT, str(other))
     (isolated_dir / 'bridge_cert.pem').write_bytes(cert.read_bytes())
 
-    path, src = utils.resolve_bridge_cert(cli=str(cert), role='client')
+    path, src = utils.resolve_bridge_cert(cli=str(cert))
     assert path == cert
     assert src == 'cli'
 
@@ -195,7 +190,7 @@ def test_cert_env_wins_over_file(isolated_dir, self_signed, monkeypatch):
     other = isolated_dir / 'bridge_cert.pem'
     other.write_bytes(cert.read_bytes())   # different file, same content
 
-    path, src = utils.resolve_bridge_cert(role='client')
+    path, src = utils.resolve_bridge_cert()
     assert path == cert
     assert src == 'env'
 
@@ -206,7 +201,7 @@ def test_cert_file_fallback(isolated_dir, self_signed):
     target = isolated_dir / 'bridge_cert.pem'
     target.write_bytes(cert.read_bytes())
 
-    path, src = utils.resolve_bridge_cert(role='client')
+    path, src = utils.resolve_bridge_cert()
     assert path == target
     assert src == 'file'
 
@@ -214,14 +209,14 @@ def test_cert_file_fallback(isolated_dir, self_signed):
 def test_cert_missing_everywhere_raises(isolated_dir):
     """Nothing configured → ValueError."""
     with pytest.raises(ValueError, match='TLS cert required'):
-        utils.resolve_bridge_cert(role='client')
+        utils.resolve_bridge_cert()
 
 
 def test_cert_path_set_but_file_missing(isolated_dir, monkeypatch):
     """Env-pointed cert that doesn't exist → FileNotFoundError."""
     monkeypatch.setenv(utils.ENV_CERT, '/nonexistent/cert.pem')
     with pytest.raises(FileNotFoundError):
-        utils.resolve_bridge_cert(role='client')
+        utils.resolve_bridge_cert()
 
 
 def test_cert_invalid_content_raises(isolated_dir, monkeypatch):
@@ -230,7 +225,7 @@ def test_cert_invalid_content_raises(isolated_dir, monkeypatch):
     bad.write_text('this is not a TLS certificate')
     monkeypatch.setenv(utils.ENV_CERT, str(bad))
     with pytest.raises(ssl.SSLError):
-        utils.resolve_bridge_cert(role='client')
+        utils.resolve_bridge_cert()
 
 
 # ---------------------------------------------------------------------------

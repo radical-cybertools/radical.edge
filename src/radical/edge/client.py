@@ -179,13 +179,13 @@ class BridgeClient:
         """
         from urllib.parse import urlparse
         from . import utils
-        resolved_url, _      = utils.resolve_bridge_url(cli=url, role='client')
+        resolved_url, _      = utils.resolve_bridge_url(cli=url)
         self._url: str       = resolved_url
 
         # Cert is only meaningful for HTTPS.  HTTP URLs bypass cert
         # resolution entirely (no TLS in play).
         if urlparse(self._url).scheme == 'https':
-            resolved_cert, _ = utils.resolve_bridge_cert(cli=cert, role='client')
+            resolved_cert, _ = utils.resolve_bridge_cert(cli=cert)
             self._cert: Optional[str] = str(resolved_cert)
         else:
             self._cert = None
