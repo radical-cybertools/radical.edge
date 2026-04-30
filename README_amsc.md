@@ -42,7 +42,7 @@ git clone git@github.com:radical-cybertools/radical.asyncflow || true
 git clone git@github.com:radical-cybertools/rhapsody          || true
 git clone git@github.com:radical-cybertools/rose              || true
 
-cd radical.edge/     ; git checkout devel       ; git pull; pip install .; cd ..
+cd radical.edge/     ; git checkout feature/amsc; git pull; pip install .; cd ..
 cd rhapsody/         ; git checkout feature/edge; git pull; pip install .; cd ..
 cd radical.asyncflow/; git checkout feature/edge; git pull; pip install .; cd ..
 cd rose/             ; git checkout tmp_am/raas ; git pull; pip install .; cd ..
