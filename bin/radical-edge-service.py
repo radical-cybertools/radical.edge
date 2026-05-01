@@ -41,15 +41,19 @@ async def main():
                         default=os.environ.get("RADICAL_EDGE_LOG_LEVEL", "INFO"),
                         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
                         help="Log level (default: INFO; env: RADICAL_EDGE_LOG_LEVEL)")
-    parser.add_argument("--tunnel", action="store_true",
-                        help="Open an outbound ssh -L tunnel to the login "
-                             "host and route the bridge connection through "
-                             "it.  Port written to "
-                             "~/.radical/edge/tunnels/<name>.port on the "
-                             "shared filesystem.")
+    parser.add_argument("--tunnel", default='none',
+                        choices=['none', 'forward', 'reverse'],
+                        help="SSH tunnel mode for the bridge connection. "
+                             "'none' connects directly; 'forward' opens "
+                             "ssh -L from this (compute) node to the "
+                             "login host (compute->login); 'reverse' "
+                             "waits for the parent-side ssh -R and reads "
+                             "~/.radical/edge/tunnels/<name>.port from "
+                             "the shared filesystem.")
     parser.add_argument("--tunnel-via", metavar="HOST", default=None,
-                        help="Explicit login host for --tunnel.  Falls back "
-                             "to $PBS_O_HOST or $SLURM_SUBMIT_HOST.")
+                        help="Login host for --tunnel forward.  Falls "
+                             "back to $PBS_O_HOST / $SLURM_SUBMIT_HOST. "
+                             "Ignored for --tunnel none / reverse.")
 
     args = parser.parse_args()
 

@@ -115,7 +115,14 @@ IRI_DEFAULTS = {
         # ``ve/bin/radical-edge-wrapper.sh``.  ``None`` falls back to
         # the literal default ``.amsc`` — applied at submit time.
         'amsc_dir'    : None,
-        'tunnel'      : True,
+        # ``tunnel``: SSH tunnel direction for the child's bridge
+        # connection.  One of:
+        #   'none'    — direct connect.
+        #   'forward' — child opens ssh -L compute -> login (Aurora,
+        #               Perlmutter; outbound compute->login allowed).
+        #   'reverse' — parent opens ssh -R login -> compute (Odo;
+        #               compute->login blocked, login->compute allowed).
+        'tunnel'      : 'forward',
         'account'     : 'm5290',
         'workdir'     : None,
         'queue_name'  : 'debug',
@@ -139,7 +146,7 @@ IRI_DEFAULTS = {
         'login_host'  : 'login1.frontier.olcf.ornl.gov',
         'home_dir'    : '/autofs/nccsopen-svm1_home/merzky',
         'amsc_dir'    : None,
-        'tunnel'      : True,
+        'tunnel'      : 'reverse',
         'account'     : 'fus183',
         'workdir'     : '/gpfs/wolf2/olcf/fus183/proj-shared',
         'queue_name'  : 'batch',
@@ -170,7 +177,7 @@ MACHINE_DEFAULTS = {
         'walltime_min': 30,
         'n_nodes'     : 1,
         'constraint'  : None,
-        'tunnel'      : True,
+        'tunnel'      : 'forward',
         'amsc_dir'    : None,
         'setup'       : None,
     },
@@ -181,7 +188,7 @@ MACHINE_DEFAULTS = {
         'walltime_min': 30,
         'n_nodes'     : 1,
         'constraint'  : 'cpu',
-        'tunnel'      : True,
+        'tunnel'      : 'forward',
         'amsc_dir'    : None,
         'setup'       : [
             'module load openmpi',
@@ -194,7 +201,7 @@ MACHINE_DEFAULTS = {
         'walltime_min': 30,
         'n_nodes'     : 1,
         'constraint'  : None,
-        'tunnel'      : True,
+        'tunnel'      : 'reverse',
         'amsc_dir'    : None,
         'setup'       : None,
     },
@@ -263,6 +270,20 @@ def confirm(prompt, default=True):
         if answer in ('y', 'yes'): return True
         if answer in ('n', 'no'):  return False
         print('  please answer y or n')
+
+
+_TUNNEL_MODES = ('none', 'forward', 'reverse')
+
+
+def _ask_tunnel(default):
+    """Prompt for an SSH tunnel mode, validating against the allowed values."""
+    if default not in _TUNNEL_MODES:
+        default = 'forward'
+    while True:
+        raw = ask('  ssh tunnel direction (none/forward/reverse)', default)
+        if raw in _TUNNEL_MODES:
+            return raw
+        print(f'  invalid: {raw!r} — pick one of {_TUNNEL_MODES}')
 
 
 def select_many(items, prompt):
@@ -405,8 +426,9 @@ def configure_iri(endpoint):
     d['n_nodes']      = ask_int ('  number of nodes',      d['n_nodes'])
     d['constraint']   = ask     ('  constraint (or empty)', d['constraint'] or '') or None
     d['reservation']  = ask     ('  reservation (or empty)', d['reservation'] or '') or None
-    d['login_host']   = ask     ('  login host (for --tunnel)', d['login_host'])
-    d['tunnel']       = confirm ('  open SSH tunnel from compute node?', d['tunnel'])
+    d['login_host']   = ask     ('  login host (for --tunnel forward)',
+                                  d['login_host'])
+    d['tunnel']       = _ask_tunnel(d.get('tunnel'))
     if not d['account']:
         raise RuntimeError(f'IRI {endpoint}: account/project is required')
     if not d['home_dir']:
@@ -538,8 +560,7 @@ def configure_psij(edge_name, executor):
                                   d.get('n_nodes', 1)),
         'constraint'  : ask     ('  constraint (or empty)',
                                   d.get('constraint') or '') or None,
-        'tunnel'      : confirm ('  open SSH tunnel from compute node?',
-                                  d.get('tunnel', True)),
+        'tunnel'      : _ask_tunnel(d.get('tunnel')),
         # Carried verbatim from MACHINE_DEFAULTS — not prompted.
         'amsc_dir'    : d.get('amsc_dir'),
         'setup'       : list(d.get('setup') or []),
