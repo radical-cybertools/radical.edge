@@ -234,12 +234,12 @@ one of its own. Full guide: [Federation Plugin](plugin_federation.md).
 
 | Method | Path | Description |
 |----|----|----|
-| `POST` | `join/{sid}` | Join a resource. Body: the client fields of a resource record (`name`, `endpoint`, `mode`, `capabilities`, `budget`, optional `site`/`kind`/`scratch_base`/`pool`). Returns the full record. **400** invalid declaration, **404** endpoint not connected, **409** name in use, **503** no task dispatcher hosted. |
+| `POST` | `join/{sid}` | Join a resource. Body: the client fields of a resource record (`name`, `endpoint`, `mode`, `capabilities`, `budget`, optional `site`/`kind`/`scratch_base`/`pool`). Returns the full record. **400** invalid declaration — bad name/mode/capabilities, a `scratch_base` outside `~` or `/tmp`, a malformed or unknown-keyed login `pool` field, or an `endpoint` that is the broker itself; **404** endpoint not connected; **409** name in use; **503** no task dispatcher hosted. |
 | `POST` | `leave/{sid}/{name}` | Cancel the resource's live tasks, release its dispatcher pool, forget it. Returns `{"resource", "ok", "tasks_canceled"}` |
 | `GET` | `resources/{sid}` | `{"resources": [record, …]}` with usage refreshed (cached 2 s), sorted by name |
 | `GET` | `resource/{sid}/{name}` | One resource record with usage refreshed |
 | `POST` | `pick/{sid}` | Body: `{"requirements": {"cores": 4, "gpus": 0, "software": ["lammps"], "node_hours": 0.1}}` → `{"resource", "pool", "dispatcher_sid", "score"}`. **409** with `{"detail", "reasons": {name: why}}` when nothing fits |
-| `POST` | `submit/{sid}` | Body: `{"task": {"task_id", "cmd", "cwd"?, "inputs", "outputs", "priority"}, "requirements": {…}}` → `{"task", "resource", "pool", "dispatcher_sid"}`. Picks a resource, creates the task cwd, forwards to the dispatcher. Same **409** as `pick` |
+| `POST` | `submit/{sid}` | Body: `{"task": {"task_id", "cmd", "cwd"?, "inputs", "outputs", "priority"}, "requirements": {…}}` → `{"task", "resource", "pool", "dispatcher_sid"}`. Picks a resource, creates the task cwd, forwards to the dispatcher. **400** if an explicit `cwd` lies outside `~` or `/tmp`; same **409** as `pick` |
 | `GET` | `task/{sid}/{task_id}` | The dispatcher's task dict plus `resource`, and `child_endpoint` while the task's pilot is alive |
 
 A resource record:
