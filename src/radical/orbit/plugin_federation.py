@@ -96,7 +96,7 @@ from .federation_state      import (
     LIVENESS_OK, LIVENESS_SUSPECT, LIVENESS_LOST,
     MODE_ALLOCATION, MODE_LOGIN, MODES,
     node_hours_from_history, validate_budget, validate_capabilities,
-    validate_name, validate_scratch_base,
+    validate_name, validate_pool_int, validate_scratch_base,
 )
 
 log = logging.getLogger('radical.orbit')
@@ -136,6 +136,23 @@ _SIZE_KEY          = 'default'
 
 # Task states the ledger treats as finished.
 _TERMINAL_TASK_STATES = frozenset(('DONE', 'FAILED', 'CANCELED'))
+
+# The fields a login-mode ``pool`` block may carry.  Anything else is a
+# typo, and a typo that silently drops (say) ``max_pilots`` is worse than a
+# refused join — so the block is validated strictly.
+_LOGIN_POOL_KEYS = frozenset((
+    'queue', 'account', 'nodes', 'cpus_per_node', 'gpus_per_node',
+    'walltime_sec', 'min_pilots', 'max_pilots', 'rhapsody_backend',
+))
+
+# Sanity ceilings on a declared pool.  Not policy — just the line past which
+# a number is certainly a mistake (a typo'd walltime or node count reaches
+# the batch system as a real request).
+_MAX_PILOTS_CAP   = 1024
+_MAX_NODES_CAP    = 100000
+_MAX_CPUS_CAP     = 4096
+_MAX_GPUS_CAP     = 256
+_MAX_WALLTIME_CAP = 30 * 86400
 
 
 # ---------------------------------------------------------------------------
@@ -373,15 +390,22 @@ class PluginFederation(Plugin):
         self._policy     = make_policy(policy, policy_config)
         self._dispatcher = _DispatcherAPI(app, dispatcher_instance)
 
-        # endpoint_name → topology liveness ('present'|'suspect'|'lost').
-        self._participants: dict[str, str] = {}
+        # A resource loaded from disk is ``lost`` until topology says
+        # otherwise: nothing here has seen a participant yet, and claiming a
+        # resource is ``ok`` on the strength of a file would let the policy
+        # route work at an endpoint that may have been gone for days.
+        for rec in self._state.resources.values():
+            rec.liveness = LIVENESS_LOST
+
+        # endpoint_name → {'liveness': …, 'role': …} from the rich topology.
+        self._participants: dict[str, dict] = {}
 
         # Resource names whose dispatcher session is currently registered.
         self._attached: set[str] = set()
 
-        # Restart re-attach runs once, on the first topology delivery — that
-        # is the first moment "is this resource's endpoint connected?" has an
-        # answer.  See :meth:`_replay_attachments`.
+        # Restart re-attach runs exactly once, whichever comes first: the
+        # first topology delivery or the first route.  See
+        # :meth:`_replay_attachments`.
         self._replayed = False
 
         # pool_name → (fetched_at, verbose summary).  Shared by usage refresh
@@ -429,11 +453,25 @@ class PluginFederation(Plugin):
         Every federation route is addressed with ``default``; a client never
         registers a session of its own (one would be swept after an idle
         hour, and there is no per-client state to hold anyway).
+
+        This is also where the restart re-attach is forced if it has not run
+        yet.  A route can arrive before the first topology delivery — a
+        client polling a task across a broker restart will — and the stored
+        dispatcher sessions do not exist until they are re-registered, so
+        without this such a call would 404 against a session that is merely
+        not re-attached yet.
         '''
         await self._ensure_default_session()
+        if not self._replayed:
+            self._replayed = True
+            await self._replay_attachments()
         if sid not in self._sessions:
             raise HTTPException(status_code=404,
                                 detail=f'unknown session id: {sid}')
+
+    def _participant(self, endpoint: str) -> dict:
+        '''Return the topology entry for *endpoint* (empty when unknown).'''
+        return self._participants.get(endpoint) or {}
 
     def _liveness_for(self, endpoint: str) -> str:
         '''Map an endpoint's topology liveness onto a resource liveness.
@@ -442,7 +480,7 @@ class PluginFederation(Plugin):
         not route there, but nothing is torn down over a blip); anything else
         — ``lost``, unknown, never seen — is ``lost``.
         '''
-        live = self._participants.get(endpoint)
+        live = self._participant(endpoint).get('liveness')
         if live == 'present':
             return LIVENESS_OK
         if live == 'suspect':
@@ -575,64 +613,145 @@ class PluginFederation(Plugin):
         }
 
         if rec.mode == MODE_ALLOCATION:
-            alloc    = await self._job_allocation(rec.endpoint) or {}
-            nodes    = int(alloc.get('n_nodes') or 1) or 1
-            walltime = int(alloc.get('runtime') or _DEFAULT_WALLTIME)
-            cpus     = int(rec.capability('cores') or
-                           alloc.get('cpus_per_node') or 1) or 1
-            gpus     = int(rec.capability('gpus') or
-                           alloc.get('gpus_per_node') or 0)
-            common.update({
-                'queue'      : 'allocation',
-                'account'    : None,
-                'min_pilots' : 1,
-                'max_pilots' : 1,
-                'pilot_sizes': {_SIZE_KEY: {
-                    'nodes'           : nodes,
-                    'cpus_per_node'   : cpus,
-                    'gpus_per_node'   : gpus,
-                    'walltime_sec'    : max(1, walltime),
-                    'rhapsody_backend': _DEFAULT_BACKEND,
-                }},
-            })
+            common.update(self._allocation_pool(
+                rec, await self._job_allocation(rec.endpoint) or {}))
             return common
 
-        # login mode — everything comes from the declared pool block
+        common.update(self._login_pool(rec))
+        return common
+
+    @staticmethod
+    def _allocation_walltime(alloc: dict) -> int:
+        '''Return the pilot walltime for an allocation-mode resource.
+
+        ``queue_info``'s ``runtime`` is the job's **time limit**, not the
+        time it has left (SLURM ``squeue %l``, PBS ``Resource_List.walltime``)
+        — there is no remaining-time field anywhere in the endpoint API.  A
+        pilot submitted late into an allocation would therefore be given a
+        walltime longer than the allocation itself, and the dispatcher would
+        wait for a deadline the batch system will never honour.
+
+        Best-effort correction: when ``SLURM_JOB_END_TIME`` (epoch seconds)
+        is visible, use the smaller of the limit and the time actually left.
+        That variable lives in the *allocation's* environment, so it helps
+        exactly when the broker runs inside the allocation too — the
+        co-located case — and is simply absent otherwise.
+        '''
+        limit = int(alloc.get('runtime') or _DEFAULT_WALLTIME)
+        end   = os.environ.get('SLURM_JOB_END_TIME')
+        if end:
+            try:
+                remaining = int(float(end) - time.time())
+                if 0 < remaining < limit:
+                    limit = remaining
+            except (TypeError, ValueError):
+                pass
+        return max(1, limit)
+
+    @staticmethod
+    def _allocation_pool(rec: ResourceRecord, alloc: dict) -> dict:
+        '''Return the allocation-mode half of a pool declaration.
+
+        The pilot **is** the allocation: one pilot, started at join
+        (``min_pilots=1``), sized from what the endpoint reports about its
+        own job.
+
+        Per-node counts come from the allocation first, because a declared
+        ``cores`` / ``gpus`` is a *total* for the resource while
+        ``cpus_per_node`` is exactly what its name says.  Dividing the
+        declared total by the node count is the fallback when the endpoint
+        reports no per-node figure.
+        '''
+        nodes = int(alloc.get('n_nodes') or 1) or 1
+
+        cpus = alloc.get('cpus_per_node')
+        if not cpus:
+            cores = rec.capability('cores')
+            cpus  = max(1, int(cores) // nodes) if cores else 1
+
+        gpus = alloc.get('gpus_per_node')
+        if not gpus:
+            all_gpus = rec.capability('gpus')
+            gpus     = (int(all_gpus) // nodes) if all_gpus else 0
+
+        return {
+            'queue'      : 'allocation',
+            'account'    : None,
+            'min_pilots' : 1,
+            'max_pilots' : 1,
+            'pilot_sizes': {_SIZE_KEY: {
+                'nodes'           : nodes,
+                'cpus_per_node'   : max(1, int(cpus)),
+                'gpus_per_node'   : max(0, int(gpus)),
+                'walltime_sec'    : PluginFederation._allocation_walltime(
+                    alloc),
+                'rhapsody_backend': _DEFAULT_BACKEND,
+            }},
+        }
+
+    @staticmethod
+    def _login_pool(rec: ResourceRecord) -> dict:
+        '''Return the login-mode half of a pool declaration.
+
+        Everything comes from the declared ``pool`` block, validated here so
+        a bad declaration is a 400 rather than a 500 raised deep inside pool
+        construction or the dispatcher's own parser.  Unknown keys are
+        rejected rather than ignored — a typo that silently drops
+        ``max_pilots`` is worse than a refused join.
+        '''
         decl = rec.pool
         if not isinstance(decl, dict):
             raise FederationStateError(
                 "login mode requires a 'pool' declaration")
+
+        unknown = set(decl) - _LOGIN_POOL_KEYS
+        if unknown:
+            raise FederationStateError(
+                f"unknown 'pool' field(s): {', '.join(sorted(unknown))} "
+                f"(known: {', '.join(sorted(_LOGIN_POOL_KEYS))})")
+
         queue = decl.get('queue')
         if not isinstance(queue, str) or not queue:
-            raise FederationStateError("'pool.queue' must be a non-empty "
-                                       'string')
+            raise FederationStateError(
+                "'pool.queue' must be a non-empty string")
         if queue == 'default':
             raise FederationStateError(
                 "'pool.queue' must not be the dispatcher sentinel 'default'")
+
         account = decl.get('account')
         if account is not None and not isinstance(account, str):
-            raise FederationStateError("'pool.account' must be a string "
-                                       'or null')
-        for key in ('nodes', 'cpus_per_node', 'walltime_sec'):
-            val = decl.get(key)
-            if isinstance(val, bool) or not isinstance(val, int) or val < 1:
-                raise FederationStateError(
-                    f"'pool.{key}' must be a positive integer")
-        common.update({
+            raise FederationStateError(
+                "'pool.account' must be a string or null")
+
+        backend = decl.get('rhapsody_backend') or _DEFAULT_BACKEND
+        if not isinstance(backend, str) or not backend:
+            raise FederationStateError(
+                "'pool.rhapsody_backend' must be a non-empty string")
+
+        max_pilots = validate_pool_int(decl, 'max_pilots', default=1,
+                                       minimum=1, maximum=_MAX_PILOTS_CAP)
+        min_pilots = validate_pool_int(decl, 'min_pilots', default=0,
+                                       minimum=0, maximum=max_pilots)
+        return {
             'queue'      : queue,
             'account'    : account,
-            'min_pilots' : 0,
-            'max_pilots' : int(decl.get('max_pilots') or 1),
+            'min_pilots' : min_pilots,
+            'max_pilots' : max_pilots,
             'pilot_sizes': {_SIZE_KEY: {
-                'nodes'           : int(decl['nodes']),
-                'cpus_per_node'   : int(decl['cpus_per_node']),
-                'gpus_per_node'   : int(decl.get('gpus_per_node') or 0),
-                'walltime_sec'    : int(decl['walltime_sec']),
-                'rhapsody_backend': str(decl.get('rhapsody_backend')
-                                        or _DEFAULT_BACKEND),
+                'nodes'        : validate_pool_int(
+                    decl, 'nodes', minimum=1, maximum=_MAX_NODES_CAP),
+                'cpus_per_node': validate_pool_int(
+                    decl, 'cpus_per_node', minimum=1,
+                    maximum=_MAX_CPUS_CAP),
+                'gpus_per_node': validate_pool_int(
+                    decl, 'gpus_per_node', default=0, minimum=0,
+                    maximum=_MAX_GPUS_CAP),
+                'walltime_sec' : validate_pool_int(
+                    decl, 'walltime_sec', minimum=1,
+                    maximum=_MAX_WALLTIME_CAP),
+                'rhapsody_backend': backend,
             }},
-        })
-        return common
+        }
 
     # -- routes ----------------------------------------------------------
 
@@ -678,6 +797,13 @@ class PluginFederation(Plugin):
             raise HTTPException(
                 status_code=404,
                 detail=f'endpoint not connected: {endpoint}')
+        # The broker is a participant too, and it hosts no psij — a pool
+        # bound to it could never launch a pilot.  Refuse the declaration
+        # rather than create a pool that will only ever fail.
+        if self._participant(endpoint).get('role') == 'broker':
+            raise HTTPException(
+                status_code=400,
+                detail=f'{endpoint} is the broker, not a compute resource')
 
         rec = ResourceRecord(
             name           = name,
@@ -734,7 +860,7 @@ class PluginFederation(Plugin):
         Session close re-queues a RUNNING task (``_finalize_pilot`` returns
         it to QUEUED) and persists it, so a later join of the same name —
         which re-attaches to the very same pool state — would dispatch a
-        campaign's stale tasks onto the fresh pilot.
+        client's stale tasks onto the fresh pilot.
         '''
         await self._require_session(request.path_params['sid'])
         name = request.path_params['name']
@@ -838,8 +964,17 @@ class PluginFederation(Plugin):
 
         # cwd defaults to this task's scratch dir under the pool's scratch
         # base — the same path the dispatcher stages into, created here
-        # because a plain submit (no stage_in) never creates it.
-        cwd = task.get('cwd') or str(Path(rec.scratch_base) / str(task_id))
+        # because a plain submit (no stage_in) never creates it.  An
+        # *explicit* cwd is held to the same ~ // tmp rule as scratch_base:
+        # the broker creates and the pilot writes this directory, so a
+        # submit must not be the way around the join-time check.
+        if task.get('cwd'):
+            try:
+                cwd = validate_scratch_base(task['cwd'], field='task.cwd')
+            except FederationStateError as e:
+                raise HTTPException(status_code=400, detail=str(e)) from e
+        else:
+            cwd = str(Path(rec.scratch_base) / str(task_id))
         try:
             Path(cwd).mkdir(parents=True, exist_ok=True)
         except OSError as e:
@@ -924,8 +1059,14 @@ class PluginFederation(Plugin):
 
         A caller that cannot place work needs the reasons, not just the
         refusal — "gpus 0 < 1 on a, node_hours exhausted on b" is actionable
-        where a bare 409 is not.  Returned as a response object rather than
-        raised, because an ``HTTPException`` detail is a flat string.
+        where a bare 409 is not.  Returned as a **response object** rather
+        than raised so the reasons are a first-class part of the body: a
+        raised ``HTTPException`` renders through the gateway's canonical
+        error envelope, whose ``detail`` reads as a human message, and
+        smuggling a dict through it would leave in-process and HTTP callers
+        looking at different shapes.  In-process callers must therefore check
+        ``resp.status_code`` — ``pick`` and ``submit`` are the two routes
+        that can answer without raising.
         '''
         try:
             reasons = self._policy.explain(
@@ -995,9 +1136,17 @@ class PluginFederation(Plugin):
         rec.usage.updated_at = now
 
     async def _refresh_all(self) -> None:
-        '''Refresh usage for every resource (each still 2 s-cached).'''
-        for rec in list(self._state.resources.values()):
-            await self._refresh_usage(rec)
+        '''Refresh usage for every resource (each still 2 s-cached).
+
+        Concurrently: each refresh is one dispatcher round-trip with a 3 s
+        timeout, so a federation of N resources with one slow member would
+        otherwise make every ``resources`` call wait N × 3 s instead of 3 s.
+        '''
+        recs = list(self._state.resources.values())
+        if not recs:
+            return
+        await asyncio.gather(*(self._refresh_usage(r) for r in recs),
+                             return_exceptions=True)
 
     # -- topology / attachment -------------------------------------------
 
@@ -1010,7 +1159,9 @@ class PluginFederation(Plugin):
         '''
         participants = participants or {}
         self._participants = {
-            name: str((info or {}).get('liveness') or LIVENESS_LOST)
+            name: {'liveness': str((info or {}).get('liveness')
+                                   or LIVENESS_LOST),
+                   'role'    : str((info or {}).get('role') or '')}
             for name, info in participants.items()
         }
 
@@ -1030,6 +1181,14 @@ class PluginFederation(Plugin):
         each one session-owned again, so :meth:`_sync_attachments` can then
         release the dead ones through the ordinary ``unregister_session``
         teardown instead of leaving owner-less pools behind.
+
+        Called from whichever comes first after a restart: the first
+        topology delivery (the normal case) or the first route
+        (:meth:`_require_session`).  Liveness is untouched here — every
+        record loaded from disk starts ``lost`` and only topology promotes
+        it — so a route arriving in that window can still *read* and *poll*
+        a resource, while ``pick`` correctly refuses to route new work to an
+        endpoint nobody has seen yet.
         '''
         for rec in list(self._state.resources.values()):
             decl = rec.pool_config or None

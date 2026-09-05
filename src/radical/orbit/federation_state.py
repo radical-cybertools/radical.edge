@@ -30,6 +30,7 @@ reads and correct across a broker restart, with no accumulator to drift.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import time
 
@@ -101,7 +102,7 @@ class SubmitLedgerEntry:
 
     The dispatcher keeps only the 50 most recent tasks per pool in its
     verbose summary, so counting completed work off *that* would silently
-    undercount a long campaign.  This ledger is the federation's answer: one
+    undercount a long run.  This ledger is the federation's answer: one
     entry per task it ever routed, updated whenever the task is polled.
     '''
     task_id       : str
@@ -322,26 +323,69 @@ class FederationState:
 # Validation
 # ---------------------------------------------------------------------------
 
-def validate_scratch_base(path: str) -> str:
-    '''Return *path* expanded, or raise if it lies outside ``~`` / ``/tmp``.
+def allowed_bases() -> list[str]:
+    '''Return the roots a federation-written path may live under.
 
-    Mirrors the staging plugin's rule (``plugin_staging``): a task scratch
-    tree is created and written by the broker, so a join must not be able to
-    aim it at an arbitrary filesystem location.
+    ``~`` and ``/tmp``, both through ``realpath`` — exactly the
+    ``PluginStaging._ALLOWED_BASES`` rule, resolved the same way so a
+    platform where ``/tmp`` is itself a symlink (``/private/tmp``) does not
+    reject every legitimate path.
     '''
-    resolved = Path(path).expanduser()
-    if not resolved.is_absolute():
+    return [os.path.realpath(os.path.expanduser('~')),
+            os.path.realpath('/tmp')]
+
+
+def validate_scratch_base(path: str, *, field: str = 'scratch_base') -> str:
+    '''Return *path* expanded, or raise if it escapes ``~`` / ``/tmp``.
+
+    Mirrors the staging plugin's rule: the broker itself creates and writes
+    these trees, so neither a join nor a task submission may aim one at an
+    arbitrary filesystem location.  The check is on the **realpath**, so a
+    symlink cannot smuggle the target out; the value returned is the
+    *expanded* form, which is what the operator declared and what the record
+    should keep showing.
+    '''
+    if not isinstance(path, str) or not path:
+        raise FederationStateError(f'{field} must be a non-empty string')
+    expanded = os.path.expanduser(path)
+    if not os.path.isabs(expanded):
         raise FederationStateError(
-            f"scratch_base must be an absolute path: {path!r}")
-    home = Path.home().resolve()
-    for root in (home, Path('/tmp')):
-        try:
-            resolved.resolve().relative_to(root)
-            return str(resolved)
-        except ValueError:
-            continue
+            f'{field} must be an absolute path (or use ~): {path!r}')
+    resolved = os.path.realpath(expanded)
+    for base in allowed_bases():
+        if resolved == base or resolved.startswith(base + os.sep):
+            return expanded
     raise FederationStateError(
-        f"scratch_base must lie under {home} or /tmp: {path!r}")
+        f'{field} must lie under {" or ".join(allowed_bases())}: {path!r} '
+        f'(resolves to {resolved})')
+
+
+def validate_pool_int(decl: dict, key: str, *, default: int | None = None,
+                      minimum: int = 0,
+                      maximum: int | None = None) -> int:
+    '''Return one integer field of a login-mode pool block, or raise.
+
+    A bad value here would otherwise reach the dispatcher's own parser or an
+    ``int()`` call deep in pool construction and surface as a 500; a
+    declaration error deserves a 400.
+    '''
+    if key not in decl or decl[key] is None:
+        if default is None:
+            raise FederationStateError(
+                f"'pool.{key}' is required")
+        return default
+    val = decl[key]
+    if isinstance(val, bool) or not isinstance(val, int):
+        raise FederationStateError(
+            f"'pool.{key}' must be an integer, got "
+            f'{type(val).__name__}')
+    if val < minimum:
+        raise FederationStateError(
+            f"'pool.{key}' must be >= {minimum}, got {val}")
+    if maximum is not None and val > maximum:
+        raise FederationStateError(
+            f"'pool.{key}' must be <= {maximum}, got {val}")
+    return val
 
 
 def validate_capabilities(caps: Any) -> dict:

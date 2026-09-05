@@ -5,6 +5,8 @@ Covers: the record dataclasses and their wire/persist views, the durable
 over a dispatcher ``pilot_history``, and the join-time validators.
 """
 
+import os
+
 from pathlib import Path
 
 import pytest
@@ -13,9 +15,9 @@ from radical.orbit.federation_state import (
     FederationState, FederationStateError, ResourceRecord, ResourceUsage,
     SubmitLedgerEntry,
     LIVENESS_LOST, MODE_LOGIN,
-    node_hours_from_history, record_from_dict, ledger_from_dict,
-    validate_budget, validate_capabilities, validate_name,
-    validate_scratch_base,
+    allowed_bases, node_hours_from_history, record_from_dict,
+    ledger_from_dict, validate_budget, validate_capabilities,
+    validate_name, validate_pool_int, validate_scratch_base,
 )
 
 
@@ -260,16 +262,87 @@ class TestValidators:
 
     def test_scratch_base_elsewhere_is_rejected(self):
         for bad in ('/etc/passwd', '/var/lib/x', 'relative/path',
-                    '/tmp/../etc'):
+                    '/tmp/../etc', '', None):
             with pytest.raises(FederationStateError):
                 validate_scratch_base(bad)
+
+    def test_scratch_base_realpath_catches_a_symlink_escape(self):
+        # The check is on the realpath (as plugin_staging does), so a link
+        # under an allowed root cannot aim the tree out of it.
+        link = Path('/tmp') / f'orbit-fed-link-{os.getpid()}'
+        link.unlink(missing_ok=True)
+        os.symlink('/etc', link)
+        try:
+            with pytest.raises(FederationStateError, match='resolves to'):
+                validate_scratch_base(str(link))
+        finally:
+            link.unlink(missing_ok=True)
+
+    def test_scratch_base_returns_the_declared_form(self):
+        # Validation resolves; the value kept is what the operator wrote.
+        assert validate_scratch_base('~/fed-x') == str(Path.home() / 'fed-x')
+
+    def test_scratch_base_names_the_field_it_rejected(self):
+        with pytest.raises(FederationStateError, match='task.cwd'):
+            validate_scratch_base('/etc/x', field='task.cwd')
+
+    def test_allowed_bases_are_realpaths(self):
+        assert allowed_bases() == [os.path.realpath(os.path.expanduser('~')),
+                                   os.path.realpath('/tmp')]
+
+
+class TestValidatePoolInt:
+
+    def test_returns_the_value(self):
+        assert validate_pool_int({'nodes': 4}, 'nodes', minimum=1) == 4
+
+    def test_missing_with_a_default(self):
+        assert validate_pool_int({}, 'max_pilots', default=1, minimum=1) == 1
+
+    def test_explicit_null_falls_back_to_the_default(self):
+        assert validate_pool_int({'gpus_per_node': None}, 'gpus_per_node',
+                                 default=0, minimum=0) == 0
+
+    def test_missing_without_a_default_is_required(self):
+        with pytest.raises(FederationStateError, match='required'):
+            validate_pool_int({}, 'nodes', minimum=1)
+
+    def test_non_integers_are_rejected(self):
+        for bad in ('two', 2.5, [2], True):
+            with pytest.raises(FederationStateError):
+                validate_pool_int({'nodes': bad}, 'nodes', minimum=1)
+
+    def test_range_is_enforced_at_both_ends(self):
+        with pytest.raises(FederationStateError, match='>= 1'):
+            validate_pool_int({'nodes': 0}, 'nodes', minimum=1)
+        with pytest.raises(FederationStateError, match='<= 10'):
+            validate_pool_int({'nodes': 11}, 'nodes', minimum=1, maximum=10)
+
+    def test_the_message_names_the_pool_field(self):
+        with pytest.raises(FederationStateError, match="'pool.max_pilots'"):
+            validate_pool_int({'max_pilots': 'two'}, 'max_pilots', minimum=1)
 
 
 class TestModes:
 
-    def test_login_mode_constant(self):
-        assert MODE_LOGIN == 'login'
-        assert _rec(mode=MODE_LOGIN).mode == 'login'
+    def test_a_login_record_keeps_its_mode_through_persistence(self,
+                                                               tmp_path):
+        p  = tmp_path / 'state.json'
+        st = FederationState(p)
+        st.resources['b'] = _rec(name='b', mode=MODE_LOGIN,
+                                 pool={'queue': 'regular', 'nodes': 2})
+        st.save()
+        back = FederationState(p).load().resources['b']
+        assert back.mode == MODE_LOGIN
+        assert back.pool == {'queue': 'regular', 'nodes': 2}
 
-    def test_default_liveness_is_ok_not_lost(self):
-        assert _rec().liveness != LIVENESS_LOST
+    def test_a_persisted_liveness_is_restored_verbatim(self, tmp_path):
+        # The plugin overrides this to LOST at load — nothing has seen a
+        # participant yet — but the store itself must not second-guess the
+        # file it was given.
+        p  = tmp_path / 'state.json'
+        st = FederationState(p)
+        st.resources['a'] = _rec(liveness=LIVENESS_LOST)
+        st.save()
+        assert FederationState(p).load().resources['a'].liveness == \
+            LIVENESS_LOST

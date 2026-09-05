@@ -693,6 +693,11 @@ class PluginTaskDispatcher(Plugin):
         their own: a pool with a ``min_pilots`` floor whose owner never comes
         back would otherwise submit pilots forever.  An orphan is still
         drained-free and still pruned; it wakes when its owner re-registers.
+
+        This covers the reserved ``default`` session too — it is created on
+        demand, so a pool replayed under ``default`` also stays un-ticked
+        until the first request mints that session.  Same rule, not an
+        exception to it.
         '''
         last_prune = time.time()
         while True:
@@ -1794,20 +1799,36 @@ class PluginTaskDispatcher(Plugin):
                 }
             fwds.append((task, fwd))
 
+        # Register the uid → task mapping BEFORE handing the batch to
+        # rhapsody.  ``submit_tasks`` is parked in a worker thread, so this
+        # loop stays free to run ``_on_event`` — and a short task (the demo's
+        # synthetic ones finish in well under a second) reports DONE before
+        # the submit call returns.  Registering afterwards loses that race:
+        # ``_handle_task_terminal`` finds no mapping, drops the terminal
+        # event, and the task hangs in RUNNING forever.  The record is
+        # already RUNNING here (``_claim`` ran before us), so an early
+        # notification lands on a consistent task.
+        for task, fwd in fwds:
+            task.rhapsody_uid = fwd['uid']
+            self._uid_to_task[fwd['uid']] = (pool_state.owning_sid,
+                                             pool_state.config.name,
+                                             task.task_id)
+
         try:
             await asyncio.to_thread(rh.submit_tasks, [f for _, f in fwds])
-            for task, fwd in fwds:
-                task.rhapsody_uid = fwd['uid']
-                self._uid_to_task[fwd['uid']] = (pool_state.owning_sid,
-                                                 pool_state.config.name,
-                                                 task.task_id)
             self._mark_dirty(pool_state)
         except Exception as e:
             log.exception('[%s] rhapsody submit failed for %d task(s): %s',
                           self.instance_name, len(tasks), e)
-            for task, _ in fwds:
-                self._mark_task_failed(pool_state, task,
-                                       f'rhapsody submit error: {e}')
+            for task, fwd in fwds:
+                self._uid_to_task.pop(fwd['uid'], None)
+                task.rhapsody_uid = None
+                # a task that already reported terminal (submit_tasks can
+                # fail *after* the pilot accepted part of the batch) keeps
+                # the outcome the pilot gave it
+                if task.state not in TASK_TERMINAL_STATES:
+                    self._mark_task_failed(pool_state, task,
+                                           f'rhapsody submit error: {e}')
 
     def _on_event(self, event: dict) -> None:
         '''Broker raw-tap callback: a child rhapsody reported a transition.

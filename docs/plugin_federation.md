@@ -72,8 +72,20 @@ Server-filled on the returned record: `joined_at`, `dispatcher_sid`,
 whole allocation **is** the resource. The pool is built with
 `queue: "allocation"`, `account: null`, `min_pilots: 1`, `max_pilots: 1`,
 and one pilot size taken from the endpoint's own `queue_info/job_allocation`
-(`n_nodes`, `runtime`) when it has one, else `nodes=1, walltime_sec=3600`.
-`cpus_per_node` / `gpus_per_node` come from the declared capabilities.
+when it has one, else `nodes=1, walltime_sec=3600`.
+
+Sizing, in order of preference:
+
+| pilot size | from |
+|----|----|
+| `nodes` | `n_nodes` of the allocation, else 1 |
+| `walltime_sec` | `runtime` of the allocation, clamped by `SLURM_JOB_END_TIME` when visible (see Known limitations), else 3600 |
+| `cpus_per_node` | the allocation's `cpus_per_node`, else `max(1, capabilities.cores // nodes)` |
+| `gpus_per_node` | the allocation's `gpus_per_node`, else `capabilities.gpus // nodes` |
+
+Note the division: a declared `cores` / `gpus` is a **total for the
+resource**, while `cpus_per_node` is exactly what its name says. The
+allocation's own per-node figures are authoritative when it reports them.
 
 Because `min_pilots` is 1, **the pilot starts at join** — before any task
 exists — so the resource is warm by the time work arrives. An undeclared
@@ -87,14 +99,20 @@ would spend.
 ```json
 "pool": {"queue": "regular", "account": "m1234",
          "nodes": 1, "cpus_per_node": 128, "gpus_per_node": 4,
-         "walltime_sec": 3600, "max_pilots": 2,
+         "walltime_sec": 3600, "min_pilots": 0, "max_pilots": 2,
          "rhapsody_backend": "concurrent"}
 ```
 
 `queue`, `nodes`, `cpus_per_node` and `walltime_sec` are required;
-`account` may be `null`. `queue` must not be the literal `"default"` — that
-is the dispatcher's unconfigured-pool sentinel and it refuses to submit for
-it.
+`account` may be `null`; `gpus_per_node` (0), `min_pilots` (0),
+`max_pilots` (1) and `rhapsody_backend` (`concurrent`) have defaults.
+`queue` must not be the literal `"default"` — that is the dispatcher's
+unconfigured-pool sentinel and it refuses to submit for it.
+
+The block is validated **strictly**: every count must be an integer in a
+sane range (`min_pilots ≤ max_pilots`), and an **unknown key is rejected**
+rather than ignored — a typo that silently drops `max_pilots` is worse than
+a refused join. Every violation is a **400**, never a 500 raised deeper in.
 
 ### Capability discovery
 
@@ -122,7 +140,7 @@ accumulator to drift, and the number is correct across a broker restart.
 
 Task counts come from the federation's **own submit ledger**, one entry per
 task it ever routed — the dispatcher's `recent_tasks` is capped at 50 per
-pool and would silently undercount a long campaign.
+pool and would silently undercount a long run.
 
 Usage is refreshed on `resources`, `resource` and `pick`, cached for 2 s,
 with a 3 s timeout. A refresh that cannot reach the dispatcher keeps the
@@ -213,7 +231,11 @@ pool name, a dispatcher session, or an endpoint:
 
 `cwd` defaults to `<scratch_base>/<task_id>` and is **created before the
 submit** — a plain submit (no `stage_in`) would otherwise run in a
-directory that does not exist.
+directory that does not exist. An *explicit* `cwd` is held to the same
+`~` / `/tmp` containment rule as `scratch_base` (checked on the realpath, so
+a symlink cannot escape it); anything else is a **400**. The broker creates
+this directory and the pilot writes it, so a submit must not be the way
+around the join-time check.
 
 ### task
 
@@ -259,12 +281,28 @@ broker restart the dispatcher has already replayed `(sid, pool)` off disk,
 so re-registering the stored sid with the identical declaration re-attaches
 to that very `PoolState` — tasks and all — instead of creating a second one.
 
-**Restart.** State is loaded at construction; the re-attach runs on the
-first topology delivery, which is the first moment "is this endpoint
-connected?" has an answer. *Every* stored resource is re-registered first,
-then the ones whose endpoint did not come back are released through the
-ordinary `unregister_session` path and marked `lost` — so no owner-less pool
-is left behind.
+**In-process callers must check `resp.status_code`.** `handle_request`
+re-raises an `HTTPException` verbatim, so most failures arrive as
+exceptions — but `pick` and `submit` answer "nothing fits" with a
+`JSONResponse(409)` carrying `{"detail", "reasons": {name: why}}`, because
+the per-resource reasons belong in the body rather than smuggled through an
+error `detail`. An in-process caller that only catches `HTTPException`
+would read that 409 as success.
+
+**Restart.** State is loaded at construction, and every loaded record starts
+`lost` — nothing has seen a participant yet, and a resource must not look
+routable on the strength of a file. The re-attach then runs **once**,
+whichever comes first: the first topology delivery (the normal case) or the
+first route. *Every* stored resource is re-registered first; the ones whose
+endpoint did not come back are released through the ordinary
+`unregister_session` path and stay `lost`, so no owner-less pool is left
+behind.
+
+Forcing the re-attach from a route matters for the window right after a
+restart: a client polling a task through it must reach a live dispatcher
+session, not a 404 for one that simply has not been re-registered yet. In
+that window `resources` and `task` work normally while `pick` and `submit`
+correctly refuse — no endpoint has been seen, so nothing is routable.
 
 **`leave` cancels tasks before tearing the session down.** Session close
 re-queues a RUNNING task (the dispatcher returns it to QUEUED when its pilot
@@ -334,3 +372,19 @@ remaining, active pilots, task counts, liveness — polling
 - **A budget is per join.** Leaving and re-joining a resource resets its
   node-hour accounting, because usage is derived from the (new) pool's pilot
   history.
+- **`job_allocation.runtime` is the job's time *limit*, not the time it has
+  left** (SLURM `squeue %l`, PBS `Resource_List.walltime`); no
+  remaining-time field exists anywhere in the endpoint API. An
+  allocation-mode resource joined *late* into its allocation would
+  therefore give its pilot a walltime longer than the allocation itself,
+  and the dispatcher would wait on a deadline the batch system will never
+  honour. Best-effort correction: when `SLURM_JOB_END_TIME` (epoch seconds)
+  is set, the smaller of the limit and the time actually left is used.
+  That variable lives in the **allocation's** environment, so it helps
+  exactly when the broker runs inside the allocation too — the co-located
+  case — and is simply absent otherwise. There is no PBS equivalent, and
+  nothing reads the *endpoint's* environment across the wire.
+- **Sanity ceilings, not policy.** A declared login-mode pool is capped at
+  1024 pilots, 100 000 nodes, 4096 cpus/node, 256 gpus/node and 30 days of
+  walltime. These only catch a typo before it reaches a batch system; they
+  are not an admission-control mechanism.
