@@ -536,6 +536,133 @@ class TestMarkPilotFailed:
         assert ps.tasks['t.r'].state == TASK_QUEUED
         assert ps.tasks['t.r'].pilot_id is None
 
+    def test_finalize_stamps_finished_at(self, tmp_path):
+        _, plugin = _make_plugin(tmp_path)
+        plugin._materialise_pool('A', _make_pool_cfg())
+        ps = _pool(plugin, 'A', 'cpu')
+        pilot = PilotRecord(pid='p.1', pool='cpu', owning_sid='A',
+                            size_key='s', rhapsody_backend='concurrent',
+                            state=PILOT_ACTIVE, submitted_at=time.time(),
+                            active_at=time.time())
+        ps.pilots['p.1'] = pilot
+        assert pilot.finished_at is None
+        plugin._mark_pilot_done(ps, pilot, 'walltime reached')
+        assert pilot.state == PILOT_DONE
+        assert pilot.finished_at is not None
+        assert pilot.finished_at >= pilot.active_at
+
+
+# ---------------------------------------------------------------------------
+# Pilot history in the verbose pool summary (accounting surface)
+# ---------------------------------------------------------------------------
+
+class TestPilotHistory:
+
+    def _seeded(self, tmp_path):
+        _, plugin = _make_plugin(tmp_path)
+        client = TestClient(plugin._app)
+        sid = _session_with_cpu(client, plugin, sid='A', lifetime='persistent')
+        ps  = _pool(plugin, sid, 'cpu')
+        return plugin, client, sid, ps
+
+    def test_history_keeps_a_pilot_the_live_list_drops(self, tmp_path):
+        plugin, client, sid, ps = self._seeded(tmp_path)
+        pilot = PilotRecord(pid='p.gone', pool='cpu', owning_sid=sid,
+                            size_key='s', rhapsody_backend='concurrent',
+                            state=PILOT_ACTIVE, submitted_at=100.0,
+                            active_at=150.0, child_endpoint_name='cpu_p.gone')
+        ps.pilots['p.gone'] = pilot
+        plugin._mark_pilot_failed(ps, pilot, 'child endpoint lost')
+
+        r = client.get(f'{plugin.namespace}/pool/{sid}/cpu')
+        assert r.status_code == 200
+        body = r.json()
+        # gone from the live fleet ...
+        assert body['pilots'] == []
+        # ... but still in the history, with its end timestamp and the
+        # size_key that resolves its node count through pilot_sizes.
+        hist = {p['pid']: p for p in body['pilot_history']}
+        assert set(hist) == {'p.gone'}
+        assert hist['p.gone']['state']       == PILOT_FAILED
+        assert hist['p.gone']['active_at']   == 150.0
+        assert hist['p.gone']['finished_at'] is not None
+        assert hist['p.gone']['size_key']    == 's'
+        assert hist['p.gone']['child_endpoint_name'] == 'cpu_p.gone'
+        assert body['pilot_sizes']['s']['nodes'] == 1
+
+    def test_history_lists_live_and_terminal_pilots(self, tmp_path):
+        plugin, client, sid, ps = self._seeded(tmp_path)
+        ps.pilots['p.live'] = PilotRecord(
+            pid='p.live', pool='cpu', owning_sid=sid, size_key='s',
+            rhapsody_backend='concurrent', state=PILOT_ACTIVE)
+        ps.pilots['p.dead'] = PilotRecord(
+            pid='p.dead', pool='cpu', owning_sid=sid, size_key='s',
+            rhapsody_backend='concurrent', state=PILOT_DONE,
+            finished_at=42.0)
+        body = client.get(f'{plugin.namespace}/pool/{sid}/cpu').json()
+        assert {p['pid'] for p in body['pilots']}        == {'p.live'}
+        assert {p['pid'] for p in body['pilot_history']} == {'p.live',
+                                                             'p.dead'}
+
+    def test_non_verbose_summary_has_no_history(self, tmp_path):
+        plugin, client, sid, ps = self._seeded(tmp_path)
+        body = client.get(f'{plugin.namespace}/pools').json()
+        assert 'pilot_history' not in body['pools'][sid]['cpu']
+
+
+# ---------------------------------------------------------------------------
+# Housekeeping: an owner-less (replayed) pool is never ticked
+# ---------------------------------------------------------------------------
+
+class TestHousekeepingOrphanGuard:
+
+    @pytest.mark.asyncio
+    async def test_replayed_pool_without_session_is_not_ticked(self, tmp_path):
+        """A pool replayed off disk has no session until its owner returns.
+
+        ``_replay_state`` re-materialises every state dir at construction,
+        before any client re-registers.  Such a pool must not scale up on
+        its own — with a ``min_pilots`` floor it would otherwise submit a
+        pilot per backoff window forever, to an endpoint that may be gone.
+        """
+        _, plugin = _make_plugin(tmp_path)
+        client = TestClient(plugin._app)
+        _session_with_cpu(client, plugin, sid='A', lifetime='persistent')
+
+        # restart: fresh plugin over the same state root, no session yet
+        _, plugin2 = _make_plugin(tmp_path)
+        assert 'cpu' in plugin2._pool_states['A']
+        assert 'A' not in plugin2._sessions
+
+        ps = _pool(plugin2, 'A', 'cpu')
+        with patch.object(ps.policy, 'on_tick') as tick, \
+                patch('radical.orbit.plugin_task_dispatcher'
+                      '._TICK_INTERVAL_SEC', 0.01):
+            task = asyncio.ensure_future(plugin2._housekeeping())
+            await asyncio.sleep(0.1)
+            task.cancel()
+            try:    await task
+            except asyncio.CancelledError:
+                pass
+        tick.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_pool_with_a_live_session_is_ticked(self, tmp_path):
+        _, plugin = _make_plugin(tmp_path)
+        client = TestClient(plugin._app)
+        sid = _session_with_cpu(client, plugin, sid='A', lifetime='persistent')
+        ps  = _pool(plugin, sid, 'cpu')
+        with patch.object(ps.policy, 'on_tick') as tick, \
+                patch('radical.orbit.plugin_task_dispatcher'
+                      '._TICK_INTERVAL_SEC', 0.01):
+            task = asyncio.ensure_future(plugin._housekeeping())
+            await asyncio.sleep(0.1)
+            task.cancel()
+            try:    await task
+            except asyncio.CancelledError:
+                pass
+        assert tick.called
+
 
 # ---------------------------------------------------------------------------
 # Async transport port: proxies over the broker caller (mocked)

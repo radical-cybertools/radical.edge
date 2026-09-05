@@ -127,6 +127,22 @@ Favors efficient utilization over low latency.
   walltime.
 - Routing: configurable ``least_loaded`` (default) or ``youngest``.
 
+**The ``min_pilots`` floor.**  ``PoolConfig.min_pilots`` (default ``0``) is
+a *warm* minimum, not a config-only field: while the live fleet is below it,
+``on_tick`` submits a pilot **even with an empty backlog**, so a pool
+declared with a floor has capacity waiting before its first task arrives.
+The floor counts *live* pilots, so a pilot still coming up already satisfies
+it — a 5-second tick cannot stack up batch jobs while the first one boots.
+Every other guard still applies: failure backoff,
+``max_in_flight_submissions``, ``pool.max_pilots`` and ``min_dwell_sec``.
+A pool that just wants demand-driven behaviour leaves ``min_pilots`` at
+``0``.
+
+One caveat for embedders: a pool replayed off disk at broker start has no
+owning session until its client re-registers, and housekeeping deliberately
+does **not** tick such a pool — otherwise an orphan with a floor would
+submit pilots forever to an endpoint that may be long gone.
+
 Config knobs:
 
 | key                       | default         | meaning |
@@ -134,6 +150,9 @@ Config knobs:
 | ``min_dwell_sec``         | ``30.0``        | min time between submissions |
 | ``max_in_flight_submissions`` | ``2``       | max simultaneously-PENDING pilots |
 | ``router_preference``     | ``least_loaded``| alt: ``youngest`` |
+
+(``min_pilots`` / ``max_pilots`` are pool fields, not strategy knobs — see
+``PoolConfig``.)
 
 ### ``aggressive_scale_to_backlog``
 

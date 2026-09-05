@@ -225,6 +225,40 @@ Namespace: `xgfabric`
 | `POST` | `start/{sid}` | Start workflow. Body: `{"workflow": "default", "resource": "default"}` |
 | `POST` | `stop/{sid}` | Cancel a running workflow |
 
+## Federation Plugin
+
+Namespace: `federation`. **Broker-hosted**, so its routes are reached at
+`/broker/federation/…` rather than through an endpoint name. Every route
+uses the reserved persistent `default` session — a client never registers
+one of its own. Full guide: [Federation Plugin](plugin_federation.md).
+
+| Method | Path | Description |
+|----|----|----|
+| `POST` | `join/{sid}` | Join a resource. Body: the client fields of a resource record (`name`, `endpoint`, `mode`, `capabilities`, `budget`, optional `site`/`kind`/`scratch_base`/`pool`). Returns the full record. **400** invalid declaration, **404** endpoint not connected, **409** name in use, **503** no task dispatcher hosted. |
+| `POST` | `leave/{sid}/{name}` | Cancel the resource's live tasks, release its dispatcher pool, forget it. Returns `{"resource", "ok", "tasks_canceled"}` |
+| `GET` | `resources/{sid}` | `{"resources": [record, …]}` with usage refreshed (cached 2 s), sorted by name |
+| `GET` | `resource/{sid}/{name}` | One resource record with usage refreshed |
+| `POST` | `pick/{sid}` | Body: `{"requirements": {"cores": 4, "gpus": 0, "software": ["lammps"], "node_hours": 0.1}}` → `{"resource", "pool", "dispatcher_sid", "score"}`. **409** with `{"detail", "reasons": {name: why}}` when nothing fits |
+| `POST` | `submit/{sid}` | Body: `{"task": {"task_id", "cmd", "cwd"?, "inputs", "outputs", "priority"}, "requirements": {…}}` → `{"task", "resource", "pool", "dispatcher_sid"}`. Picks a resource, creates the task cwd, forwards to the dispatcher. Same **409** as `pick` |
+| `GET` | `task/{sid}/{task_id}` | The dispatcher's task dict plus `resource`, and `child_endpoint` while the task's pilot is alive |
+
+A resource record:
+
+    {"name": "perlmutter_a", "endpoint": "ep_perlmutter_a",
+     "mode": "allocation" | "login", "site": "NERSC", "kind": "hpc",
+     "capabilities": {"cores": 128, "gpus": 4, "mem_gb": 256,
+                      "software": ["lammps", "pytorch"]},
+     "budget": {"node_hours": 40.0},
+     "scratch_base": "/tmp/orbit/perlmutter_a",
+     "pool": {...},                       // login mode only
+     "joined_at": 1757100000.0,
+     "dispatcher_sid": "fed-perlmutter_a",
+     "pool_name": "fed-perlmutter_a",
+     "usage": {"node_hours_used": 1.25, "node_hours_remaining": 38.75,
+               "pilots_active": 1, "tasks_running": 3, "tasks_done": 12,
+               "tasks_failed": 0, "stale": false, "updated_at": 1757100050.0},
+     "liveness": "ok" | "suspect" | "lost"}
+
 ## Error Responses
 
 All plugin endpoints return standard HTTP status codes:

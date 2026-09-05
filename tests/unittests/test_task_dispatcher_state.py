@@ -69,6 +69,30 @@ class TestPilotRecord:
                         capacity=4, in_flight=10)
         assert p.free_capacity() == 0
 
+    def test_uptime_zero_before_active(self):
+        p = PilotRecord(pid='p', pool='x', size_key='s',
+                        rhapsody_backend='c', submitted_at=100.0)
+        assert p.uptime(500.0) == 0.0
+
+    def test_uptime_of_a_live_pilot_measures_against_now(self):
+        p = PilotRecord(pid='p', pool='x', size_key='s',
+                        rhapsody_backend='c', state=PILOT_ACTIVE,
+                        submitted_at=100.0, active_at=150.0)
+        assert p.uptime(450.0) == 300.0
+
+    def test_uptime_of_a_finished_pilot_stops_at_finished_at(self):
+        p = PilotRecord(pid='p', pool='x', size_key='s',
+                        rhapsody_backend='c', state=PILOT_DONE,
+                        submitted_at=100.0, active_at=150.0,
+                        finished_at=250.0)
+        assert p.uptime(99999.0) == 100.0
+
+    def test_uptime_never_negative(self):
+        p = PilotRecord(pid='p', pool='x', size_key='s',
+                        rhapsody_backend='c', state=PILOT_ACTIVE,
+                        active_at=500.0)
+        assert p.uptime(100.0) == 0.0
+
 
 class TestTaskRecord:
 
@@ -156,6 +180,31 @@ class TestRecordSerialisation:
     def test_records_from_empty_or_none(self):
         assert records_from(None, PilotRecord) == {}
         assert records_from({}, PilotRecord) == {}
+
+    def test_finished_at_survives_a_round_trip(self):
+        """A terminal pilot keeps its end timestamp across a restart.
+
+        Node-hour accounting reads ``active_at``/``finished_at`` off the
+        persisted pilots, so a lost ``finished_at`` would silently keep
+        charging a dead pilot against its budget.
+        """
+        pilots = {'p.1': PilotRecord(
+            pid='p.1', pool='cpu', size_key='s',
+            rhapsody_backend='concurrent', state=PILOT_DONE,
+            submitted_at=10.0, active_at=20.0, finished_at=80.0)}
+        restored = records_from(records_to(pilots), PilotRecord)
+        assert restored['p.1'].finished_at == 80.0
+        assert restored['p.1'].uptime(1e9) == 60.0
+
+    def test_finished_at_defaults_to_none_on_older_state(self):
+        """A state.json written before the field loads with finished_at=None."""
+        p = record_from_dict(PilotRecord, {
+            'pid': 'p.old', 'pool': 'cpu', 'size_key': 's',
+            'rhapsody_backend': 'concurrent', 'state': PILOT_ACTIVE,
+            'active_at': 5.0,
+        })
+        assert p.finished_at is None
+        assert p.uptime(15.0) == 10.0
 
     def test_records_to_and_from_round_trip(self):
         pilots = {

@@ -686,6 +686,13 @@ class PluginTaskDispatcher(Plugin):
         Replaces the four separate sweeper loops.  Ticks every
         ``_TICK_INTERVAL_SEC``; reconciles overdue pilot handshakes each tick;
         prunes stale state dirs at most once per ``_PRUNE_INTERVAL_SEC``.
+
+        Only pools whose owning session is *live* are ticked.  ``_replay_state``
+        re-materialises every on-disk pool at construction, before any client
+        has re-registered its session — those orphans must not scale up on
+        their own: a pool with a ``min_pilots`` floor whose owner never comes
+        back would otherwise submit pilots forever.  An orphan is still
+        drained-free and still pruned; it wakes when its owner re-registers.
         '''
         last_prune = time.time()
         while True:
@@ -693,6 +700,8 @@ class PluginTaskDispatcher(Plugin):
                 await asyncio.sleep(_TICK_INTERVAL_SEC)
                 now = time.time()
                 for ps in list(self._all_pools()):
+                    if ps.owning_sid not in self._sessions:
+                        continue                 # replayed, owner-less pool
                     ps.policy.on_tick(ps, self._make_submit_pilot(ps))
                     self._drain_pending(ps)
                 await self._reconcile_overdue_pilots(now)
@@ -1655,9 +1664,15 @@ class PluginTaskDispatcher(Plugin):
         tasks assigned to this pilot (clearing their stale rhapsody-uid mapping
         so a late terminal event from the dead pilot can't clobber the requeued
         task), and signals the policy.
+
+        Stamps ``finished_at`` — the only place a pilot reaches a terminal
+        state — so the pool's ``pilot_history`` keeps the interval this pilot
+        held its allocation after it disappears from the live fleet.
         '''
         old_state = record.state
         record.state = new_state
+        if record.finished_at is None:
+            record.finished_at = time.time()
         self._dispatch_notify('pilot_status', {
             'pilot_id': record.pid,
             'pool'    : pool_state.config.name,
@@ -2070,6 +2085,13 @@ class PluginTaskDispatcher(Plugin):
         }
         if verbose:
             summary['pilots'] = [self._pilot_dict(p) for p in live]
+            # Every pilot this pool ever had, terminal ones included: the
+            # only place a finished pilot stays visible (``pilots`` and
+            # ``fleet`` list live pilots only), so an accounting consumer can
+            # size each pilot's ACTIVE interval — ``size_key`` indexes
+            # ``pilot_sizes`` above for its node count.
+            summary['pilot_history'] = [self._pilot_dict(p)
+                                        for p in ps.pilots.values()]
             summary['recent_tasks'] = [
                 self._task_dict(t)
                 for t in sorted(ps.tasks.values(),

@@ -9,7 +9,9 @@ and requests pilot submissions through a callable the dispatcher supplies.
 Policy
 ------
 - Scale-up only on the housekeeping tick, and only when
-  ``pending > sum(free capacity of active pilots)``.
+  ``pending > sum(free capacity of active pilots)`` — or while the live
+  fleet is below the pool's ``min_pilots`` floor, which holds warm capacity
+  with an empty queue.
 - Bound in-flight pilot submissions
   (``max_in_flight_submissions``, default 2).
 - Respect ``min_dwell_sec`` between successive submissions.
@@ -124,14 +126,33 @@ class ConservativePolicy(DispatchPolicy):
 
     def on_tick(self, pool_state,
                 submit_pilot: Callable[[str | None], str]) -> None:
-        '''Maybe submit one pilot if backlog exceeds capacity.
+        '''Maybe submit one pilot: to hold the ``min_pilots`` floor, or
+        because the backlog exceeds capacity.
 
-        Conservative: at most one submission per tick, bounded in-flight,
-        respecting ``min_dwell_sec``.
+        Two independent reasons to scale up, one submission per tick:
+
+        - **Floor.**  ``pool.min_pilots`` is a *warm* minimum: while the live
+          fleet is below it, a pilot is submitted even with an empty queue, so
+          a pool declared with a floor has capacity waiting before its first
+          task arrives.  ``min_pilots == 0`` (the default) keeps the classic
+          purely-demand-driven behaviour.
+        - **Backlog.**  More pending tasks than the free capacity of the
+          active pilots.
+
+        Either way the submission still passes every guard below: failure
+        backoff, ``max_in_flight_submissions``, ``pool.max_pilots`` and
+        ``min_dwell_sec``.  The floor buys warm capacity, never an unbounded
+        or unthrottled fleet.
         '''
         pending = pool_state.pending_queue()
         pilots  = pool_state.live_pilots()
-        if not pending:
+
+        # Live fleet size — both the min_pilots floor and the max_pilots
+        # ceiling are expressed against it.
+        live_count  = sum(1 for p in pilots if p.state in PILOT_LIVE_STATES)
+        below_floor = live_count < self._pool.min_pilots
+
+        if not pending and not below_floor:
             return
 
         # Backoff guard: pause submissions while in failure backoff window.
@@ -146,7 +167,7 @@ class ConservativePolicy(DispatchPolicy):
         # Free capacity across active pilots
         free_capacity = sum(p.free_capacity() for p in pilots
                             if p.state == PILOT_ACTIVE)
-        if len(pending) <= free_capacity:
+        if not below_floor and len(pending) <= free_capacity:
             return  # existing capacity will absorb the backlog
 
         # How many pilots already submitted but not yet active?
@@ -155,7 +176,6 @@ class ConservativePolicy(DispatchPolicy):
             return
 
         # Live fleet cap vs pool.max_pilots
-        live_count = sum(1 for p in pilots if p.state in PILOT_LIVE_STATES)
         if live_count >= self._pool.max_pilots:
             return
 
@@ -167,9 +187,10 @@ class ConservativePolicy(DispatchPolicy):
             pid = submit_pilot(None)  # None → pool.default_size
             self._last_submit_ts = now_ts
             log.info("conservative[%s]: submitted pilot %s "
-                     "(pending=%d, free=%d, in_flight_subs=%d)",
-                     self._pool.name, pid, len(pending),
-                     free_capacity, in_flight_subs + 1)
+                     "(reason=%s, pending=%d, free=%d, in_flight_subs=%d)",
+                     self._pool.name, pid,
+                     'min_pilots' if below_floor else 'backlog',
+                     len(pending), free_capacity, in_flight_subs + 1)
         except Exception as e:
             log.warning("conservative[%s]: submit_pilot failed: %s",
                         self._pool.name, e)

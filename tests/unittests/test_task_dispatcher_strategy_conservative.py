@@ -207,6 +207,89 @@ class TestOnTick:
 
 
 # ---------------------------------------------------------------------------
+# min_pilots floor — warm capacity with an empty backlog
+# ---------------------------------------------------------------------------
+
+class TestMinPilotsFloor:
+
+    def test_empty_queue_below_floor_submits_once(self):
+        h = _Harness(_pool(min_pilots=1, max_pilots=1))
+        s = _policy(h, {'min_dwell_sec': 0.0})
+        s.on_tick(h, h.submit_pilot)
+        assert h.submitted == [None]
+
+    def test_empty_queue_without_floor_does_not_submit(self):
+        h = _Harness(_pool(min_pilots=0, max_pilots=1))
+        s = _policy(h, {'min_dwell_sec': 0.0})
+        s.on_tick(h, h.submit_pilot)
+        assert h.submitted == []
+
+    def test_floor_satisfied_by_a_pending_pilot(self):
+        # The floor counts *live* pilots, not ACTIVE ones: a pilot still
+        # coming up already satisfies it, so a tick every 5 s must not keep
+        # queueing batch jobs while the first one boots.
+        h = _Harness(_pool(min_pilots=1, max_pilots=1))
+        h.add_pilot(state=PILOT_PENDING, capacity=0)
+        s = _policy(h, {'min_dwell_sec': 0.0})
+        s.on_tick(h, h.submit_pilot)
+        assert h.submitted == []
+
+    def test_floor_satisfied_by_an_active_pilot(self):
+        h = _Harness(_pool(min_pilots=1, max_pilots=2))
+        h.add_pilot(state=PILOT_ACTIVE, capacity=4)
+        s = _policy(h, {'min_dwell_sec': 0.0})
+        s.on_tick(h, h.submit_pilot)
+        assert h.submitted == []
+
+    def test_floor_refills_after_the_pilot_dies(self):
+        h = _Harness(_pool(min_pilots=1, max_pilots=1))
+        h.add_pilot(state=PILOT_FAILED, capacity=0)
+        s = _policy(h, {'min_dwell_sec': 0.0})
+        s.on_tick(h, h.submit_pilot)
+        assert h.submitted == [None]
+
+    def test_floor_still_respects_dwell(self):
+        h = _Harness(_pool(min_pilots=2, max_pilots=2))
+        s = _policy(h, {'min_dwell_sec': 30.0})
+        s.on_tick(h, h.submit_pilot)          # first submit passes dwell
+        s.on_tick(h, h.submit_pilot)          # second is inside the window
+        assert h.submitted == [None]
+        h.advance(31)
+        s.on_tick(h, h.submit_pilot)
+        assert h.submitted == [None, None]
+
+    def test_floor_still_respects_max_in_flight(self):
+        h = _Harness(_pool(min_pilots=3, max_pilots=3))
+        h.add_pilot(state=PILOT_PENDING,  capacity=0)
+        h.add_pilot(state=PILOT_STARTING, capacity=0)
+        s = _policy(h, {'min_dwell_sec': 0.0,
+                        'max_in_flight_submissions': 2})
+        s.on_tick(h, h.submit_pilot)
+        assert h.submitted == []
+
+    def test_floor_still_respects_backoff(self):
+        h = _Harness(_pool(min_pilots=1, max_pilots=1))
+        s = _policy(h, {'min_dwell_sec': 0.0, 'max_consecutive_failures': 1,
+                        'failure_backoff_sec': 60.0})
+        s.on_pilot_state(PilotRecord(pid='p.x', pool='cpu', size_key='s',
+                                     rhapsody_backend='concurrent'),
+                         PILOT_PENDING, PILOT_FAILED)
+        s.on_tick(h, h.submit_pilot)
+        assert h.submitted == []
+
+    def test_backlog_scale_up_still_works_with_a_floor(self):
+        # The floor is a minimum, not a maximum: an ACTIVE pilot satisfies
+        # min_pilots=1, but a backlog it cannot absorb still scales up.
+        h = _Harness(_pool(min_pilots=1, max_pilots=4))
+        h.add_pilot(state=PILOT_ACTIVE, capacity=1, in_flight=1)
+        for _ in range(10):
+            h.add_task()
+        s = _policy(h, {'min_dwell_sec': 0.0})
+        s.on_tick(h, h.submit_pilot)
+        assert h.submitted == [None]
+
+
+# ---------------------------------------------------------------------------
 # pick_dispatch
 # ---------------------------------------------------------------------------
 
