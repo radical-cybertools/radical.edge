@@ -436,7 +436,7 @@ byte-for-byte as before the field existed.
 
 | key | type | rule |
 |---|---|---|
-| `cores` | int | ≥ 1; **total** CPU cores for the task |
+| `cores` | int | ≥ 1; **total** CPU cores for the task. Omitted ⇒ `max(1, ranks)` |
 | `gpus` | int | ≥ 0; **total** GPUs for the task |
 | `mem_gb` | int **or** float | ≥ 0 |
 | `ranks` | int | ≥ 1; **process replicas** — MPI ranks when `mpi` is true |
@@ -453,8 +453,15 @@ task no `pilot_size` in the target pool could ever host — compared **per
 node**, since none of the shipped backends spreads one task across nodes.
 A mixed pool is judged on its best member; `mem_gb` has no such check
 because `PilotSize` carries no memory field. Note the built-in `default`
-pool has `cpus_per_node = 1`, so any `cores >= 2` is a 400 there. Example
-detail strings:
+pool has `cpus_per_node = 1`, so any `cores >= 2` is a 400 there.
+
+**`ranks` without `cores`.** When `cores` is omitted the dispatcher derives
+`cores = max(1, ranks)`, so `{"ranks": 4}` alone means "four processes on
+four cores" rather than a `cores` (1) `>= ranks` (4) rejection. The derived
+value is what gets persisted and forwarded. An *explicit* `cores` below
+`ranks` is a contradiction and stays a 400.
+
+Example detail strings:
 
 ```
 requirements: unknown key 'gpu'
@@ -467,6 +474,7 @@ requirements: 'labels' must be a mapping of string to string|number
 requirements: 'cores' (2) must be >= 'ranks' (4)
 requirements: 'gpus' (3) must be divisible by 'ranks' (2)
 requirements: 8 cores exceed every pilot_size (largest: 's', 4 cpus/node)
+requirements: 2 gpus exceed every pilot_size (largest: 's', 0 gpus/node)
 requirements: 'mpi' is unsupported on dragon_v1 (pool 'x', size 's')
 ```
 
@@ -493,6 +501,11 @@ placement attributes, matched against a member's (and then a pilot's)
 declared `attributes`.  On a **legacy** pool the implicit member declares
 no attributes, so they are carried and persisted but match nothing.
 
+The validated block is stored on the task record, so `requirements` appears
+in every task-shaped response — `submit/{sid}`, `task/{sid}/{task_id}`, pool
+summaries and `task_status` notifications — carrying `{}` for a task that
+declared none.
+
 ### Forwarding: what each backend does with it
 
 Requirements are **forwarded, not enforced**. The dispatcher maps them onto
@@ -505,7 +518,7 @@ read by nobody. Oversubscription control stays with rhapsody.
 | backend | forwarded | effect |
 |---|---|---|
 | `dragon_v2` | `ranks`, `gpus_per_rank` | honoured natively; spawns `ranks` replicas |
-| `radical_pilot` | `ranks`, `cores_per_rank`, `gpus_per_rank`, `mem_per_rank` (MB) | honoured natively |
+| `radical_pilot` | `ranks`, `cores_per_rank`, `gpus_per_rank`, `mem_per_rank` (MB) | honoured natively; note the exec-mode `cwd` also rides into the same `TaskDescription` (pre-existing) |
 | `dragon_v3` | `type: "mpi"` + `ranks`, **only** when `mpi` is true | `ranks` is read only under `type: "mpi"` |
 | `dragon_v1` | `ranks` | spawns `ranks` replicas and queues on a global slot counter; `mpi` is refused at submit |
 | `dask` | `resources: {"GPU": gpus}` when `gpus > 0` | pre-checked; the task fails if unsatisfiable |
@@ -529,8 +542,11 @@ An endpoint-mode submit (`"endpoint": "..."` instead of `"pool"`) accepts
 `requirements`, applies the **same shape validation** (so a typo is still a
 400), and then drops it: there is no pool, hence no fit check and no
 backend gate, and the dispatcher never learns which backend the target
-endpoint chose. Nothing is stored, nothing is forwarded, the response body
-is unchanged, and one advisory line is logged per submit.
+endpoint chose. Nothing is stored and nothing is forwarded: the task dict
+sent on to the target's rhapsody plugin is exactly what it would have been
+without the key, and the endpoint-mode response carries no `requirements`
+of its own — there is no task record behind it. One advisory line is
+logged per submit, and only when the block is non-empty.
 
 ### Resubmit ignores changed requirements
 

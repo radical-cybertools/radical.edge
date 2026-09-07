@@ -148,7 +148,7 @@ All keys optional; defaults as shown.  Types:
 
 | key | type | rule |
 |---|---|---|
-| `cores` | int | ≥ 1; **total** CPU cores for the task |
+| `cores` | int | ≥ 1; **total** CPU cores for the task.  Omitted ⇒ derived as `max(1, ranks)` |
 | `gpus` | int | ≥ 0; **total** GPUs for the task |
 | `mem_gb` | int **or** float | ≥ 0 (both accepted; `bool` is not) |
 | `ranks` | int | ≥ 1; **process replicas** — MPI ranks when `mpi` is true |
@@ -258,6 +258,15 @@ Two layers:
 (so `cores_per_rank = cores // ranks` is never 0) and `gpus % ranks == 0`
 (so `gpus_per_rank` is an exact integer for every backend, removing the
 float-vs-`ceil` divergence).
+
+**`ranks` without `cores` derives, it does not reject.**  `{"ranks": 4}`
+alone means "four processes"; measuring it against the `cores` default of
+1 and 400-ing would be a trap.  `parse_requirements` returns a *validated
+shallow copy* in which an **omitted** `cores` is filled in as
+`max(1, ranks)` (and only when that differs from the default, so a block
+declaring neither stays untouched).  The derived value is what is
+persisted, fit-checked and forwarded.  An **explicit** `cores` below
+`ranks` stays a 400 — that is a contradiction, not an omission.
 
 *Fit* (pool-dependent): reject when no `PilotSize` in the pool can ever
 host the task.  Compare **per node** — `cores <= size.cpus_per_node` and
@@ -632,6 +641,25 @@ Recorded so a reader of the diff is not surprised:
   `check_requirements_against_pool()` (fit + backend gate), and
   `backend_kwargs()` (mapping), plus a `RequirementsError` carrying the
   exact detail string that the submit routes re-raise as a 400.
+- **`cores` derived from `ranks`** (review decision, 2026-09-07): see the
+  shape section above.  Filling in only happens when the derived value
+  differs from the default, so a record never carries a `cores: 1` the
+  caller did not send.
+- **`CORES` / `GPUS` are captured, not passed through** (review, same
+  round): both are Makeflow-*native* per-rule resource variables, so
+  consuming them means a makeflow that already set them for Makeflow's own
+  scheduler no longer rewrites byte-identically, and Makeflow stops seeing
+  its own copy.  That is deliberate — one declaration should mean one
+  thing — and is now stated in the `radical-orbit-makeflow-prep` module
+  docstring, replacing the earlier blanket "byte-identical" claim (which
+  still holds for a file that declares none of the three).  Makeflow's
+  `MEMORY` is deliberately **not** captured: it carries Makeflow's MB
+  semantics while our `MEM` directive is explicit GB, and silently
+  reinterpreting one as the other would be worse than an extra line.
+- **`mem_gb` rejects non-finite values** (`math.isfinite`): NaN sails past
+  a bare `>= 0`, and `inf` is meaningless as a size.
+- **`--label` rejects an empty key** (`=v`); an empty *value* (`k=`) is
+  fine.
 - **`docs/task_dispatcher_strategy.md` "Future extension points"** claimed
   paired `FIXME(per-task-backend)` markers in code; there are none left in
   the tree, so the section now names the insertion sites without claiming

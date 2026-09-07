@@ -38,7 +38,12 @@ default means no ``requirements`` key on the wire at all):
     --ranks N     process replicas -- MPI ranks under --mpi; default 1
     --mpi         select the backend's MPI launch path
     --software NAME  required software attribute (repeatable)
-    --label K=V   placement label (repeatable)
+    --label K=V   placement label (repeatable; K must be non-empty)
+
+``--ranks N`` alone is enough: when --cores is left at its default the
+dispatcher derives ``cores = max(1, ranks)``, so ``--ranks 4`` means four
+processes on four cores.  Passing an explicit ``--cores`` *below*
+``--ranks`` is a contradiction and is refused with a 400.
 
 The dispatcher forwards these to the pilot's rhapsody backend where the
 backend understands them; it does not reserve or pin.  A resubmit of an
@@ -137,9 +142,9 @@ def _parse_opts(opts: list[str]) -> argparse.Namespace:
     args.outputs  = _flatten(args.outputs)
     args.software = _flatten(args.software)
     for label in args.labels:
-        if '=' not in label:
-            print(f'radical-orbit-run: --label expects K=V, got {label!r}',
-                  file=sys.stderr)
+        if '=' not in label or not label.partition('=')[0]:
+            print(f'radical-orbit-run: --label expects K=V with a non-empty '
+                  f'key, got {label!r}', file=sys.stderr)
             sys.exit(2)
     # Endpoint mode does not support file staging yet.
     if args.endpoint and (args.inputs or args.outputs):
