@@ -108,6 +108,7 @@ from .client                import PluginClient
 from .plugin_base           import Plugin
 from .plugin_session_base   import PluginSession
 from .federation_policy     import make_policy
+from .task_dispatcher_config import MAX_POOL_MEMBER_NAME_LEN
 from .federation_state      import (
     FederationState, FederationStateError, MemberRecord, ResourceRecord,
     SubmitLedgerEntry,
@@ -190,14 +191,12 @@ _FEDERATION_ONLY_REQUIREMENTS = ('node_hours',)
 # the batch system as a real request).
 # ``<pool>_<member_id>_<pid>`` becomes a broker participant name, so the
 # dispatcher bounds the operator-chosen part: ``parse_member`` refuses a
-# declaration whose ``len(pool_name) + len(member_id)`` exceeds this (121
-# §14 R6, ``task_dispatcher_config.MAX_POOL_MEMBER_NAME_LEN``).  Checking it
-# here turns "the join half-succeeded and then a member 400'd" into a plain
+# declaration whose ``len(pool_name) + len(member_id)`` exceeds
+# ``task_dispatcher_config.MAX_POOL_MEMBER_NAME_LEN`` (121 §14 R6).
+# Checking it here -- against that same constant, never a copy of it --
+# turns "the join half-succeeded and then a member 400'd" into a plain
 # declaration error, before the dispatcher is touched at all.
-#
-# TODO (after the plan-121 merge): ``from .task_dispatcher_config import
-# MAX_POOL_MEMBER_NAME_LEN`` instead of this copy.
-_MAX_POOL_MEMBER_NAME_LEN = 64
+_MAX_POOL_MEMBER_NAME_LEN = MAX_POOL_MEMBER_NAME_LEN
 
 _MAX_PILOTS_CAP   = 1024
 _MAX_NODES_CAP    = 100000

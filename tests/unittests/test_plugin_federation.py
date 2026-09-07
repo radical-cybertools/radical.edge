@@ -17,13 +17,13 @@ Two layers:
 
 import asyncio
 import concurrent.futures
-import importlib.util
 import json
 import os
 import shutil
 import time
 
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -37,17 +37,14 @@ from radical.orbit.plugin_federation import (
 from radical.orbit.federation_state import (
     SubmitLedgerEntry, LIVENESS_OK, LIVENESS_LOST, LIVENESS_SUSPECT,
 )
+from radical.orbit.task_dispatcher_config import parse_member
+from radical.orbit.task_dispatcher_state  import PilotRecord, PILOT_ACTIVE
 
 
 # Scratch bases must lie under ``~`` or ``/tmp`` (the staging-plugin rule the
 # federation enforces at join), so the join bodies below point at a fixed
 # /tmp tree that this fixture keeps clean.
 _SCRATCH_ROOT = Path('/tmp/orbit-fed-test')
-
-_SKIP_COHOSTED = (
-    'needs the plan-121 multi-member dispatcher (class pools, member '
-    'routes, per-member summary); un-skip after that branch merges'
-)
 
 
 @pytest.fixture(autouse=True)
@@ -324,35 +321,6 @@ def _pool_summary(members, pilots=None, history=None):
             'pilots'       : list(pilots or []),
             'pilot_history': list(history or []),
             'pilot_sizes'  : {}}
-
-
-def _real_parse_member():
-    """Return the plan-121 ``parse_member``, or ``None`` if it is not here.
-
-    The dispatcher on *this* branch is the old per-resource one, so the
-    function that will validate every member declaration this plugin sends
-    does not exist here yet — it lives in ``task_dispatcher_config`` on the
-    branch that owns the multi-member dispatcher.  It has no relative
-    imports, so it loads standalone from a file path, and that is worth
-    doing: a declaration this plugin builds happily and the dispatcher then
-    refuses is exactly the class of bug a hand-written fake cannot catch.
-
-    AFTER THE PLAN-121 MERGE: delete this helper and its skip, and use
-    ``from radical.orbit.task_dispatcher_config import parse_member``.
-    """
-    root = os.environ.get('RADICAL_ORBIT_CP_TREE')
-    base = (Path(root) if root
-            else Path(__file__).resolve().parents[2].with_name(
-                'radical.orbit-cp'))
-    path = base / 'src' / 'radical' / 'orbit' / 'task_dispatcher_config.py'
-    if not path.is_file():
-        return None
-    spec = importlib.util.spec_from_file_location('_cp_td_config', path)
-    if spec is None or spec.loader is None:
-        return None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return getattr(mod, 'parse_member', None)
 
 
 def _run(coro):
@@ -1945,15 +1913,6 @@ class TestUpgradeFromPre08:
 # The member declaration, through the parser that will actually receive it
 # ---------------------------------------------------------------------------
 
-_parse_member = _real_parse_member()
-
-_NO_PARSER = (
-    'needs the plan-121 task_dispatcher_config.parse_member; point '
-    'RADICAL_ORBIT_CP_TREE at that worktree, or run these after the merge'
-)
-
-
-@pytest.mark.skipif(_parse_member is None, reason=_NO_PARSER)
 class TestMemberDeclarationParses:
     """Every declaration this plugin sends must survive ``parse_member``.
 
@@ -1972,7 +1931,7 @@ class TestMemberDeclarationParses:
     def _parse_all(self, plugin):
         parsed = {}
         for pool, decl in self._decls(plugin):
-            member = _parse_member(decl, f'test: {pool}', pool)
+            member = parse_member(decl, f'test: {pool}', pool)
             parsed[member.member_id] = member
         assert parsed
         return parsed
@@ -2038,7 +1997,7 @@ class TestMemberDeclarationParses:
         decl = dict(decl)
         decl['member_id'] = 'a' * (_MAX_POOL_MEMBER_NAME_LEN - len(pool) + 1)
         with pytest.raises(Exception) as ei:
-            _parse_member(decl, 'test', pool)
+            parse_member(decl, 'test', pool)
         assert str(_MAX_POOL_MEMBER_NAME_LEN) in str(ei.value)
 
 
@@ -2150,10 +2109,9 @@ class TestDispatcherMemberVerbs:
 # ---------------------------------------------------------------------------
 # Co-hosted with the real task dispatcher
 #
-# FOLLOW-UP: these need the plan-121 multi-member dispatcher (class pools,
-# the member routes, the per-member summary block).  They are skipped until
-# that branch merges into this one; the bodies below are written against the
-# post-merge behaviour, so un-skipping is meant to be the only edit.
+# The real plan-121 multi-member dispatcher (class pools, the member routes,
+# the per-member summary block) runs beside the federation here -- no fake
+# on either side of the seam.
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
@@ -2181,13 +2139,36 @@ async def _call(host, method, path, body=None):
     return await host.handle_request(method, path, {}, payload)
 
 
+def _fake_active_pilot(ps, pid, member_id, capacity=4):
+    """Put one ACTIVE pilot for *member_id* into *ps* and return it.
+
+    Stands in for a real pilot coming up: the size/attribute snapshots are
+    the member's own (that is what ``_submit_pilot`` records), and the child
+    endpoint carries the dispatcher's ``<pool>_<member_id>_<pid>`` name, so
+    ``pick_dispatch`` matches on exactly the fields it would in production.
+    """
+    m   = ps.member(member_id)
+    sz  = m.pilot_sizes[m.default_size]
+    now = time.time()
+    rec = PilotRecord(
+        pid=pid, pool=ps.config.name, owning_sid=FED_SESSION_SID,
+        size_key=m.default_size, rhapsody_backend=sz.rhapsody_backend,
+        state=PILOT_ACTIVE, submitted_at=now - 10, active_at=now - 5,
+        capacity=capacity, walltime_deadline=now + 3600,
+        member_id=member_id, attributes=dict(m.attributes),
+        endpoint_name=m.endpoint_name, nodes=sz.nodes,
+        cpus_per_node=sz.cpus_per_node, gpus_per_node=sz.gpus_per_node,
+        child_endpoint_name='%s_%s_%s' % (ps.config.name, member_id, pid))
+    ps.pilots[pid] = rec
+    return rec
+
+
 class TestCoHostedLoads:
 
     def test_both_plugins_load_on_a_broker_host(self, cohosted):
         assert set(cohosted.plugins) == {'task_dispatcher', 'federation'}
 
 
-@pytest.mark.skip(reason=_SKIP_COHOSTED)
 class TestCoHosted:
 
     @pytest.mark.asyncio
@@ -2231,20 +2212,23 @@ class TestCoHosted:
     @pytest.mark.asyncio
     async def test_a_task_lands_on_the_member_with_the_software(self,
                                                                 cohosted):
-        # two members, different software, one class pool: the dispatcher
-        # picks the one that can run the task
-        #
-        # TODO (when un-skipping): this asserts the *pool*, which is only
-        # the federation's half of the decision.  The claim in the name is
-        # about the MEMBER, and that binding is made at dispatch — so it
-        # needs a pilot to dispatch onto.  Once a harness that fakes a live
-        # pilot in a class pool is available here, drive one dispatch tick
-        # and add:
-        #     ps = td._pool_states[FED_SESSION_SID]['fed-cpu']
-        #     assert ps.tasks['t.1'].member_id == 'local_b.cpu'
-        # Until then this is a routing test, not a placement test.
+        """Both halves of the decision: the class, then the member.
+
+        ``local_a`` and ``local_b.cpu`` share the ``fed-cpu`` class pool but
+        only ``local_b.cpu`` declares ``lammps``.  The federation picks the
+        *class* at submit; the **member** is bound at dispatch, so this
+        brings a live pilot up on each member and drives one drain.
+        """
+        td = cohosted.plugins['task_dispatcher']
+        # local_a joins the same class with a different software list
+        await _call(cohosted, 'POST', '/federation/join/default',
+                    _alloc_body(name='local_a',
+                                capabilities={'cores': 8, 'gpus': 0,
+                                              'mem_gb': 16,
+                                              'software': ['pytorch']}))
         await _call(cohosted, 'POST', '/federation/join/default',
                     _members_body(name='local_b'))
+
         r = await _call(cohosted, 'POST', '/federation/submit/default',
                         {'task': {'task_id': 't.1',
                                   'cmd': ['/bin/echo', 'x']},
@@ -2252,6 +2236,23 @@ class TestCoHosted:
                                           'software': ['lammps']}})
         assert r.status_code == 200, r.body
         assert json.loads(r.body)['pool'] == 'fed-cpu'
+
+        ps = td._pool_states[FED_SESSION_SID]['fed-cpu']
+        assert sorted(ps.config.members) == ['local_a.default',
+                                             'local_b.cpu']
+
+        # one live pilot per member, named exactly as the dispatcher names
+        # a child endpoint (``<pool>_<member_id>_<pid>``)
+        for pid, mid in (('p.a', 'local_a.default'), ('p.b', 'local_b.cpu')):
+            _fake_active_pilot(ps, pid, mid)
+
+        # the rhapsody hop is not what is under test here: the placement is
+        # made by ``_claim``, before the batch is handed to the pilot
+        td._do_rhapsody_submit = AsyncMock()
+        td._drain_pending(ps)
+
+        assert ps.tasks['t.1'].member_id == 'local_b.cpu'
+        assert ps.tasks['t.1'].pilot_id  == 'p.b'
 
     @pytest.mark.asyncio
     async def test_the_dispatcher_assigns_the_cwd(self, cohosted):
@@ -2339,7 +2340,6 @@ class TestCoHosted:
         assert td._pool_states[FED_SESSION_SID]['fed-cpu'] is ps
 
 
-@pytest.mark.skip(reason=_SKIP_COHOSTED)
 class TestCoHostedRestart:
 
     @pytest.mark.asyncio

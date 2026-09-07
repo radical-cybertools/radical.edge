@@ -36,7 +36,6 @@ from __future__ import annotations
 import logging
 import os
 import re
-import time
 
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
@@ -44,6 +43,8 @@ from typing import Any
 
 from .task_dispatcher_config import PilotSize
 from .task_dispatcher_state  import write_json_atomic, read_json
+# re-exported under the federation's name -- see 'Accounting' below
+from .task_dispatcher_state  import node_hours as node_hours_from_history  # noqa: F401
 
 log = logging.getLogger('radical.orbit')
 
@@ -468,47 +469,16 @@ def ledger_from_dict(data: dict) -> SubmitLedgerEntry:
 # ---------------------------------------------------------------------------
 # Accounting
 # ---------------------------------------------------------------------------
-
-def node_hours_from_history(history: list, pilot_sizes: dict | None = None,
-                            now: float | None = None) -> float:
-    '''Return node-hours consumed by a dispatcher ``pilot_history`` list.
-
-    *history* is the verbose pool summary's ``pilot_history`` (an ``asdict``
-    of every :class:`~radical.orbit.task_dispatcher_state.PilotRecord` the
-    pool ever held, terminal ones included); *pilot_sizes* is the same
-    summary's ``pilot_sizes`` menu, which resolves each entry's ``size_key``
-    to a node count — a ``PilotRecord`` carries the key, not the shape.
-
-    One entry contributes ``nodes × (end − active_at) / 3600``:
-
-    - a pilot that never reached ``ACTIVE`` (no ``active_at``) contributes
-      **0** — a batch job that never ran was never charged;
-    - a live pilot is measured against *now*, so the number ticks up while a
-      pilot holds its allocation;
-    - a finalised pilot is measured against its ``finished_at``, so the
-      number stops moving and stays correct across a broker restart.
-
-    Never negative: a clock going backwards clamps to zero rather than
-    refunding node-hours.
-    '''
-    now   = time.time() if now is None else now
-    sizes = pilot_sizes or {}
-    total = 0.0
-    for entry in history or []:
-        if not isinstance(entry, dict):
-            continue
-        active_at = entry.get('active_at')
-        if active_at is None:
-            continue
-        finished_at = entry.get('finished_at')
-        end   = now if finished_at is None else finished_at
-        size  = sizes.get(entry.get('size_key')) or {}
-        nodes = size.get('nodes') or 0
-        try:
-            total += float(nodes) * max(0.0, float(end) - float(active_at))
-        except (TypeError, ValueError):
-            continue
-    return total / 3600.0
+#
+# ``node_hours_from_history`` is the dispatcher's own
+# :func:`~radical.orbit.task_dispatcher_state.node_hours`, re-exported under
+# the federation's name (imported above).  The two had byte-identical
+# semantics -- ``active_at``-only, live pilots charged to *now*, finalised
+# ones to their ``finished_at``, never negative -- so there is one
+# implementation, and a federation usage figure and a dispatcher per-member
+# figure can never disagree.  The dispatcher's version additionally prefers
+# each entry's ``nodes`` snapshot over the ``pilot_sizes`` menu, which is
+# what makes it correct for a mixed-node-count class pool.
 
 
 # ---------------------------------------------------------------------------

@@ -577,19 +577,19 @@ pilot sizes, budget and attributes; `POST pool/{sid}/{name}/members` and
 `cwd` and `member_id` are assigned at dispatch; `inputs_b64` on a submit is
 spooled by the dispatcher and placed on whichever member runs the task; and
 the verbose pool summary gains a per-member block with `node_hours_used`,
-`node_hours_remaining` and `pilots_active`. Requirement matching will live in one
+`node_hours_remaining` and `pilots_active`. Requirement matching lives in one
 shared, stateless function (`task_dispatcher_match.satisfies`) so the
 federation and the dispatcher answer the same question with the same rules;
-until that branch merges, `federation_policy.satisfies` is a **byte-for-byte
-copy** of it, so the merge is a one-line import swap.
+`federation_policy.satisfies` is that function, re-exported.
 
 Three earlier ones this plugin also required:
 
 1. **`min_pilots` floor** — `ConservativePolicy.on_tick` now submits while
-   the live fleet is below `pool.min_pilots`, even with an empty backlog
-   (still bounded by backoff, `max_in_flight_submissions`, `max_pilots` and
-   `min_dwell_sec`). The knob was parsed but never honoured; without it an
-   allocation-mode resource has no pilot until its first task.
+   a member's live pilots are below its `min_pilots`, even with an empty
+   backlog (still bounded by backoff, `max_in_flight_submissions`,
+   `max_pilots` and `min_dwell_sec`). The knob was parsed but never
+   honoured; without it an allocation-mode resource has no pilot until its
+   first task.
 2. **Pilot history** — `PilotRecord.finished_at`, stamped in
    `_finalize_pilot`, plus a `pilot_history` block in the verbose pool
    summary listing *all* pilots including terminal ones. `fleet` and

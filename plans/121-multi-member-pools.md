@@ -1278,3 +1278,219 @@ this round (§1.1).
 - **Derive the class inside the dispatcher from `gpus_per_node`.** Rejected:
   the class must be an explicit, extensible field (`pool_class`) so future
   classes (`fed-largemem`, `fed-quantum`) need no dispatcher change.
+
+---
+
+## Implementation notes (deviations from the plan as written)
+
+Implemented on `feature/class-pools` (worktree `radical.orbit-cp`), stacked
+on `feature/task-requirements` (plan 120).  Recorded so a reader of the
+diff is not surprised.
+
+### Branch reality: there is no federation in this tree
+
+This branch is `devel`-based, so `plugin_federation.py`,
+`federation_state.py`, `federation_policy.py`, `docs/plugin_federation.md`
+and `data/plugins/federation.js` **do not exist** here.  Consequences:
+
+- **§3.3 `node_hours` is a new function, not a move.**  It is written into
+  `task_dispatcher_state.py` as
+  `node_hours(history, pilot_sizes=None, now=None)` with exactly the
+  resolution order the plan specifies (`entry['nodes']` → `pilot_sizes[…]`
+  → skip).  There is no `federation_state` re-export to add; when the two
+  branches merge, `federation_state.py` should become
+  `from .task_dispatcher_state import node_hours as node_hours_from_history`
+  and its own copy deleted.
+- **§9 `pilot_history` did not exist here either** (it is a fed-branch
+  addition).  Since §9 is frozen contract and per-member accounting is
+  impossible without it, it is implemented: `PilotRecord.finished_at` is
+  new, set in `_finalize_pilot`, and the verbose summary carries both a
+  pool-level and a per-member `pilot_history` of `asdict(PilotRecord)`
+  views ordered by `submitted_at`.  Expect a textual merge conflict with
+  the fed branch's version of the same two things.
+- **§11/§12 federation items are out of scope here**: `federation.js` and
+  `docs/plugin_federation.md` have nothing to update.  `docs/architecture.md`
+  never describes pools as site-bound, so it needed no change.
+
+### Error strings: legacy stays byte-identical
+
+The plan (§4.4) says the "largest" size name becomes member-qualified and
+that 120's exact-string fixtures change accordingly.  Implemented
+**conditionally**: the name is qualified (`'m_y/d'`) only for a class pool,
+and a legacy pool keeps the bare size key.  Rationale, in order of weight:
+
+1. The hard rule "legacy behaviour byte-identical" outranks the fixture
+   note, and 120's fit-message tests are written against a *legacy* pool.
+2. It keeps the diff to 120's files minimal while a review of 120 runs
+   concurrently in another worktree — no 120 test fixture changed.
+3. `'_/s'` would leak the implicit-member sentinel into a user-facing
+   message for every single-site pool, which reads as a bug.
+
+Same treatment for the mpi gate: a class pool gets the plan's new string
+(`an mpi task cannot run on this pool: every member's backend is
+dragon_v1`, with the backend list derived rather than hard-coded), a legacy
+pool keeps 120's `requirements: 'mpi' is unsupported on dragon_v1 (pool
+'x', size 's')`.  The *condition* is identical in both cases ("every size
+of every member"), which for one implicit member is exactly the pre-121
+test.  Flipping this to unconditional qualification is a two-line change
+(drop the `qualify` branch) plus the 120 fixtures.
+
+### The attribute gate is class-pool only
+
+§4.4's `no member satisfies the task requirements: …` fires only when
+`multi_member` is true.  A legacy pool's implicit member declares no
+attributes at all, so the gate would reject every `software`/`labels`
+requirement 120 explicitly accepts and persists — and
+`test_requirements_round_trip_through_get_task` submits exactly that to a
+legacy pool and asserts a 200.  Note the runtime consequence, which is
+intended and documented in `docs/rest_api.md`: `satisfies` *is* applied
+uniformly at dispatch, so a `software` requirement on a legacy pool matches
+no pilot.  Class pools are how software requirements are meant to be used.
+
+### Smaller deviations
+
+- **`_submit_pilot` signature.**  `_make_submit_pilot` returns a real
+  closure (`def _submit(size_key=None, *, member_id=None)`) rather than a
+  lambda, because `member_id` must be keyword-only.  `_submit_pilot` itself
+  takes `member_id` as an ordinary third parameter (it is dispatcher
+  -internal; only the policy-facing callable is keyword-only).
+- **`RADICAL_ORBIT_MEMBER`** is set in the pilot env only for a class pool,
+  so a legacy pilot's environment is byte-identical.  A legacy pool has one
+  member; nothing on the pilot needs to be told which.
+- **`PoolConfig.reproject()`** is new (not named in the plan).  The parser
+  projects the primary member onto the scalar fields; a *live* pool needs
+  the same after `POST`/`DELETE …/members` changes the member set, or the
+  summary and every legacy consumer would show a departed member's queue.
+- **`_finalize_pilot` sets `finished_at`** (needed by `node_hours`) and
+  fails a task past `policy.max_requeues` with `requeued too often (pilot
+  lost)`; the cap is read defensively (`try/except`) so a third-party
+  policy without the property still works.
+- **`_claim` returns `bool`.**  A dispatcher-assigned cwd is created there,
+  and an `OSError` must fail the task rather than let it run with no
+  directory; the drain loop skips a claim that did not stand.
+- **`_place_inputs`** is a separate method rather than inline in
+  `_do_rhapsody_submit`, and returns the still-runnable tasks.  A
+  non-shared member with no staging client fails every task in the batch
+  with `could not place inputs on the pilot: staging client unavailable`.
+- **`stage_in` uses the record's `cwd`** when a record exists (§8 rule 4).
+  This changed one pre-existing fixture:
+  `test_stage_in_out_roundtrip` built a record whose `cwd` was `tmp_path`
+  while writing the output under `scratch_base/<task_id>`; the record now
+  names the directory the file actually lands in.  That is the "straight
+  bug fix" §8 rule 4 calls for, and it is the **only** pre-existing test
+  changed for behaviour (the conservative-policy harness changed only for
+  the new `submit_pilot` signature and the six member helpers, as §5 says).
+- **`_check_broker_local`** is the shared helper behind both staging 409s.
+- **`node_hours` skips an entry with no usable start** (`active_at` and
+  `submitted_at` both zero/absent), so a never-submitted record cannot be
+  charged from the epoch to `now`.
+- **The `DELETE` route has a `POST …/remove` twin.**  The plan offered the
+  POST form as a fallback *if* a reviewer objected to touching
+  `plugin_base`.  Both are registered: `add_route_delete` is the five-line
+  base-class addition the plan preferred, and the POST twin costs one line
+  and covers any transport that cannot send a DELETE body.
+
+### Review round 2 (fable, on 2fa338e) — what changed
+
+**BLOCKING: the staging allow-list.**  `plugin_staging.StagingSession`
+hard-codes `_ALLOWED_BASES = [$HOME, /tmp]`, so the dispatcher's own input
+placement to a non-shared member — a `put` of
+`<member.scratch_base>/<task_id>/<file>`, i.e. `/pscratch/...` on a real
+machine — was refused by its own staging plugin with *Path escapes allowed
+directories*.  §4.3 was therefore unimplementable as written.  Fix: the
+allow-list is now snapshotted **per session** and extended with
+`realpath($RADICAL_ORBIT_SCRATCH_BASE)` when set.  The dispatcher already
+sets that variable on every pilot it launches, to that pilot's member
+`scratch_base` (`_build_pilot_env`), so the path is exactly the one the
+member declared and nothing wider is opened up.  Two harness tests cover
+it through the **real** `PluginStaging`, with the static bases narrowed to
+a nonexistent directory so only the env var can let the put through (a
+positive and a negative); `test_validate_path_outside_allowed_raises` had
+to move its `_ALLOWED_BASES` patch *before* constructing the session.
+
+**Rhapsody-dialect tasks on a non-shared member.**  Their `cwd` lives
+inside the opaque task dict and is never rewritten, so `_place_inputs`
+skips the `.orbit-cwd` marker for them (writing into a directory the
+client owns would be a guess), and `_check_broker_local` treats a dialect
+record exactly like *no* record — otherwise every dialect `stage_in` became
+a 409 "task not yet placed", a legacy behaviour change.  Fixing that
+surfaced a real bug of mine: a record with `cwd == ''` made `stage_in` /
+`stage_out` compute `Path('')`, i.e. the **broker's working directory**.
+Both routes now fall back to the pool scratch when `cwd` is empty.
+
+**`node_hours` charges from `active_at` only.**  Queue time is not
+allocation time, and a pilot that never reached ACTIVE consumed nothing.
+The `submitted_at` fallback is gone (it both billed queue time and, for a
+zero `submitted_at`, could charge from the epoch to `now`).  This is what
+the federation's `node_hours_from_history` does, so the two agree before
+the merge.  `test_falls_back_to_submitted_at` became
+`test_queue_time_is_never_charged` plus
+`test_charged_from_active_at_not_submitted_at`.
+
+**The `min_pilots` floor must not starve siblings.**  `on_tick` collects
+*all* under-floor members, runs them through the guards, and **falls
+through to the backlog step** when none survives — a member whose site is
+down, whose budget is spent, or which is in failure backoff sits below its
+floor forever, and returning there stopped every sibling from growing.
+The guards are factored out as `_pass_guards`; the floor is served in
+declaration order (a debt, not a preference) while only the backlog step
+ranks by `member_preference`.
+
+**Legacy pools now get proactive `min_pilots` submissions — a deliberate
+legacy behaviour change.**  Pre-121 the policy returned immediately when
+nothing was pending, so `min_pilots` was never acted on and a warm floor
+did not exist for any pool.  It does now, including for legacy single-site
+pools: one declaring `min_pilots: 2` will submit pilots with an empty
+queue.  The default is `0`, so a pool that never set it is unaffected.
+Named in `docs/task_dispatcher_strategy.md`.
+
+**Other round-2 fixes.**
+
+- `_place_inputs` `mkdir`s the task cwd before the shared-FS copy loop: a
+  *client-supplied* cwd is only a promise, and `_claim` creates only the
+  ones it assigns itself.
+- `_claim` calls `expanduser()` only for a `shared_fs` member.  A remote
+  member's `~` means *its* home, and expanding it against the broker's was
+  wrong.
+- Legacy pilots stamp `member_id = ''`, not `'_'`, and a legacy pool
+  reports `member_ids: []` and `members: []`.  The implicit member is an
+  internal construct; the sentinel never reaches the wire, and pre-121
+  records already carry `''`.  (`test_legacy_summary_reports_one_implicit_member`
+  adjusted.)
+- `_route_remove_member` with `cancel_tasks` fails the touched tasks
+  **before the first await**.  Failing them after the cancels could kill a
+  task that had already been re-queued and re-dispatched to a sibling in
+  that window; doing it first also keeps `tasks_requeued` honest, since
+  the re-queue branch skips terminal tasks.
+- Submitting to an emptied class pool is a `400 pool 'x' has no members`
+  (both submit routes, with or without a `requirements` block) instead of
+  a task queued forever.
+- `PoolConfig.reproject()` on an empty member set now writes exactly the
+  placeholders `_parse_pool` projects, so an emptied pool persists and
+  replays to an identical config.
+- `NO_MPI_BACKENDS` moved above `satisfies`, its only consumer in that
+  module.
+- Add-member idempotence compares list-valued **attributes**
+  order-insensitively (`_member_fingerprint`): a federation that rebuilds
+  its declarations from a set would otherwise get a 409 for a member that
+  has not changed.  The stored declaration keeps the order it was declared
+  with; every other field is compared verbatim.
+- `task_dispatcher.js`: the stale `<details>` comment is gone (member rows
+  are followed by a nested size row, not a disclosure widget) and
+  `.td-member-sizes` has minimal CSS.
+- Docs: `pilot_history` is noted as **unbounded** (pre-existing — the pilot
+  ledger is never pruned within a pool's lifetime, only whole state
+  directories after 30 idle days), and the input spool is noted as written
+  **synchronously** on the submit path by design (bounded at 8 MiB per
+  submit; acking a task whose inputs are not yet on disk would let a crash
+  between the two produce a task that runs with missing files).
+
+### Test and lint status
+
+`PYTHONPATH=src ve3/bin/python -m pytest tests/unittests/ -q`
+→ **1330 passed, 4 skipped** (1113 before this plan; 1311 before review
+round 2).
+`ve3/bin/flake8 src/ bin/` → clean apart from the two pre-existing E226 in
+`plugin_xgfabric.py`.  (Round 2 also removed three pre-existing F401/E401
+findings from `tests/unittests/test_plugin_staging.py` as a side effect of
+rewriting the test it patched.)
