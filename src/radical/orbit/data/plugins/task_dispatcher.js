@@ -134,12 +134,8 @@ function renderPools(pools, api) {
   return names.map(n => renderPoolCard(pools[n], api)).join('');
 }
 
-function renderPoolCard(p, api) {
-  const sizes = p.pilot_sizes || {};
-  const sizeNames = Object.keys(sizes);
-  const defaultSize = p.default_size;
-
-  const sizeRows = sizeNames.map(sn => {
+function sizeRows(sizes, defaultSize, api) {
+  return Object.keys(sizes || {}).map(sn => {
     const s = sizes[sn];
     const cls = (sn === defaultSize) ? 'td-default-size' : '';
     const walltime = formatWalltime(s.walltime_sec || 0);
@@ -152,30 +148,99 @@ function renderPoolCard(p, api) {
       <td><code style="font-size:.78rem">${api.escHtml(s.rhapsody_backend || '?')}</code></td>
     </tr>`;
   }).join('');
+}
 
+function sizesTable(sizes, defaultSize, api) {
+  const rows = sizeRows(sizes, defaultSize, api);
+  return `<table class="td-sizes-table">
+        <thead>
+          <tr><th>size</th><th>nodes</th><th>cpus/node</th><th>gpus/node</th><th>walltime</th><th>backend</th></tr>
+        </thead>
+        <tbody>${rows || '<tr><td colspan="6" class="td-empty-pools">No sizes defined.</td></tr>'}</tbody>
+      </table>`;
+}
+
+// Attribute chips: `site=NERSC`, `software: lammps, pytorch`.
+function attrChips(attrs, api) {
+  const keys = Object.keys(attrs || {});
+  if (keys.length === 0) return '<em style="color:var(--muted)">none</em>';
+  return keys.map(k => {
+    const v = attrs[k];
+    const txt = Array.isArray(v) ? `${k}: ${v.join(', ')}` : `${k}=${v}`;
+    return `<code style="font-size:.72rem;margin-right:.35rem">${api.escHtml(txt)}</code>`;
+  }).join('');
+}
+
+function nodeHours(m) {
+  const used = (typeof m.node_hours_used === 'number')
+    ? m.node_hours_used.toFixed(2) : '?';
+  const left = (typeof m.node_hours_remaining === 'number')
+    ? m.node_hours_remaining.toFixed(2) : '∞';
+  return `${used} / ${left}`;
+}
+
+// Multi-member pools render a members table; each row expands (a plain
+// <details>, no framework) into that member's size table.  Per-member
+// node-hours come from the verbose `pool/{sid}/{name}` route, so a
+// non-verbose `pools` listing shows '?' until the card is expanded.
+function membersTable(p, api) {
+  const members = p.members || (p.member_ids || []).map(id => ({member_id: id}));
+  const rows = members.map(m => {
+    const account = m.account ? api.escHtml(m.account)
+                              : '<em style="color:var(--muted)">none</em>';
+    const detail = m.pilot_sizes
+      ? `<tr class="td-member-sizes"><td colspan="7">${sizesTable(m.pilot_sizes, m.default_size, api)}</td></tr>`
+      : '';
+    return `<tr>
+      <td><strong>${api.escHtml(m.member_id || '?')}</strong></td>
+      <td><code style="font-size:.78rem">${api.escHtml(m.endpoint_name || '?')}</code></td>
+      <td>${api.escHtml(m.queue || '?')}</td>
+      <td>${account}</td>
+      <td>${attrChips(m.attributes, api)}</td>
+      <td>${m.live_pilots ?? '?'} / ${m.max_pilots ?? '?'}</td>
+      <td>${nodeHours(m)}</td>
+    </tr>${detail}`;
+  }).join('');
+
+  return `<table class="td-sizes-table">
+        <thead>
+          <tr><th>member</th><th>endpoint</th><th>queue</th><th>account</th>
+              <th>attributes</th><th>pilots live/max</th><th>node-hours used/left</th></tr>
+        </thead>
+        <tbody>${rows || '<tr><td colspan="7" class="td-empty-pools">No members declared.</td></tr>'}</tbody>
+      </table>`;
+}
+
+function renderPoolCard(p, api) {
   const account = p.account ? api.escHtml(p.account) : '<em style="color:var(--muted)">none</em>';
+  const classBadge = p.pool_class
+    ? `<span class="td-strategy-badge">${api.escHtml(p.pool_class)}</span>` : '';
+  // A class pool's ceiling is the sum over its members; a legacy pool's is
+  // its own max_pilots, exactly as before.
+  const maxPilots = p.multi_member ? (p.max_pilots_total ?? '?')
+                                   : (p.max_pilots ?? '?');
+
+  const body = p.multi_member
+    ? membersTable(p, api)
+    : `<div class="td-pool-meta">
+        <strong>queue</strong>: ${api.escHtml(p.queue || '?')}
+        &nbsp; <strong>account</strong>: ${account}
+        &nbsp; <strong>min/max pilots</strong>: ${p.min_pilots ?? 0} / ${p.max_pilots ?? '?'}
+      </div>
+      ${sizesTable(p.pilot_sizes || {}, p.default_size, api)}`;
 
   return `
     <div class="card">
       <div class="td-pool-header">
         <span class="td-pool-name">${api.escHtml(p.name)}</span>
         <span class="td-strategy-badge">${api.escHtml(p.strategy || 'conservative')}</span>
+        ${classBadge}
         <span class="td-pilot-count">
-          ${p.live_pilots ?? 0} / ${p.max_pilots ?? '?'} pilot${(p.max_pilots === 1) ? '' : 's'} live
+          ${p.live_pilots ?? 0} / ${maxPilots} pilot${(maxPilots === 1) ? '' : 's'} live
           · ${p.pending_tasks ?? 0} pending task${(p.pending_tasks === 1) ? '' : 's'}
         </span>
       </div>
-      <div class="td-pool-meta">
-        <strong>queue</strong>: ${api.escHtml(p.queue || '?')}
-        &nbsp; <strong>account</strong>: ${account}
-        &nbsp; <strong>min/max pilots</strong>: ${p.min_pilots ?? 0} / ${p.max_pilots ?? '?'}
-      </div>
-      <table class="td-sizes-table">
-        <thead>
-          <tr><th>size</th><th>nodes</th><th>cpus/node</th><th>gpus/node</th><th>walltime</th><th>backend</th></tr>
-        </thead>
-        <tbody>${sizeRows || '<tr><td colspan="6" class="td-empty-pools">No sizes defined.</td></tr>'}</tbody>
-      </table>
+      ${body}
     </div>`;
 }
 

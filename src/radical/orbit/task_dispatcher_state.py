@@ -30,6 +30,7 @@ import json
 import logging
 import os
 import tempfile
+import time
 
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
@@ -88,6 +89,20 @@ class PilotRecord:
     started_tasks      : int         = 0       # monotonic counter
     walltime_deadline  : float       = 0.0
     accepting_new_tasks: bool        = True    # flipped False by drain
+    finished_at        : float | None = None   # terminal-state timestamp
+    # -- capability-class fields ------------------------------------------
+    # ``member_id`` is the pool member this pilot was submitted for; ``''``
+    # means the implicit member of a legacy pool.  ``attributes`` and the
+    # size/endpoint snapshots are taken **at submit time** and never change:
+    # a pilot outlives its member, and a removed member's pilots still have
+    # to be cancelled (``endpoint_name``), sized (the node counts) and
+    # matched (``attributes``) after the member is gone.
+    member_id          : str         = ''
+    attributes         : dict        = field(default_factory=dict)
+    endpoint_name      : str         = ''      # who runs the psij job
+    nodes              : int         = 0
+    cpus_per_node      : int         = 0
+    gpus_per_node      : int         = 0
 
     def lag(self) -> float | None:
         '''Return the PENDING→ACTIVE duration, or ``None`` if not yet active.'''
@@ -134,6 +149,22 @@ class TaskRecord:
     # defaults.  ``software``/``labels`` are persisted but not acted on
     # in this round (dispatcher-side placement attributes; plan 121).
     requirements : dict        = field(default_factory=dict)
+    # -- capability-class fields ------------------------------------------
+    # The member this task is currently placed on -- set at dispatch beside
+    # ``pilot_id`` and cleared with it when a pilot loss re-queues the task.
+    member_id    : str | None  = None
+    # Times a pilot loss re-queued this task; capped by the pool policy's
+    # ``max_requeues``.
+    requeues     : int         = 0
+    # Files the dispatcher actually holds for this task under
+    # ``<state_dir>/inputs/<task_id>/`` (submitted as ``inputs_b64``).  NOT
+    # ``inputs``, which keeps its client-declared meaning -- the names a
+    # client says the task consumes, which the dispatcher never acts on.
+    spooled      : list[str]   = field(default_factory=list)
+    # True when ``cwd`` was assigned by the dispatcher at dispatch rather
+    # than supplied by the client, so a re-dispatch to another member may
+    # re-assign it.
+    cwd_assigned : bool        = False
     # Rhapsody-dialect tasks: the serialized task dict as submitted
     # (JSON-safe -- cloudpickled fields ride as base64 strings), forwarded
     # verbatim to the pilot's rhapsody session.  ``None`` marks an
@@ -143,6 +174,64 @@ class TaskRecord:
     def is_terminal(self) -> bool:
         '''Return whether this task is in a terminal state.'''
         return self.state in TASK_TERMINAL_STATES
+
+
+# ---------------------------------------------------------------------------
+# Node-hour accounting
+# ---------------------------------------------------------------------------
+
+def node_hours(history: list[dict] | None,
+               pilot_sizes: dict | None = None,
+               now: float | None = None) -> float:
+    '''Return the node-hours consumed by a list of pilot dicts.
+
+    *history* is a list of ``asdict(PilotRecord)`` views (the pool- or
+    member-level ``pilot_history`` of a verbose summary).  A pilot that has
+    not finished yet is charged up to *now*.
+
+    The node count resolves in this order:
+
+    1. ``entry['nodes']`` — the size snapshot taken at submit time.  This
+       is the only source that is correct for a **mixed-node-count** pool
+       and the only one that still works once the pilot's member has been
+       removed (its size menu is gone with it).
+    2. ``pilot_sizes[entry['size_key']]['nodes']`` — a pre-121 history,
+       whose records carry no snapshot.
+    3. zero (the entry is skipped).
+
+    *pilot_sizes* accepts either ``{key: PilotSize}`` or the plain-dict
+    form a summary carries, and is optional precisely because the snapshot
+    makes it unnecessary for anything written by this version.
+
+    This lives here, not in the federation, because the dispatcher needs it
+    for its own per-member summary and must not import a federation module.
+    '''
+    if not history:
+        return 0.0
+    if now is None:
+        now = time.time()
+
+    total = 0.0
+    for entry in history:
+        nodes = entry.get('nodes') or 0
+        if not nodes and pilot_sizes:
+            size = pilot_sizes.get(entry.get('size_key') or '')
+            if isinstance(size, dict):
+                nodes = size.get('nodes') or 0
+            elif size is not None:
+                nodes = getattr(size, 'nodes', 0) or 0
+        if not nodes:
+            continue
+
+        # A record with no usable start (never submitted) must not be
+        # charged from the epoch to `now`.
+        start = entry.get('active_at') or entry.get('submitted_at') or 0.0
+        if not start:
+            continue
+        end = entry.get('finished_at') or now
+        total += nodes * max(0.0, float(end) - float(start)) / 3600.0
+
+    return total
 
 
 # ---------------------------------------------------------------------------

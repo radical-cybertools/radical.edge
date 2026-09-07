@@ -309,6 +309,20 @@ class Plugin(object):
         self._app.add_route(full_path, self._wrap_handler(method),
                             methods=["GET"])
 
+    def add_route_delete(self, path: str, method: Callable):
+        """Add a DELETE route to the plugin's namespace.
+
+        Direct dispatch (``_register_direct``) and the broker plugin host
+        are method-generic, and the gateway catch-all already lists
+        ``DELETE`` -- so a DELETE route is reachable over every transport
+        without further plumbing.
+        """
+        full_path = self._namespace + '/' + path
+        full_path = full_path.replace('//', '/')
+        self._register_direct(full_path, "DELETE", method)
+        self._app.add_route(full_path, self._wrap_handler(method),
+                            methods=["DELETE"])
+
     @staticmethod
     def _wrap_handler(handler: Callable) -> Callable:
         """Wrap a dict-returning handler for ASGI compatibility.
