@@ -1,0 +1,822 @@
+# Plan 121 — Multi-member pools: a pool is a capability class
+
+Repo/branch: `/home/merzky/radical/radical.orbit` @ `feature/atomic-federation`.
+Consumes: `plans/120-task-requirements-passthrough.md` (per-task
+cores/gpus/mem forwarded to rhapsody). Consumed by:
+`/home/merzky/projects/atomic/plans/08-federation-class-pools.md`.
+
+**Decision (Andre, 2026-09-07 — not up for relitigation).** A task-dispatcher
+pool is a **capability class**, not a site. A GPU pilot on Bridges and a GPU
+pilot on Perlmutter both live in the pool `fed-gpu`; CPU pilots in `fed-cpu`.
+A pool has **members**; a member is one (endpoint, queue, account, pilot-size
+menu, attributes, budget) tuple. Pilots carry their member's id and its
+declared attributes. Tasks carry `requirements`. The policy chooses *which
+member to grow* and *which pilot may run a task*.
+
+---
+
+## 1. Status check — what exists today (file:line evidence)
+
+| Claim | Evidence |
+|---|---|
+| A pool binds exactly one endpoint | `task_dispatcher_config.py:53-72` — `PoolConfig` has scalar `endpoint_name`, `queue`, `account`, `pilot_sizes`, `default_size`, `min_pilots`, `max_pilots`, `scratch_base` |
+| Pool identity is `(owning_sid, name)` | `plugin_task_dispatcher.py:552-554`, `:569-607` |
+| **Pools *can* be added to a live session** (the 00-overview claim "no add-pool route" is stale) | `plugin_task_dispatcher.py:912-920` — `register_session` reconnects the sid, then materialises every declared pool; `_materialise_pool:584-587` returns the existing `PoolState` for a re-declared pool |
+| **Members cannot be added** — a re-declaration of an *existing* pool is silently ignored | `plugin_task_dispatcher.py:584-587` (early return before any config merge) |
+| Pilot child endpoint name | `plugin_task_dispatcher.py:1572` — `f'{pool_state.config.name}_{record.pid}'` |
+| Pilot capacity = nodes × cpus_per_node, task = 1 slot — **and it stays that way**, see §1.1 | `plugin_task_dispatcher.py:1421-1432`; `task_dispatcher_state.py:118-122` (`free_capacity`) |
+| `PilotRecord` has no member/attribute fields | `task_dispatcher_state.py:76-94` |
+| `TaskRecord` has no `requirements` field | `task_dispatcher_state.py:125-149` |
+| Unknown keys in a persisted record are dropped on load (schema additions are safe) | `task_dispatcher_state.py:201-208` |
+| Pool state dir is `<root>/<sid>/<name>__<endpoint_name>` | `plugin_task_dispatcher.py:558-561` |
+| Pool config persists as `asdict(config)` — new dataclass fields persist for free | `plugin_task_dispatcher.py:209-212`, `task_dispatcher_state.py:247-255` |
+| Replay re-parses the persisted config through `parse_pools` | `plugin_task_dispatcher.py:609-646` |
+| Policy callable today is `submit_pilot(size_key)` | `plugin_task_dispatcher.py:1460-1462`; base contract `task_dispatcher_policy.py:83-91`; caller `task_dispatcher_strategy_conservative.py:187` |
+| `pick_dispatch` head-of-line blocks: it returns `None` if the *top* task has no pilot | `task_dispatcher_strategy_conservative.py:204-224` |
+| Pilot loss re-queues its non-terminal tasks (QUEUED, `pilot_id=None`) — **verified, no counter** | `plugin_task_dispatcher.py:1688-1697` |
+| Session teardown cancels every live pilot of the session's pools | `plugin_task_dispatcher.py:2151-2179` |
+| `stage_in` writes `<scratch_base>/<task_id>/<file>` **on the broker host**; `stage_out` reads `ps.scratch_base / task_id` | `plugin_task_dispatcher.py:1295-1303`, `:1320-1335` |
+| `cwd` is **required** at submit, i.e. fixed before a pilot exists | `plugin_task_dispatcher.py:977-980`, record built `:1015-1027` |
+| Task cwd reaches rhapsody twice (top-level + backend kwargs) | `plugin_task_dispatcher.py:1789-1799` |
+| Verbose pool summary carries `pilots`, `pilot_history`, `recent_tasks` (cap 50), and a flat `pilot_sizes` | `plugin_task_dispatcher.py:2107-2147` |
+| Node-hour accounting reads `pilot_history` + `pilot_sizes` | `federation_state.py:205-244`, consumer `plugin_federation.py:1126-1128` |
+| Explorer pool card renders one endpoint/queue/account and one size table | `data/plugins/task_dispatcher.js:137-180` |
+| `Plugin` base offers **only** `add_route_post` / `add_route_get` | `plugin_base.py:296-310` |
+| …but direct dispatch and the gateway are method-generic (DELETE is reachable) | `plugin_base.py:327-341`; `broker_plugin_host.py:103-118`; `gateway.py:421` |
+| Endpoint-mode submit bypasses pools completely | `plugin_task_dispatcher.py:973-985`, `:1038-1096` |
+| Orphan (owner-less, replayed) pools are not ticked | `plugin_task_dispatcher.py:707-711` |
+
+### 1.1 Scope — what 120 gives us, and what is explicitly deferred
+
+`plans/120-task-requirements-passthrough.md` exists and carries Andre's
+scope decision at its head (2026-09-07): **120 only wires, persists,
+validates and forwards** per-task requirements to rhapsody. Dispatcher-side
+core/GPU **reservation** and in-pilot **pinning** (120's PR2, and the
+`reserved()`/`cores_total`/`gpus_total` machinery in 120 §PR1.3) are
+**deferred**; oversubscription control stays with rhapsody even though the
+`concurrent` / `dragon_v3` backends do not enforce it today. Tracked as an
+Orbit TODO.
+
+Consequences for 121 — these are constraints, not choices:
+
+- **Capacity stays task-count based.** `pilot.capacity = nodes ×
+  cpus_per_node` (`plugin_task_dispatcher.py:1424`) and
+  `free_capacity() = capacity − in_flight` (`task_dispatcher_state.py:118-122`)
+  are untouched. 121 adds **no** per-pilot core/GPU counters, no
+  `reserved()` helper, no `fits()` occupancy test.
+- **`pick_dispatch` matches on attributes only** — software ⊆ member
+  software, labels, class — plus the unchanged `free_capacity() > 0` slot
+  test. It does not track free cores or GPUs per pilot.
+- **Shape validation happens once, at submit, per node**: a task whose
+  `cores`/`gpus` exceed every member's pilot size is a `400` (120 §PR1.4,
+  extended to members in §4.3 below), not a queued task that can never run.
+- Everything a future reservation model would need is already in the record
+  (`TaskRecord.requirements`, `PilotRecord.member_id`, the member's
+  `PilotSize`); nothing here forecloses it. **Do not design it in this
+  round** — see the 120 header and the Orbit TODO.
+
+What 121 takes from 120 (marked **[120]** below):
+
+> `POST submit/{sid}` accepts an optional `requirements` object
+> `{cores, gpus, mem_gb, ranks, mpi}`, **unknown keys rejected with 400**
+> (120 §PR1.1); it is persisted as `TaskRecord.requirements: dict`
+> (120 §PR1.2) and mapped to backend kwargs in `_do_rhapsody_submit`
+> (`plugin_task_dispatcher.py:1789-1799`).
+
+**Two amendments 121 makes to 120** (both one-liners, agreed with that
+plan's author — flag them before either lands):
+
+1. §PR1.1's key whitelist gains `software: [str]` and
+   `labels: {str: str|number}`. They are *matching* inputs: `backend_kwargs`
+   (§PR1.5) ignores them, so nothing reaches rhapsody.
+2. §PR1.6 says "software, node_hours → selection only, **never
+   forwarded**". For `software` that is now wrong: with class pools the
+   *dispatcher* is the component that matches software against a pilot's
+   member attributes, so the federation must forward it. `node_hours` stays
+   federation-only and is stripped before forwarding (plan 08 §4).
+
+---
+
+## 2. The model
+
+```
+pool  fed-gpu   class="gpu"   ── members ──┬── perlmutter  (endpoint ep_pm,  queue regular, account m1234,
+                                           │                attributes {site: NERSC, software: [lammps, pytorch]})
+                                           └── bridges     (endpoint ep_br,  queue GPU,     account abc123,
+                                                            attributes {site: PSC,   software: [pytorch]})
+pilots:  fed-gpu_perlmutter_p.1a2b…   member_id=perlmutter  attributes={…snapshot…}
+tasks :  pool-level queue; bound to a pilot only at dispatch (`_claim`, :1751)
+```
+
+- **class** is an explicit string field (`PoolConfig.pool_class`), never
+  derived inside the dispatcher. The federation computes it (`gpu` when
+  `gpus_per_node > 0`, else `cpu`) and declares it; more classes can be
+  declared later without a dispatcher change.
+- **budget is per member** (allocations are per site), not per pool.
+- **attributes are declared, not self-reported** — no handshake change, no
+  protocol change. A pilot snapshots its member's attributes at submit time
+  and keeps them for its life.
+
+---
+
+## 3. Schema
+
+### 3.1 `task_dispatcher_config.py`
+
+```python
+@dataclass
+class PoolMember:
+    '''One resource inside a capability-class pool.'''
+    member_id     : str                       # unique within the pool; [a-z0-9_.-]+
+    endpoint_name : str                       # required — no auto-pick for members
+    queue         : str                       # non-empty, not the 'default' sentinel
+    account       : str | None
+    pilot_sizes   : dict[str, PilotSize]
+    default_size  : str                       # key into pilot_sizes
+    min_pilots    : int  = 0
+    max_pilots    : int  = 4
+    scratch_base  : str | None = None         # path ON THE MEMBER'S HOST
+    shared_fs     : bool = True               # broker host and member share scratch_base
+    attributes    : dict[str, Any] = field(default_factory=dict)
+                                              # free-form; 'software': [str] and
+                                              # 'site': str are conventions, not schema
+    budget        : dict[str, float] = field(default_factory=dict)   # {'node_hours': x}
+
+@dataclass
+class PoolConfig:
+    name            : str
+    queue           : str                     # compat projection of the primary member
+    account         : str | None              # compat projection
+    pilot_sizes     : dict[str, PilotSize]    # compat projection
+    default_size    : str                     # compat projection
+    endpoint_name   : str | None = None       # compat projection
+    min_pilots      : int  = 0                # compat projection
+    max_pilots      : int  = 4                # compat projection
+    scratch_base    : str | None = None       # compat projection
+    strategy        : str  = 'conservative'
+    strategy_config : dict[str, Any] = field(default_factory=dict)
+    # -- new --------------------------------------------------------------
+    pool_class      : str  = ''               # '' = unclassified (legacy pools)
+    members         : dict[str, PoolMember] = field(default_factory=dict)
+    multi_member    : bool = False            # the declaration carried 'members'
+
+    def primary_member(self) -> PoolMember: ...      # first member by insertion order
+    def member(self, mid: str) -> PoolMember | None: ...
+```
+
+**Invariant.** When `multi_member` is true, `members` is authoritative and the
+nine legacy scalar fields are a *read-only projection of the primary member*,
+recomputed on every parse. When it is false, `members` holds exactly one
+implicit member built from the legacy fields (`member_id` = `IMPLICIT_MEMBER`
+= `'_'`). Every code path below therefore only ever reads `config.members` —
+there is one shape at runtime, two shapes on the wire.
+
+### 3.2 Parser (`_parse_pool`, `task_dispatcher_config.py:119-223`)
+
+- Required fields become: `('name',)` plus **either** `members` (non-empty
+  list or dict) **or** the existing `('queue', 'default_size', 'pilot_sizes')`.
+  Nothing else in the existing required-field logic moves — a legacy
+  declaration takes the identical path it does today.
+- `members` may be a list of objects (each with `member_id`) or a
+  `{member_id: object}` map; both normalise to an insertion-ordered dict.
+- New `_parse_member(d, source)` mirrors `_parse_pool`'s validation style:
+  `member_id` matched against `MEMBER_RE = ^[a-z0-9][a-z0-9_.-]*$` (it lands
+  in a child-endpoint name), `endpoint_name` non-empty, `queue` non-empty and
+  ≠ `'default'`, `pilot_sizes` non-empty via the existing
+  `_parse_pilot_size` (`:226-248`), `default_size ∈ pilot_sizes`,
+  `min_pilots ≤ max_pilots` via `_parse_int` (`:251-259`), `attributes` a dict
+  whose values are str / number / list-of-str, `budget` `{}` or
+  `{'node_hours': positive number}`, `shared_fs` a bool.
+- `pool_class`: optional string matching `^[a-z0-9_.-]*$`.
+- After members parse, project the primary member onto the legacy fields and
+  set `multi_member=True`. Duplicate `member_id` → `PoolConfigError`.
+- The policy trial-instantiation (`:208-221`) is unchanged and still runs last.
+
+### 3.3 `task_dispatcher_state.py`
+
+```python
+@dataclass
+class PilotRecord:
+    ...                                        # unchanged fields :77-94
+    member_id  : str  = ''                     # '' → the implicit member
+    attributes : dict = field(default_factory=dict)   # snapshot at submit time
+
+@dataclass
+class TaskRecord:
+    ...                                        # unchanged fields :126-149
+    requirements : dict = field(default_factory=dict)   # [120]
+    member_id    : str | None = None           # set at dispatch, with pilot_id
+    requeues     : int = 0                     # times a pilot loss re-queued it
+```
+
+`record_from_dict` (`:201-208`) drops unknown keys and fills defaults, so
+**old `state.json` files load unchanged**: a legacy pilot gets
+`member_id=''`, which resolves to the implicit member.
+
+Move `node_hours_from_history` (today `federation_state.py:205-244`) **into**
+`task_dispatcher_state.py` as `node_hours(history, pilot_sizes, now)` and
+re-export it from `federation_state` (`from .task_dispatcher_state import
+node_hours as node_hours_from_history`) so no federation caller changes. The
+dispatcher needs it for the per-member summary and must not import the
+federation module (layering).
+
+New module `task_dispatcher_match.py` — the single implementation of
+requirement matching, imported by the policy *and* (for the eligibility
+explanation) by the federation:
+
+```python
+def satisfies(requirements: dict, attributes: dict,
+              size: PilotSize | None) -> str | None:
+    '''Return None when the requirements fit this shape, else a reason.
+
+    Pure and stateless: it compares a task's declared needs against a
+    *declaration* (a member's attributes + its pilot size, or a pilot's
+    attribute snapshot + its size).  It knows nothing about occupancy —
+    free capacity stays the dispatcher's existing task-count slot test
+    (see §1.1).
+    '''
+```
+
+Rules (deliberately the same vocabulary as
+`federation_policy.BudgetLoadPolicy.reject_reason`, `federation_policy.py:128-164`,
+so federation and dispatcher reasons read alike):
+
+- `software`: `set(req) ⊆ set(attributes.get('software') or [])`, else
+  `"software missing: X, Y"`.
+- `cores`: `req.cores > 0` needs `size.cpus_per_node >= req.cores`, else
+  `"cores N < M"`. **Per node**, matching 120 §PR1.4 — no shipped backend
+  spreads one task across nodes in v1.
+- `gpus`: `req.gpus > 0` needs `size.gpus_per_node >= req.gpus`, same rule.
+  This is the *shape* test only; nothing counts GPUs already in use (§1.1).
+- `mem_gb`: compared against `attributes['mem_gb_per_node']` when declared;
+  ignored when not (a missing attribute never rejects a *numeric* requirement
+  of 0 or less, and rejects a positive one only when the key exists).
+- `labels`: every `k: v` in `req.labels` must satisfy
+  `attributes[k] == v` or `v in attributes[k]` (list-valued attribute), else
+  `"label k=v not matched"`. An undeclared label key rejects.
+- A requirement value ≤ 0 or an empty list is always satisfied.
+
+`satisfies` is used with a *member*'s attributes+default size (scale-up
+decision, eligibility display) and with a *pilot*'s attributes+size (dispatch
+decision) — one function, two call sites.
+
+---
+
+## 4. New routes
+
+Both are added on `PluginTaskDispatcher.__init__` next to the existing block
+(`plugin_task_dispatcher.py:528-538`).
+
+### 4.1 `POST pool/{sid}/{name}/members`
+
+Body = one member declaration (§3.2 shape):
+
+```json
+{"member_id": "perlmutter", "endpoint_name": "ep_pm",
+ "queue": "regular", "account": "m1234",
+ "pilot_sizes": {"default": {"nodes": 1, "cpus_per_node": 128,
+                             "gpus_per_node": 4, "walltime_sec": 1800,
+                             "rhapsody_backend": "concurrent"}},
+ "default_size": "default", "min_pilots": 0, "max_pilots": 2,
+ "scratch_base": "/pscratch/…/atomic", "shared_fs": false,
+ "attributes": {"site": "NERSC", "software": ["lammps", "pytorch"],
+                "mem_gb_per_node": 256},
+ "budget": {"node_hours": 40.0}}
+```
+
+Returns `200 {"pool": name, "member": <member dict>, "members": [<ids>],
+"created": true|false}`.
+
+- `404` unknown session (`_require_known_session`, `:2093-2097`) / unknown
+  pool (`_find_pool`, `:552-554`).
+- `400` on any schema violation (`PoolConfigError` → detail).
+- `409 "member exists with a different declaration"` when `member_id` is
+  present and the parsed member differs (compare `asdict`). An **identical**
+  re-POST is a `200 {"created": false}` no-op — this is what makes the
+  federation's restart replay idempotent.
+- Side effects: `ps.config.members[member_id] = member`; if the pool was not
+  `multi_member`, adding a *second* member promotes it
+  (`multi_member=True`, implicit member keeps id `'_'` and its
+  child-endpoint naming, see §6); `ps.persist()`; a `pool_members` notification
+  (`_dispatch_notify`) so the Explorer refreshes.
+- No pilot is submitted here. The next housekeeping tick applies the member's
+  `min_pilots` floor.
+
+### 4.2 `DELETE pool/{sid}/{name}/members/{member_id}`
+
+Query: `?cancel_tasks=true|false` (default `false`).
+
+Returns `200 {"pool": name, "member_id": mid, "pilots_cancelled": n,
+"tasks_requeued": n, "tasks_failed": n}`.
+
+- `404` unknown session / pool / member; `409` when it is the pool's last
+  member and `?force=true` was not given (a member-less pool can never run
+  anything; the federation deletes the whole pool instead).
+- Drain semantics — §7.
+
+**Base-class touch (required, 5 lines).** `plugin_base.py` gains
+`add_route_delete` mirroring `add_route_get` (`:304-310`) with
+`methods=["DELETE"]`. Direct dispatch (`_register_direct`, `:327-341`) and
+`BrokerPluginHost.handle_request` (`broker_plugin_host.py:103-118`) are
+already method-generic, and the gateway catch-all already lists `DELETE`
+(`gateway.py:421`) — verified, no other change. If the reviewer objects to
+touching the base class, the fallback is
+`POST pool/{sid}/{name}/members/{member_id}/remove` with identical semantics;
+the federation's `_DispatcherAPI` (`plugin_federation.py:220-228`) passes the
+method straight through either way.
+
+### 4.3 Submit-time validation (extends 120 §PR1.4 to members)
+
+120 rejects with `400` a task whose `cores`/`gpus` exceed **every**
+`PilotSize` in the pool, comparing per node. With members, "every
+`PilotSize` in the pool" becomes "every `PilotSize` of every non-draining
+member", and the message names the offending member and size, e.g.
+`"task needs 2 gpus; the largest pilot_size offering GPUs is
+'bridges.gpu/default' with 8 gpu/node"` (or `"no member offers GPUs"`).
+
+121 adds one rule in the same place: reject with `400` when no member can
+satisfy the task's `software` / `labels`, message
+`"no member satisfies the task requirements: software missing: lammps"`.
+Rationale: a task that no *declared* member could ever run is a client
+error, and queueing it forever is the worse answer. The runtime sweep in §7
+covers only the case where the member that *could* have run it left after
+the submit.
+
+Endpoint mode has no pool and therefore no validation — unchanged
+(120 §PR1.1, `plugin_task_dispatcher.py:1038-1096`).
+
+### 4.4 What did *not* need a route
+
+`register_session` already adds *pools* to a live session
+(`plugin_task_dispatcher.py:912-920` + `:584-587`). Fix the stale claim in
+`plans/task_dispatcher_design.md` §3.1 and `docs/`.
+
+---
+
+## 5. Policy contract v2
+
+`task_dispatcher_policy.py`:
+
+```python
+class DispatchPolicy:
+    def on_tick(self, pool_state,
+                submit_pilot: Callable[..., str]) -> None: ...
+    def pick_dispatch(self, pool_state) -> tuple[TaskRecord, PilotRecord] | None: ...
+    def on_pilot_state(self, pilot, old_state, new_state) -> None: ...
+```
+
+The **callable changes shape, not the method signatures**:
+
+```python
+submit_pilot(member_id: str | None = None, size_key: str | None = None) -> str
+```
+
+Both keyword-optional (`member_id=None` → the pool's primary member;
+`size_key=None` → that member's `default_size`), so the in-tree call
+`submit_pilot(None)` (`task_dispatcher_strategy_conservative.py:187`) keeps
+meaning "primary member, default size". `_make_submit_pilot`
+(`plugin_task_dispatcher.py:1460-1462`) and `_submit_pilot` (`:1464-1502`)
+take the member id, resolve `member.pilot_sizes[size_key]`, and raise
+`KeyError` on an unknown member (same style as the unknown-size raise at
+`:1473-1477`).
+
+New read-only helpers on `PoolState` (`plugin_task_dispatcher.py:152-216`),
+so a policy never touches `config.members` directly:
+
+```python
+ps.members()                      -> list[PoolMember]         # declaration order
+ps.member(mid)                    -> PoolMember | None        # '' → implicit
+ps.live_pilots_for(mid)           -> list[PilotRecord]
+ps.member_node_hours(mid, now)    -> float
+ps.member_budget_left(mid, now)   -> float | None             # None = no budget declared
+ps.size_of(pilot)                 -> PilotSize | None         # member-aware lookup
+```
+
+`ps.size_of` replaces the two places that index the pool-level size menu
+(`_activate_pilot:1423`, `_build_job_spec` call site `:1576`).
+
+### `ConservativePolicy` v2 (`task_dispatcher_strategy_conservative.py`)
+
+Existing knobs keep their names, defaults and meaning
+(`min_dwell_sec` 30, `max_in_flight_submissions` 2, `router_preference`
+`least_loaded|youngest`, `max_consecutive_failures` 3,
+`failure_backoff_sec` 60). Two new ones:
+
+- `member_preference`: `'budget'` (default) | `'least_loaded'`
+- `max_requeues`: int = 1  (§7)
+
+**Per-member bookkeeping.** `_last_submit_ts` becomes
+`dict[member_id, float]`; `in_flight_subs` and the `max_pilots` ceiling are
+counted per member; `_consecutive_failures` / `_backoff_until` become
+per-member dicts keyed off `pilot.member_id` in `on_pilot_state`
+(`:97-123`). For a single-member pool every one of these is arithmetically
+identical to today, so `test_task_dispatcher_strategy_conservative.py` passes
+with only its fake `submit_pilot` signature updated (`:68`).
+
+**`on_tick` (rewrite of `:127-196`), one submission per tick, in order:**
+
+1. `pending = pool_state.pending_queue()`; per-member live counts.
+2. **Floor.** First member (by declaration order) with
+   `len(live_pilots_for(m)) < m.min_pilots` → candidate, reason `min_pilots`.
+3. **Backlog.** Otherwise compute, per pending task, whether any *live*
+   pilot could ever take it (`satisfies(task.requirements, pilot.attributes,
+   size)` ignoring free capacity). Let `unservable` be the tasks for which
+   none can, and `free_capacity` the sum over ACTIVE pilots that *can* serve
+   at least one pending task. Scale up when `unservable` is non-empty **or**
+   `len(pending) > free_capacity` — reason `backlog`.
+   Candidate members = those where
+   `satisfies(req_of_oldest_unservable_or_head_task, m.attributes,
+   m.pilot_sizes[m.default_size]) is None`, minus members at
+   `max_pilots`, minus members with a declared budget whose
+   `member_budget_left(m) <= 0`, minus members in failure backoff.
+4. Rank candidates: `member_preference == 'budget'` → most remaining
+   node-hours first (a member with no declared budget sorts as `+inf`,
+   i.e. after members with headroom? **no** — it sorts *last*, so a declared,
+   funded allocation is preferred over an unbounded one only when the
+   unbounded one is busier; concretely the key is
+   `(-budget_fraction, live_pilots, member_id)` with
+   `budget_fraction = 1.0` when no budget is declared);
+   `'least_loaded'` → `(live_pilots, -budget_fraction, member_id)`.
+   Ties always break on `member_id` — deterministic.
+5. Guards, now per member: failure backoff, `max_in_flight_submissions`,
+   `member.max_pilots`, `min_dwell_sec` since that member's last submit.
+6. `submit_pilot(member_id=m.member_id, size_key=None)`; log with
+   `member=` added to the existing line (`:189-193`).
+
+**`pick_dispatch` (rewrite of `:198-224`).**
+
+```
+pending = [QUEUED tasks]  sorted (-priority, arrival_ts)      # as today, :211
+for task in pending:
+    cands = [p for p in live_pilots if p.state == ACTIVE
+                 and p.free_capacity() > 0                    # unchanged slot test (§1.1)
+                 and satisfies(task.requirements, p.attributes,
+                               ps.size_of(p)) is None]
+    if not cands: continue                                    # ← NEW: skip, don't block
+    sort cands by router_preference (unchanged, :218-222),
+         then by member_id for determinism
+    return task, cands[0]
+return None
+```
+
+**Deliberate semantic change:** today a top-priority task with no pilot
+returns `None` and stalls the whole drain (`:212-216`). In a class pool a GPU
+task must not block CPU tasks, so an unservable task is skipped. The drain
+loop is still bounded by the pending-queue length
+(`_drain_pending:1715-1718`), so the cost is O(pending²) worst case at
+demo scale (tens) — acceptable; documented.
+
+---
+
+## 6. Pilots
+
+- `_submit_pilot` (`:1464-1502`) takes `member_id`, stamps
+  `record.member_id` and `record.attributes = dict(member.attributes)`
+  (snapshot — the pilot's attributes never change after submit, even if the
+  member is re-declared), sizes from `member.pilot_sizes`.
+- `_do_pilot_submit` (`:1546-1604`): `endpoint_name`, `queue` sentinel check
+  (`:1559-1564`) and `account` all read from **the member**, not the pool.
+- **Child endpoint name** (`:1572`):
+  - legacy / single implicit member → `f'{pool}_{pid}'` — byte-identical to
+    today, so every existing test and deployment is untouched;
+  - multi-member pool → `f'{pool}_{member_id}_{pid}'`.
+  Encode this in one helper `child_endpoint_name(pool, member_id, pid)` so
+  the federation and the campaign runner can reproduce it as a fallback.
+- `_build_pilot_env` (`:1504-1517`) adds
+  `RADICAL_ORBIT_MEMBER = member_id` and sets
+  `RADICAL_ORBIT_SCRATCH_BASE` from the **member's** `scratch_base`
+  (falling back to the pool's).
+- `_build_job_spec` (`:1519-1544`) reads `queue_name`/`project` from the
+  member.
+- `_activate_pilot` (`:1421-1432`) uses `ps.size_of(pilot)`.
+- `_do_pilot_cancel` / `_reconcile_pilot` (`:1606-1648`) resolve the psij
+  client from `member.endpoint_name`.
+
+---
+
+## 7. Member removal, draining, re-queue
+
+Tasks are pool-level and bind to a pilot only at dispatch
+(`_claim:1751-1758`) — so removing a member never orphans a queued task.
+
+`DELETE …/members/{member_id}`:
+
+1. Mark the member `draining` (in-memory flag; the policy stops choosing it
+   immediately, both for scale-up and — belt and braces — for dispatch).
+2. For each live pilot with that `member_id`: `await _do_pilot_cancel(...)`
+   → `_mark_pilot_failed` → `_finalize_pilot` (`:1664-1703`) cancels the psij
+   job and **re-queues** its non-terminal tasks (verified `:1688-1697`).
+3. `_finalize_pilot` gains the re-queue counter: `t.requeues += 1`; when
+   `t.requeues > policy.max_requeues` (default 1) the task is failed with
+   `error = 'requeued too often (pilot lost)'` instead of re-queued. This is
+   the "re-queued once" rule from the decision, and it also protects the
+   pre-existing pilot-loss path.
+4. Drop the member from `config.members`; `ps.persist()`.
+5. **Unsatisfiable sweep** (the runtime counterpart of §4.3's submit-time
+   `400` — this one catches tasks whose only capable member just left).
+   For every QUEUED task, if no *remaining* member
+   can ever serve it (`satisfies(req, m.attributes, default size)` fails for
+   all `m`), fail it with
+   `error = 'no member satisfies task requirements: <reason>'`
+   (`_mark_task_failed`, `:2040-2050`) — otherwise a task whose only
+   `software` provider just left would sit QUEUED forever.
+   `?cancel_tasks=true` fails *every* task that was re-queued off this
+   member's pilots, satisfiable or not.
+6. Notify `task_status` for each changed task (already done by
+   `_finalize_pilot`; the sweep must do the same).
+
+Session teardown (`_teardown_session_pools:2151-2179`) needs no change — it
+already walks every pilot of every pool of the session.
+
+---
+
+## 8. Staging and task cwd — the honest part
+
+Today `cwd` is required at submit (`:977-980`) and the pool scratch is
+assumed shared with the pilot (`00-overview.md:110-113`). In a class pool the
+member — and therefore the filesystem — is unknown at submit time. Rules:
+
+1. **Explicit `cwd` in the submit body** → used verbatim, as today. Valid
+   only when every member of the pool has `shared_fs: true`; otherwise the
+   submit is refused with `400 "explicit cwd is not valid for a pool with
+   non-shared members"`.
+2. **No `cwd`** (now permitted, and only, for `multi_member` pools — reorder
+   the validation at `:977-980` so the pool is resolved first): the record is
+   created with `cwd=''` and the dispatcher assigns
+   `cwd = <member.scratch_base or pool.scratch_base>/<task_id>` **at dispatch**
+   in `_claim` (`:1751-1758`), together with `task.member_id = pilot.member_id`,
+   then persists and notifies `task_status` (the drain already persists once,
+   `:1743`). Verified consumer-side: the campaign runner re-reads
+   `task_dict['cwd']` on every poll
+   (`atomic_wm/campaign/runner.py:551-552`), so a late cwd is already handled.
+3. **Directory creation.** `shared_fs: true` → the dispatcher creates it
+   (`PoolState.task_scratch_dir`, `:203-207`, parameterised by member).
+   `shared_fs: false` → the dispatcher must **not** create it; instead
+   `_do_rhapsody_submit` (`:1760-1831`) calls the *pilot's own* `staging`
+   plugin (`plugin_staging.py:377-379`, `put/{sid}`) once per (pilot, task) to
+   materialise the directory before handing the task to rhapsody, via the
+   existing caller-backed child-client machinery (`_make_child_client:794-807`).
+4. **Dispatcher `stage_in` / `stage_out`** (`:1257-1338`):
+   - a task with no resolved `cwd` yet → `409 "task not yet placed"`;
+   - a task placed on a `shared_fs: false` member → `409 "staging for this
+     task is not broker-local; use the pilot's staging plugin at
+     <child_endpoint>"`;
+   - otherwise unchanged, except `stage_out` reads `Path(rec.cwd)` instead of
+     recomputing `ps.scratch_base / task_id` (`:1324`) — a straight bug fix
+     for any task with an explicit cwd.
+
+This is the one place the decision costs real work: **result collection for
+non-shared members is only possible through the pilot's staging plugin**, and
+that path exists today only in the ATOMIC campaign plugin
+(`atomic_wm/campaign/runner.py:611-635` — `pilot_staging` is already the first
+of its three fallbacks). 121 documents the dispatcher routes as *broker-local
+only* and does not build a generic pull-through proxy; see §14 risk R3.
+
+---
+
+## 9. Verbose pool summary and accounting
+
+`_summarize_pool` (`:2107-2147`) keeps every existing key (the flat
+`pilot_sizes`, `queue`, `account`, `endpoint_name`, `min/max_pilots` stay as
+the primary-member projection — `federation.js` and `task_dispatcher.js` keep
+working) and gains:
+
+```jsonc
+"pool_class": "gpu",
+"multi_member": true,
+"members": [
+  {"member_id": "perlmutter", "endpoint_name": "ep_pm",
+   "queue": "regular", "account": "m1234",
+   "attributes": {...}, "budget": {"node_hours": 40.0},
+   "min_pilots": 0, "max_pilots": 2, "shared_fs": false,
+   "pilot_sizes": {...}, "default_size": "default",
+   "live_pilots": 1, "pilots_active": 1,
+   "node_hours_used": 1.25,          // server-side, see below
+   "node_hours_remaining": 38.75,    // null when no budget declared
+   "draining": false,
+   "pilot_history": [ <pilot dicts for this member only> ]}
+]
+```
+
+- Non-verbose summaries gain `pool_class`, `multi_member` and a
+  `members: [<ids>]` list only (keeps `GET pools` cheap).
+- Pool-level `pilot_history` stays and every entry now carries `member_id` +
+  `attributes` — an existing consumer that ignores members still gets the
+  correct pool total.
+- `node_hours_used` per member is computed **server-side** by
+  `node_hours(member_history, member_pilot_sizes, now)` (§3.3) so the
+  Explorer and the federation read one number rather than each
+  re-implementing the arithmetic. `federation_state.node_hours_from_history`
+  keeps working unchanged for legacy single-member pools.
+
+---
+
+## 10. Persistence and replay
+
+- `PoolState.persist` (`:209-212`) writes `asdict(self.config)`; the new
+  fields (`members`, `pool_class`, `multi_member`) ride along automatically.
+- `_replay_state` (`:609-646`) re-parses through `parse_pools` — the parser
+  must therefore accept its own output. It does: the persisted config carries
+  both `members` and the projected legacy fields; on re-parse `members` wins
+  and the projection is recomputed identically. **Round-trip test required.**
+- **Old state files** (no `members` key) parse exactly as today and gain one
+  implicit member. Old `PilotRecord`s get `member_id=''` → implicit member →
+  their stored `child_endpoint_name` is untouched (`_reconcile_pilots_for`
+  matches on the stored name, `:1391-1396`), so pilots survive the upgrade.
+- **Pool state directory.** `_pool_dir` (`:558-561`) becomes
+  `tag = 'members' if cfg.multi_member else (cfg.endpoint_name or 'unbound')`.
+  A legacy pool keeps its exact directory; a class pool gets a directory that
+  does **not** move when its primary member leaves (which the naive
+  `endpoint_name` tag would, silently losing all pilot/task state).
+- `_materialise_pool` (`:569-607`) must **skip the auto-endpoint pick**
+  (`:577-582`) when `cfg.multi_member` — `endpoint_name` is a projection there,
+  not a binding.
+- **Re-declaration still does not merge members** (`:584-587` unchanged): the
+  federation re-registers its session with the pool declarations *and then*
+  POSTs every member (idempotent no-op when the dispatcher already replayed
+  them). This is the required replay protocol and it is stated in plan 08 §6.
+
+---
+
+## 11. Explorer — `data/plugins/task_dispatcher.js`
+
+`renderPoolCard` (`:137-180`):
+
+- Header gains a class badge next to the strategy badge (`p.pool_class`) and
+  reads `live / Σ member.max_pilots` when `p.multi_member`.
+- The single `td-pool-meta` line (queue/account/min-max, `:168-172`) is
+  replaced, for multi-member pools, by a **members table**: `member`,
+  `endpoint`, `queue`, `account`, `attributes` (chips: `site=…`,
+  `software: a, b`), `pilots live/max`, `node-hours used/left`.
+- Each member row expands (a `<details>` element — no framework) into that
+  member's size table, reusing the existing `sizeRows` renderer and
+  `formatWalltime` (`:182-188`).
+- Single-member pools render exactly as today (branch on `p.multi_member`).
+- `GET pools` is non-verbose, so the members table needs the ids + summary
+  fields listed in §9; the per-member `node_hours_used` requires the verbose
+  route — fetch `pool/{sid}/{name}` lazily on expansion.
+- Explorer caches plugin JS until a miss: **restart the broker after editing**
+  (`00-overview.md:163-166`).
+
+---
+
+## 12. Docs to update
+
+| File | Change |
+|---|---|
+| `docs/task_dispatcher_strategy.md` | §"The ABC" (`:55-75`) and §"Invocation contract" (`:76-90`) are already stale vs. the code — rewrite them against the real `DispatchPolicy` and the v2 `submit_pilot(member_id, size_key)`; document the pick-skip semantics and the new knobs `member_preference`, `max_requeues` in §"conservative" (`:114-156`) |
+| `docs/rest_api.md` | the two member routes |
+| `plans/task_dispatcher_design.md` | §3.1 "Pool" (`:125-147`), §3.4 cardinality (`:191-215`), §8.1 pool config (`:526-559`), §9 persistent state (`:586-632`): pool = class, pool 1─N member 1─N pilot; correct the "no add-pool route" claim |
+| `docs/plugin_federation.md` | §"Dispatcher changes this plugin required" (`:313-331`) — add the member routes; the rest is plan 08's business |
+| `docs/architecture.md` | one paragraph if it names pools as site-bound |
+
+---
+
+## 13. Tests
+
+Unit, per module (all under `tests/unittests/`, existing files):
+
+- `test_task_dispatcher_config.py`: members parse (list and map form);
+  duplicate `member_id` → error; bad `member_id` charset; member with the
+  `'default'` queue sentinel → error; legacy declaration → exactly one
+  implicit member + `multi_member is False`; projection equals the primary
+  member; **`asdict(parse(x))` re-parses to an equal config** (replay
+  round-trip); `pool_class` validation; unknown member key rejected.
+- `test_task_dispatcher_state.py`: `PilotRecord` round-trip with
+  `member_id`/`attributes`; old dict without them loads with defaults;
+  `TaskRecord.requeues`/`requirements`/`member_id` round-trip;
+  `node_hours()` moved-in tests (keep the existing federation ones green
+  through the re-export).
+- **new** `test_task_dispatcher_match.py`: every rule in §3.3 — software
+  subset, cores/gpus vs size, `mem_gb` present/absent, labels equal and
+  list-membership, `≤0` requirement always satisfied, undeclared label
+  rejects, reason strings.
+- `test_task_dispatcher_strategy_conservative.py`: extend the fake
+  `PoolStateHandle` (`:49-68`) with members; **all existing single-member
+  tests must pass with only the fake `submit_pilot` signature updated**;
+  new: floor honoured per member (two members, `min_pilots=1` each → two
+  ticks, one submit each); backlog grows the member whose attributes match
+  the pending task (task `software=[lammps]`, member A has it, B does not →
+  A grows); budget-exhausted member is skipped; per-member dwell (member A
+  inside its window does not block member B); `member_preference` ordering
+  and `member_id` tie-break; `pick_dispatch` skips an unservable head task
+  and dispatches the next one; `pick_dispatch` never returns a pilot whose
+  attributes miss the task's software.
+- `test_plugin_task_dispatcher.py`: submit `400`s when no member satisfies
+  `software` (§4.3) and when `gpus` exceeds every member's size, both with
+  the member named in the detail; submit succeeds and queues when one member
+  matches; `POST members` creates / is idempotent /
+  409s on a differing re-declaration / 404s on unknown pool; `DELETE members`
+  cancels that member's pilots, re-queues their tasks, fails the
+  now-unsatisfiable ones, 409s on the last member without `?force`;
+  `_pool_dir` stability across a primary-member change; `cwd` optional for a
+  multi-member pool and assigned at dispatch; `stage_in`/`stage_out` 409 for
+  an unplaced task and for a non-shared member; the verbose summary's
+  `members` block and per-member `node_hours_used`; `requeues` cap fails a
+  task on the second pilot loss.
+- `test_task_dispatcher_recovery.py`: a state file written by a
+  multi-member pool replays with its members and pilots; a **pre-121** state
+  file replays into one implicit member with its live pilot intact.
+
+Co-hosted harness (`test_task_dispatcher_broker.py`, fake psij `:71-97` and
+fake pilot `:59-70`, `make_runtime` `:158-185`) — the acceptance tests:
+
+1. **Routing by attribute.** One pool `fed-gpu` with two members `m_x`
+   (`software: [x]`) and `m_y` (`software: [y]`), a fake pilot per member.
+   Submit `software=[x]` → lands on `m_x`'s pilot; submit `software=[y]` →
+   `m_y`'s. Assert `task.member_id` and the pilot's `child_endpoint_name`
+   prefix.
+2. **Scale-up picks the right member.** Empty fleet, one task with
+   `software=[y]` → exactly one pilot submitted, for `m_y`.
+3. **Member removal drains.** With a task RUNNING on `m_x`, `DELETE m_x` →
+   its pilot FAILED, the task back to QUEUED with `requeues == 1`, then
+   dispatched to `m_y` when it can serve it, or FAILED with
+   `no member satisfies…` when it cannot.
+4. **Budget per member.** Two members, one with an exhausted
+   `node_hours` budget → scale-up chooses the other; the verbose summary
+   reports the two `node_hours_used` figures independently.
+
+Green bar required: `PYTHONPATH=src ve3/bin/python -m pytest
+tests/unittests/ -q` (1258+ today) and `ve3/bin/flake8 src/ bin/` clean.
+
+---
+
+## 14. Work packages, effort, risks
+
+| WP | Content | Depends on | Effort |
+|---|---|---|---|
+| A | `PoolMember`, `PoolConfig` fields, parser, projection, round-trip tests | — | 3 h |
+| B | `task_dispatcher_match.py` + tests; `node_hours` move + re-export | — | 2 h |
+| C | `PilotRecord`/`TaskRecord` fields, `PoolState` member helpers, `_pool_dir`, replay | A | 3 h |
+| D | Member routes + `add_route_delete` + notifications | A, C | 2 h |
+| E | Pilot path: `_submit_pilot`, `_do_pilot_submit`, naming, env, job spec, cancel/reconcile | C | 3 h |
+| F | `ConservativePolicy` v2 + policy contract + docs §12 row 1 | A, B, C | 4 h |
+| G | cwd-at-dispatch, staging 409s, remote mkdir via pilot staging | C, E | 3 h |
+| H | Verbose summary + per-member accounting | C | 2 h |
+| I | Explorer `task_dispatcher.js` | H | 2 h |
+| J | Harness tests 1-4 | D, E, F, G | 4 h |
+| K | Docs (§12 rows 2-5) | all | 2 h |
+
+≈ **30 h**. Three parallel tracks after A+C land: (F) policy, (D+E+G)
+plumbing, (H+I) surfacing.
+
+**Sequencing with 120 and 08** — see plan 08 §14; in short: 120 lands
+`TaskRecord.requirements`, its validator (incl. the two extra keys of §1.1)
+and the rhapsody mapping first — or 121 lands the field under the same name
+and 120 rebases; 121's schema (§3) and route contract (§4) are frozen early
+so plan 08 can be built against a fake dispatcher API; integration last.
+Neither plan implements reservation or pinning this round (§1.1).
+
+### Risks
+
+- **R1 — 120 collision.** Both plans touch `TaskRecord`, the submit
+  validation and `_do_rhapsody_submit`. Mitigation: 120 owns
+  `TaskRecord.requirements`, its key whitelist (+ the two keys of §1.1) and
+  the rhapsody mapping; 121 owns `member_id`/`requeues`, extends 120's
+  validation across members (§4.3), and only *reads* requirements through
+  `task_dispatcher_match.satisfies`. Whoever lands second rebases.
+- **R1b — no reservation (deferred, §1.1).** Two GPU tasks can be dispatched
+  to the same one-GPU pilot: the slot test counts tasks, and rhapsody's
+  `concurrent`/`dragon_v3` backends do not enforce the forwarded
+  requirements. This is a known, accepted gap for this round — the demo's
+  synthetic GPU work does not touch a GPU. Do not paper over it with a
+  half-reservation in the policy; it is one Orbit TODO, tracked against
+  120's PR2.
+- **R2 — `pick_dispatch` skip changes fairness.** A low-priority task that
+  fits can now run before a high-priority one that does not. Correct for
+  class pools, but it *is* a priority-inversion. Documented; a future
+  `strict_priority: bool` knob is the escape hatch.
+- **R3 — staging across hosts.** The dispatcher's own `stage_in`/`stage_out`
+  stay broker-local; anything cross-host must use the pilot's staging plugin.
+  For the demo this is already the campaign plugin's first path
+  (`runner.py:611-635`), so nothing regresses; a generic Orbit client
+  submitting to a non-shared class pool has no result-collection route from
+  the dispatcher. Stated as a known limitation, not fixed here.
+- **R4 — attribute drift.** A pilot's attributes are a snapshot; re-declaring
+  a member with new `software` does not retro-fit running pilots. Intended
+  (the pilot's node really does have the old software), but it must be in the
+  docs or it reads as a bug.
+- **R5 — per-member dwell weakens the global submission throttle.** N members
+  can each submit within one dwell window, so a 5-member pool can put 5
+  pilots in flight where the old pool put 1. Mitigation: keep
+  `max_in_flight_submissions` *also* as a pool-level ceiling
+  (`sum ≤ max(members, max_in_flight_submissions)`) — cheap, and it preserves
+  the "conservative" promise.
+- **R6 — `member_id` in the child endpoint name.** Endpoint names must stay
+  unique and charset-safe; `MEMBER_RE` enforces it, but a very long
+  member id plus a long pool name makes an unwieldy name. Cap the combined
+  length at 64 chars at member-declaration time.
+
+### Rejected alternatives
+
+- **Diff members on `register_session` re-declaration** (no new routes).
+  Rejected: it silently changes the meaning of a re-declaration
+  (`:584-587` is relied on for idempotent reconnect), and a stale replay
+  declaration could drain live members.
+- **One pool per member + a router above the dispatcher** (today's design).
+  Rejected by the decision: it makes cross-site backfill and
+  attribute-aware scale-up a federation concern, duplicating the dispatcher's
+  queue.
+- **Derive the class inside the dispatcher from `gpus_per_node`.** Rejected:
+  the class must be an explicit, extensible field (`pool_class`) so future
+  classes (`fed-largemem`, `fed-quantum`) need no dispatcher change.
