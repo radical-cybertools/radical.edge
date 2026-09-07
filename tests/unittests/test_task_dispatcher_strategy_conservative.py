@@ -660,3 +660,47 @@ def s_pick(h):
     got = _policy(h, {}).pick_dispatch(h)
     assert got is not None
     return got
+
+
+class TestFloorDoesNotStarve:
+    """A member stuck below its floor (dead site, exhausted budget, backoff)
+    must not stop every sibling from ever growing."""
+
+    def test_budget_dead_floor_member_falls_through_to_backlog(self):
+        h = _Harness(_class_pool(
+            _mem('a', min_pilots=1, budget={'node_hours': 1.0}),
+            _mem('b')))
+        h.node_hours['a'] = 1.0          # a can never be grown again
+        h.add_task()
+        s = _policy(h, {'min_dwell_sec': 0.0})
+        s.on_tick(h, h.submit_pilot)
+        assert h.submitted_members == ['b']
+
+    def test_backed_off_floor_member_falls_through(self):
+        h = _Harness(_class_pool(_mem('a', min_pilots=1), _mem('b')))
+        h.add_task()
+        s = _policy(h, {'min_dwell_sec': 0.0,
+                        'max_consecutive_failures': 1,
+                        'failure_backoff_sec': 60.0})
+        h.add_pilot(member_id='a', state=PILOT_FAILED, started_tasks=0)
+        s.on_pilot_state(h.pilots[-1], PILOT_PENDING, PILOT_FAILED)
+        s.on_tick(h, h.submit_pilot)
+        assert h.submitted_members == ['b']
+
+    def test_no_backlog_and_a_dead_floor_member_submits_nothing(self):
+        h = _Harness(_class_pool(
+            _mem('a', min_pilots=1, budget={'node_hours': 1.0})))
+        h.node_hours['a'] = 1.0
+        s = _policy(h, {'min_dwell_sec': 0.0})
+        s.on_tick(h, h.submit_pilot)
+        assert h.submitted_members == []
+
+    def test_floor_is_served_in_declaration_order_not_by_preference(self):
+        """The floor is a debt owed in declaration order."""
+        h = _Harness(_class_pool(
+            _mem('zeta', min_pilots=1, budget={'node_hours': 10.0}),
+            _mem('alpha', min_pilots=1, budget={'node_hours': 10.0})))
+        h.node_hours['zeta'] = 1.0       # alpha has more headroom
+        s = _policy(h, {'min_dwell_sec': 0.0, 'member_preference': 'budget'})
+        s.on_tick(h, h.submit_pilot)
+        assert h.submitted_members == ['zeta']

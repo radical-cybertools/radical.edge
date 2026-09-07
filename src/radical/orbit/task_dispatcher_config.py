@@ -201,9 +201,17 @@ class PoolConfig:
         if not self.multi_member:
             return
         if not self.members:
+            # Exactly the placeholders ``_parse_pool`` projects for an
+            # empty class pool, so an emptied pool persists and replays to
+            # an identical config.
+            self.queue         = DEFAULT_POOL_NAME
+            self.account       = None
             self.endpoint_name = None
             self.pilot_sizes   = {}
             self.default_size  = ''
+            self.min_pilots    = 0
+            self.max_pilots    = 4
+            self.scratch_base  = None
             return
         primary = next(iter(self.members.values()))
         self.queue         = primary.queue

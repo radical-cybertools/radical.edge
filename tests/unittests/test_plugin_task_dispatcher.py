@@ -2221,9 +2221,13 @@ class TestClassPoolSummary:
         s = plugin._summarize_pool(_pool(plugin, sid, 'cpu'))
         assert s['multi_member']     is False
         assert s['pool_class']       == ''
-        assert s['member_ids']       == ['_']
+        # the implicit member is internal: it never reaches the wire
+        assert s['member_ids']       == []
         assert s['max_pilots_total'] == 4
         assert s['queue'] == 'batch' and s['max_pilots'] == 4
+        v = plugin._summarize_pool(_pool(plugin, sid, 'cpu'), verbose=True)
+        assert v['members'] == []
+        assert 'pilot_history' in v and 'node_hours_used' in v
 
     def test_verbose_member_block(self, tmp_path):
         plugin, client, sid = _class_session(tmp_path, members=[
@@ -2278,3 +2282,222 @@ class TestClassPoolSummary:
         assert [m['member_id'] for m in s['members']] == ['m_y']
         assert sum(m['node_hours_used'] for m in s['members']) == 0.0
         assert s['node_hours_used'] == pytest.approx(1.0, abs=0.01)
+
+
+# ---------------------------------------------------------------------------
+# Review round 2 (plan 121 Implementation notes)
+# ---------------------------------------------------------------------------
+
+class TestRhapsodyDialectOnNonSharedMember:
+    """A dialect task's cwd is opaque: the dispatcher neither rewrites it
+    nor writes markers into it, and its own staging routes fall back to
+    legacy stage-by-id behaviour."""
+
+    def _setup(self, tmp_path):
+        plugin, client, sid = _class_session(tmp_path, members=[
+            _member('m_x', shared_fs=False, scratch_base='/remote')])
+        ps    = _pool(plugin, sid, 'fed')
+        pilot = PilotRecord(
+            pid='p.1', pool='fed', owning_sid=sid, size_key='d',
+            rhapsody_backend='concurrent', state=PILOT_ACTIVE,
+            member_id='m_x', endpoint_name='ep_m_x',
+            attributes={'software': ['x']}, nodes=1, cpus_per_node=4,
+            child_endpoint_name='fed_m_x_p.1', capacity=4)
+        ps.pilots['p.1'] = pilot
+        return plugin, client, sid, ps, pilot
+
+    def test_no_cwd_marker_is_put_for_a_dialect_task(self, tmp_path):
+        plugin, client, sid, ps, pilot = self._setup(tmp_path)
+        ps.tasks['t.1'] = TaskRecord(
+            task_id='t.1', pool='fed', owning_sid=sid, cmd=[], cwd='',
+            task_dict={'uid': 't.1', 'cwd': '/client/owned'},
+            state=TASK_QUEUED)
+        stg = MagicMock()
+        stg.put = MagicMock(return_value={})
+
+        async def drive():
+            with patch.object(ps.policy, 'pick_dispatch',
+                              side_effect=[(ps.tasks['t.1'], pilot), None]), \
+                 patch.object(plugin, '_get_rhapsody_client',
+                              new=AsyncMock(return_value=MagicMock())), \
+                 patch.object(plugin, '_get_staging_client',
+                              new=AsyncMock(return_value=stg)):
+                plugin._drain_pending(ps)
+                await asyncio.sleep(0.05)
+        asyncio.run(drive())
+        stg.put.assert_not_called()
+        assert ps.tasks['t.1'].state == TASK_RUNNING
+
+    def test_stage_in_for_a_dialect_task_is_legacy(self, tmp_path):
+        """Its own ``cwd`` field is always '' -- applying "not yet placed"
+        would 409 every dialect stage_in, a legacy behaviour change."""
+        plugin, client, sid, ps, _ = self._setup(tmp_path)
+        ps.tasks['t.1'] = TaskRecord(
+            task_id='t.1', pool='fed', owning_sid=sid, cmd=[], cwd='',
+            member_id='m_x', task_dict={'uid': 't.1'}, state=TASK_QUEUED)
+        r = client.post(f'{plugin.namespace}/stage_in/{sid}/t.1', json={
+            'pool': 'fed', 'filename': 'in.txt',
+            'content_b64': base64.b64encode(b'x').decode('ascii')})
+        assert r.status_code == 200, r.text
+
+    def test_dialect_stage_in_lands_in_the_pool_scratch(self, tmp_path):
+        """An empty record cwd must fall back to the pool scratch, never
+        resolve to the broker's working directory."""
+        plugin, client, sid, ps, _ = self._setup(tmp_path)
+        ps.tasks['t.1'] = TaskRecord(
+            task_id='t.1', pool='fed', owning_sid=sid, cmd=[], cwd='',
+            member_id='m_x', task_dict={'uid': 't.1'}, state=TASK_QUEUED)
+        r = client.post(f'{plugin.namespace}/stage_in/{sid}/t.1', json={
+            'pool': 'fed', 'filename': 'in.txt',
+            'content_b64': base64.b64encode(b'x').decode('ascii')})
+        assert r.status_code == 200, r.text
+        assert Path(r.json()['cwd']) == ps.scratch_base / 't.1'
+        assert (ps.scratch_base / 't.1' / 'in.txt').read_bytes() == b'x'
+
+
+class TestSharedFsCwdCreation:
+
+    def test_explicit_cwd_is_created_before_the_copy(self, tmp_path):
+        """A client-supplied cwd is only a promise; ``_claim`` did not
+        create it, so ``_place_inputs`` must."""
+        plugin, client, sid = _class_session(tmp_path, members=[
+            _member('m_x', scratch_base=str(tmp_path / 'shared'))])
+        ps  = _pool(plugin, sid, 'fed')
+        cwd = tmp_path / 'client' / 'owned'
+        with patch.object(ps.policy, 'pick_dispatch', return_value=None):
+            r = client.post(f'{plugin.namespace}/submit/{sid}', json={
+                'pool': 'fed', 'task_id': 't.1', 'cmd': ['/bin/echo'],
+                'cwd': str(cwd),
+                'inputs_b64': {'md.json':
+                               base64.b64encode(b'hi').decode('ascii')}})
+        assert r.status_code == 200, r.text
+        assert not cwd.exists()
+
+        pilot = PilotRecord(
+            pid='p.1', pool='fed', owning_sid=sid, size_key='d',
+            rhapsody_backend='concurrent', state=PILOT_ACTIVE,
+            member_id='m_x', endpoint_name='ep_m_x',
+            attributes={'software': ['x']}, nodes=1, cpus_per_node=4,
+            child_endpoint_name='fed_m_x_p.1', capacity=4)
+        ps.pilots['p.1'] = pilot
+        TestCwdAtDispatch()._dispatch(plugin, ps, ps.tasks['t.1'], pilot)
+        assert (cwd / 'md.json').read_bytes() == b'hi'
+
+
+class TestRemoteScratchIsNotExpandedLocally:
+
+    def test_tilde_travels_untouched_to_a_non_shared_member(self, tmp_path):
+        """'~' means the broker's home only when the broker shares the
+        filesystem."""
+        plugin, client, sid = _class_session(tmp_path, members=[
+            _member('m_x', shared_fs=False, scratch_base='~/site_scratch')])
+        ps    = _pool(plugin, sid, 'fed')
+        pilot = PilotRecord(
+            pid='p.1', pool='fed', owning_sid=sid, size_key='d',
+            rhapsody_backend='concurrent', state=PILOT_ACTIVE,
+            member_id='m_x', endpoint_name='ep_m_x',
+            attributes={'software': ['x']}, nodes=1, cpus_per_node=4,
+            child_endpoint_name='fed_m_x_p.1', capacity=4)
+        ps.pilots['p.1'] = pilot
+        with patch.object(ps.policy, 'pick_dispatch', return_value=None):
+            client.post(f'{plugin.namespace}/submit/{sid}', json={
+                'pool': 'fed', 'task_id': 't.1', 'cmd': ['/bin/echo']})
+        TestCwdAtDispatch()._dispatch(plugin, ps, ps.tasks['t.1'], pilot)
+        assert ps.tasks['t.1'].cwd == '~/site_scratch/t.1'
+
+
+class TestCancelTasksOrdering:
+
+    def test_cancelled_tasks_are_terminal_before_the_first_await(self,
+                                                                tmp_path):
+        """They must not be re-queued (and possibly re-dispatched to a
+        sibling) between the cancel and the fail."""
+        plugin, client, sid = _class_session(tmp_path, members=[
+            _member('m_x'), _member('m_y')])
+        removal = TestMemberRemoval()
+        ps, _, task = removal._pilot_with_task(plugin, sid, 'm_x')
+        seen = {}
+
+        async def _cancel(pool_state, rec):
+            seen['state'] = task.state
+
+        with patch.object(plugin, '_do_pilot_cancel', new=_cancel):
+            r = client.request(
+                'DELETE', f'{plugin.namespace}/pool/{sid}/fed/members/m_x',
+                json={'cancel_tasks': True})
+        assert seen['state'] == TASK_FAILED
+        assert r.json()['tasks_failed']   == 1
+        assert r.json()['tasks_requeued'] == 0
+
+
+class TestEmptiedPoolSubmit:
+
+    def test_submit_to_a_member_less_pool_is_400(self, tmp_path):
+        plugin, client, sid = _class_session(tmp_path)
+        r = client.request(
+            'DELETE', f'{plugin.namespace}/pool/{sid}/fed/members/m_x',
+            json={'force': True})
+        assert r.status_code == 200, r.text
+        r = client.post(f'{plugin.namespace}/submit/{sid}', json={
+            'pool': 'fed', 'task_id': 't.1', 'cmd': ['/bin/echo']})
+        assert r.status_code == 400
+        assert r.json()['detail'] == "pool 'fed' has no members"
+
+    def test_it_fires_without_a_requirements_block(self, tmp_path):
+        plugin, client, sid = _class_session(tmp_path)
+        client.request(
+            'DELETE', f'{plugin.namespace}/pool/{sid}/fed/members/m_x',
+            json={'force': True})
+        r = client.post(f'{plugin.namespace}/submit_rh/{sid}', json={
+            'tasks': [{'uid': 't.1', 'pool': 'fed', 'cwd': '/tmp'}]})
+        assert r.status_code == 400
+        assert r.json()['detail'] == "pool 'fed' has no members"
+
+
+class TestAddMemberFingerprint:
+
+    def test_reordered_software_list_is_still_idempotent(self, tmp_path):
+        """A federation rebuilding its declarations from a set must not get
+        a 409 for a member that has not changed."""
+        plugin, client, sid = _class_session(tmp_path, members=[
+            _member('m_x', attributes={'software': ['a', 'b'],
+                                       'site': 'NERSC'})])
+        r = client.post(f'{plugin.namespace}/pool/{sid}/fed/members',
+                        json=_member('m_x',
+                                     attributes={'software': ['b', 'a'],
+                                                 'site': 'NERSC'}))
+        assert r.status_code == 200, r.text
+        assert r.json()['created'] is False
+        # the stored declaration is untouched (order preserved as declared)
+        assert _pool(plugin, sid, 'fed').config.members['m_x'] \
+            .attributes['software'] == ['a', 'b']
+
+    def test_a_real_change_is_still_409(self, tmp_path):
+        plugin, client, sid = _class_session(tmp_path, members=[
+            _member('m_x', attributes={'software': ['a', 'b']})])
+        r = client.post(f'{plugin.namespace}/pool/{sid}/fed/members',
+                        json=_member('m_x',
+                                     attributes={'software': ['a', 'c']}))
+        assert r.status_code == 409
+
+
+class TestLegacyPilotMemberId:
+
+    def test_a_legacy_pilot_carries_an_empty_member_id(self, tmp_path):
+        """The implicit member's sentinel never reaches the wire."""
+        _, plugin = _make_plugin(tmp_path)
+        client = TestClient(plugin._app)
+        sid = _session_with_cpu(client, plugin, sid='A',
+                                lifetime='persistent')
+        ps = _pool(plugin, sid, 'cpu')
+        plugin._dispatch_notify = lambda t, d: None
+
+        async def drive():
+            with patch.object(plugin, '_do_pilot_submit',
+                              new=AsyncMock(return_value=None)):
+                return plugin._submit_pilot(ps, None)
+        pid = asyncio.run(drive())
+        assert ps.pilots[pid].member_id == ''
+        # ...and it still resolves to the implicit member
+        assert ps.member(ps.pilots[pid].member_id).member_id == '_'
+        assert ps.live_pilots_for('_') == [ps.pilots[pid]]

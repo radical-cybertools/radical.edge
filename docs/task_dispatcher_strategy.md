@@ -183,8 +183,19 @@ member.  For a legacy single-site pool (one implicit member) each is
 arithmetically identical to the pre-121 pool-level version.  ``on_tick``
 does at most one submission per tick, in this order:
 
-1. **Floor** — the first member (declaration order) below its
-   ``min_pilots``.
+1. **Floor** — the members below their ``min_pilots``, served in
+   declaration order (a floor is a debt, not a preference).  If none of
+   them clears the guards in step 3, the tick **falls through** to the
+   backlog step rather than returning: a member whose site is down sits
+   below its floor forever, and stopping there would let one dead site
+   starve every sibling.
+
+   **Legacy behaviour change (plan 121).**  Before 121 the conservative
+   policy returned immediately when nothing was pending, so ``min_pilots``
+   was never acted on and a warm floor did not exist.  It does now, for
+   legacy single-site pools too: a pool declaring ``min_pilots: 2`` will
+   submit pilots proactively with an empty queue.  The default is ``0``,
+   so a pool that never set it is unaffected.
 2. **Backlog** — otherwise, scale up when a pending task no *live* pilot
    could ever serve exists, or when ``len(pending)`` exceeds the free
    capacity of the pilots that *can* serve something pending.  An idle CPU

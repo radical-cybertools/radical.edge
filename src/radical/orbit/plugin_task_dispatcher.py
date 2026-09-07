@@ -330,11 +330,18 @@ def check_requirements_against_pool(req: dict, pool: PoolConfig) -> None:
 
     Raises :class:`RequirementsError` carrying the exact 400 detail string.
     '''
-    if not req:
-        return
-
     members = list(pool.members.values())
     if not members:
+        # An emptied class pool (its last member removed with ``force``)
+        # can run nothing.  Say so rather than queue a task forever --
+        # this is the only path that can observe a member-less pool, and
+        # it holds whether or not the task declared requirements.
+        if pool.multi_member:
+            raise RequirementsError(
+                f'pool {pool.name!r} has no members')
+        return
+
+    if not req:
         return
 
     # (display_name, PilotSize) across every member, ordered by the name
@@ -1586,6 +1593,25 @@ class PluginTaskDispatcher(Plugin):
                        f"'members'")
         return ps
 
+    @staticmethod
+    def _member_fingerprint(member: PoolMember) -> dict:
+        '''Return a declaration-equality view of a member.
+
+        Used only to decide whether a re-POST is the *same* declaration.
+        List-valued attributes (``software``, by convention) are compared
+        **order-insensitively**: a federation that rebuilds its member
+        declarations from a set or a dict on restart would otherwise emit
+        ``['pytorch', 'lammps']`` where it once emitted the reverse and get
+        a 409 for a member that has not changed.  Every other field is
+        compared verbatim.
+        '''
+        d = asdict(member)
+        d['attributes'] = {
+            k: sorted(v) if isinstance(v, list) else v
+            for k, v in (d.get('attributes') or {}).items()
+        }
+        return d
+
     async def _route_add_member(self, request: Request) -> dict:
         '''Add one member to a class pool.
 
@@ -1617,7 +1643,8 @@ class PluginTaskDispatcher(Plugin):
 
         existing = ps.config.members.get(member.member_id)
         if existing is not None:
-            if asdict(existing) == asdict(member):
+            if self._member_fingerprint(existing) == \
+                    self._member_fingerprint(member):
                 return {'pool'   : name,
                         'member' : asdict(existing),
                         'members': list(ps.config.members),
@@ -1701,7 +1728,23 @@ class PluginTaskDispatcher(Plugin):
         touched = {t.task_id for t in ps.tasks.values()
                    if t.pilot_id in {p.pid for p in doomed}}
 
-        # -- 2. cancel the member's pilots (re-queues their tasks) -------
+        # -- 2. cancel_tasks, still before the first await ---------------
+        # These tasks must reach a terminal state now: the moment the
+        # cancels below re-queue them, any other path on the event loop
+        # may dispatch them to a sibling member, and failing them
+        # afterwards would kill a task that is already running elsewhere.
+        # Terminal tasks are skipped by the re-queue branch, so this also
+        # keeps `tasks_requeued` honest.
+        failed = 0
+        if cancel_tasks:
+            for tid in sorted(touched):
+                task = ps.tasks.get(tid)
+                if task is not None and not task.is_terminal():
+                    self._mark_task_failed(
+                        ps, task, 'member removed with cancel_tasks')
+                    failed += 1
+
+        # -- 3. cancel the member's pilots (re-queues their tasks) -------
         cancelled = 0
         for pilot in doomed:
             try:
@@ -1710,16 +1753,6 @@ class PluginTaskDispatcher(Plugin):
             except Exception as e:
                 log.warning('[%s] pilot %s cancel failed on member '
                             'removal: %s', self.instance_name, pilot.pid, e)
-
-        failed = 0
-        # -- 3. cancel_tasks: fail everything this member was running ----
-        if cancel_tasks:
-            for tid in touched:
-                task = ps.tasks.get(tid)
-                if task is not None and not task.is_terminal():
-                    self._mark_task_failed(
-                        ps, task, 'member removed with cancel_tasks')
-                    failed += 1
 
         # -- 4. unsatisfiable sweep --------------------------------------
         # The runtime counterpart of the submit-time gate: a task whose
@@ -2232,8 +2265,14 @@ class PluginTaskDispatcher(Plugin):
         only**; anything cross-host has to go through the pilot's own
         staging plugin.  No record → unchanged legacy behaviour (the route
         has always staged into the pool scratch for any id).
+
+        A **rhapsody-dialect** record is treated exactly like no record:
+        its ``cwd`` lives inside the opaque task dict and its own ``cwd``
+        field is always ``''``, so applying the "not yet placed" rule to it
+        would turn every dialect task's stage_in into a 409 — a legacy
+        behaviour change, not a safety gain.
         '''
-        if rec is None:
+        if rec is None or rec.task_dict is not None:
             return
         if not rec.cwd:
             raise HTTPException(status_code=409,
@@ -2304,7 +2343,13 @@ class PluginTaskDispatcher(Plugin):
         rec = pool_state.tasks.get(task_id)
         self._check_broker_local(pool_state, rec)
 
-        if rec is not None:
+        # An empty ``cwd`` means the record cannot say where the task will
+        # run (a rhapsody-dialect task, whose cwd is inside its opaque task
+        # dict).  ``_check_broker_local`` has already 409'd every *other*
+        # unplaced record, so falling back to the pool scratch here is the
+        # unchanged legacy path -- and never ``Path('')``, which would
+        # resolve to the broker's working directory.
+        if rec is not None and rec.cwd:
             scratch = Path(rec.cwd)
             scratch.mkdir(parents=True, exist_ok=True)
         else:
@@ -2340,8 +2385,10 @@ class PluginTaskDispatcher(Plugin):
             self._check_broker_local(ps, rec)
             # Use the record's own cwd: recomputing ``scratch_base /
             # task_id`` is wrong for any task with an explicit or
-            # dispatcher-assigned cwd.
-            path = Path(rec.cwd) / filename
+            # dispatcher-assigned cwd.  An empty cwd (a rhapsody-dialect
+            # task) falls back to it, as before -- never ``Path('')``.
+            base = Path(rec.cwd) if rec.cwd else ps.scratch_base / task_id
+            path = base / filename
             if not path.is_file():
                 raise HTTPException(
                     status_code=404,
@@ -2543,7 +2590,11 @@ class PluginTaskDispatcher(Plugin):
             state            = PILOT_PENDING,
             submitted_at     = time.time(),
             walltime_deadline= time.time() + size.walltime_sec,
-            member_id        = member.member_id,
+            # A legacy pool's implicit member is an internal construct:
+            # its pilots carry '' on the wire, exactly as every pre-121
+            # record does, so nothing downstream ever sees the sentinel.
+            member_id        = ('' if member.member_id == IMPLICIT_MEMBER
+                                else member.member_id),
             attributes       = dict(member.attributes),
             endpoint_name    = member.endpoint_name or '',
             nodes            = size.nodes,
@@ -2898,11 +2949,18 @@ class PluginTaskDispatcher(Plugin):
         '''
         if task.cwd_assigned:
             member = pool_state.member(pilot.member_id)
-            base   = (Path(member.scratch_base).expanduser()
-                      if member is not None and member.scratch_base
-                      else pool_state.scratch_base)
+            shared = member is None or member.shared_fs
+            if member is not None and member.scratch_base:
+                base = Path(member.scratch_base)
+                # '~' means the broker's home only when the broker shares
+                # the filesystem; for a remote member it must travel
+                # untouched and be expanded on the member's own host.
+                if shared:
+                    base = base.expanduser()
+            else:
+                base = pool_state.scratch_base
             task.cwd = str(base / task.task_id)
-            if member is None or member.shared_fs:
+            if shared:
                 try:
                     Path(task.cwd).mkdir(parents=True, exist_ok=True)
                 except OSError as e:
@@ -2928,13 +2986,18 @@ class PluginTaskDispatcher(Plugin):
         could not be placed is FAILED here rather than run without them.
 
         - ``shared_fs`` member → copy from the broker-local spool into the
-          task's cwd (which the dispatcher created at ``_claim``).
+          task's cwd.  The dispatcher created that directory at ``_claim``
+          when it assigned the cwd itself, but a **client-supplied** cwd is
+          only a promise, so create it here too.
         - non-shared member → ``put`` each file to ``<cwd>/<name>`` over
           the **pilot's own** staging plugin.  That put is also what
-          creates the directory remotely, so an input-less task on such a
-          member gets one zero-byte marker put to the same effect —
-          cheaper than adding a ``mkdir`` route to a staging plugin that
-          only has put/get/list.
+          creates the directory remotely, so an input-less **exec-style**
+          task on such a member gets one zero-byte marker put to the same
+          effect — cheaper than adding a ``mkdir`` route to a staging
+          plugin that only has put/get/list.  A **rhapsody-dialect** task
+          gets no marker: its cwd rides inside the opaque task dict, is
+          never rewritten by the dispatcher, and may name a directory the
+          client already owns — writing into it would be a guess.
         '''
         member = pool_state.member(pilot.member_id)
         shared = member is None or member.shared_fs
@@ -2958,6 +3021,8 @@ class PluginTaskDispatcher(Plugin):
             spool = pool_state.spool_dir(task.task_id)
             try:
                 if shared:
+                    if task.spooled:
+                        Path(task.cwd).mkdir(parents=True, exist_ok=True)
                     for name in task.spooled:
                         shutil.copyfile(spool / name,
                                         Path(task.cwd) / name)
@@ -2966,7 +3031,7 @@ class PluginTaskDispatcher(Plugin):
                         await asyncio.to_thread(
                             stg.put, str(spool / name),
                             str(Path(task.cwd) / name), True)
-                else:
+                elif task.task_dict is None:
                     marker = spool / _CWD_MARKER
                     marker.parent.mkdir(parents=True, exist_ok=True)
                     marker.touch()
@@ -3364,9 +3429,11 @@ class PluginTaskDispatcher(Plugin):
             # -- capability class ------------------------------------
             'pool_class'      : cfg.pool_class,
             'multi_member'    : cfg.multi_member,
-            # a list of *strings*, named apart from the verbose `members`
-            # (a list of objects) so no consumer has to discover the type
-            'member_ids'      : list(cfg.members),
+            # A list of *strings*, named apart from the verbose `members`
+            # (a list of objects) so no consumer has to discover the type.
+            # Empty for a legacy pool: its single implicit member is an
+            # internal construct, never part of the wire contract.
+            'member_ids'      : list(cfg.members) if cfg.multi_member else [],
             'max_pilots_total': sum(m.max_pilots for m in ps.members()),
         }
         if verbose:
@@ -3386,7 +3453,7 @@ class PluginTaskDispatcher(Plugin):
             summary['node_hours_used'] = node_hours(history, now=now)
             summary['members'] = [
                 self._member_dict(ps, m, now) for m in ps.members()
-            ]
+            ] if cfg.multi_member else []
         return summary
 
     def _member_dict(self, ps: PoolState, m: PoolMember,

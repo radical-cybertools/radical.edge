@@ -337,8 +337,15 @@ class TestNodeHours:
         hist = [{'nodes': 2, 'active_at': 1000.0, 'finished_at': 4600.0}]
         assert node_hours(hist) == 2.0
 
-    def test_falls_back_to_submitted_at(self):
+    def test_queue_time_is_never_charged(self):
+        """No ``active_at`` -> the pilot never ran; charge nothing.  Queue
+        time is not allocation time."""
         hist = [{'nodes': 1, 'submitted_at': 1000.0, 'finished_at': 2800.0}]
+        assert node_hours(hist) == 0.0
+
+    def test_charged_from_active_at_not_submitted_at(self):
+        hist = [{'nodes': 1, 'submitted_at': 0.0, 'active_at': 1000.0,
+                 'finished_at': 2800.0}]
         assert node_hours(hist) == 0.5
 
     def test_live_pilot_charged_up_to_now(self):
@@ -346,9 +353,9 @@ class TestNodeHours:
         assert node_hours(hist, now=8200.0) == 2.0
 
     def test_unstarted_pilot_is_not_charged(self):
-        """A record with no usable start must not be charged from the
+        """A record that never reached ACTIVE must not be charged from the
         epoch to now."""
-        assert node_hours([{'nodes': 4, 'submitted_at': 0.0,
+        assert node_hours([{'nodes': 4, 'submitted_at': 1000.0,
                             'active_at': None}], now=8200.0) == 0.0
 
     def test_pre_121_history_uses_pilot_sizes(self):

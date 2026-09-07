@@ -25,6 +25,13 @@ from __future__ import annotations
 from typing import Any
 
 
+# Backends whose group launch needs a ``pmi`` value the dispatcher cannot
+# infer (rhapsody dragon v1, dragon.py:484-486): they slot-queue rather
+# than place ranks.  Kept here so the matcher and the submit-time gate in
+# ``plugin_task_dispatcher`` share one list.
+NO_MPI_BACKENDS = frozenset(['dragon_v1'])
+
+
 def satisfies(requirements: dict | None, attributes: dict | None,
               size: Any | None) -> str | None:
     '''Return ``None`` when *requirements* fit this shape, else a reason.
@@ -105,9 +112,3 @@ def satisfies(requirements: dict | None, attributes: dict | None,
 
     return None
 
-
-# Backends whose group launch needs a ``pmi`` value the dispatcher cannot
-# infer (rhapsody dragon v1, dragon.py:484-486): they slot-queue rather
-# than place ranks.  Kept here so the matcher and the submit-time gate in
-# ``plugin_task_dispatcher`` share one list.
-NO_MPI_BACKENDS = frozenset(['dragon_v1'])

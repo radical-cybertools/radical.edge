@@ -15,7 +15,9 @@ to the pre-121 pool-level version.
 Policy
 ------
 - Scale-up only on the housekeeping tick, one submission per tick.
-- Honour each member's ``min_pilots`` floor first (declaration order).
+- Honour each member's ``min_pilots`` floor first (declaration order) --
+  but fall through to the backlog step when no under-floor member clears
+  its guards, so one dead site cannot starve its siblings.
 - Otherwise scale up when the backlog exceeds the capacity that can
   actually *serve* it — a pending task no live pilot could ever run
   (attributes, size) counts as un-served however idle the fleet is.
@@ -206,6 +208,34 @@ class ConservativePolicy(DispatchPolicy):
             return 1.0
         return max(0.0, min(1.0, left / total))
 
+    def _pass_guards(self, pool_state, candidates, now_ts):
+        '''Return the candidates that clear every per-member submit guard.
+
+        Failure backoff, ``max_in_flight_submissions``,
+        ``member.max_pilots``, ``min_dwell_sec`` since *that member's* last
+        submit, and an exhausted declared budget.  Declaration order is
+        preserved.
+        '''
+        eligible = []
+        for m in candidates:
+            mid = m.member_id
+            if self._in_backoff(mid, now_ts):
+                continue
+            mine = pool_state.live_pilots_for(mid)
+            if len(mine) >= m.max_pilots:
+                continue
+            if sum(1 for p in mine if p.state in _PRE_ACTIVE) \
+                    >= self._max_in_flight_subs:
+                continue
+            if now_ts - self._last_submit_ts.get(mid, 0.0) \
+                    < self._min_dwell_sec:
+                continue
+            left = pool_state.member_budget_left(mid, now_ts)
+            if left is not None and left <= 0:
+                continue
+            eligible.append(m)
+        return eligible
+
     # -- decisions -------------------------------------------------------
 
     def on_tick(self, pool_state,
@@ -221,16 +251,18 @@ class ConservativePolicy(DispatchPolicy):
         if not members:
             return
 
-        candidates : list['PoolMember'] = []
-        reason     = 'min_pilots'
+        # -- 1. floor: members below their min_pilots, declaration order --
+        # The floor is tried first, but it must not be able to *starve* the
+        # pool: a member whose site is down sits below its floor forever,
+        # and returning here would stop every sibling from ever growing.
+        # So a floor step that survives no guard falls through to backlog.
+        reason   = 'min_pilots'
+        floor    = [m for m in members
+                    if len(pool_state.live_pilots_for(m.member_id))
+                    < m.min_pilots]
+        eligible = self._pass_guards(pool_state, floor, now_ts)
 
-        # -- 1. floor: first member (declaration order) below min_pilots --
-        for m in members:
-            if len(pool_state.live_pilots_for(m.member_id)) < m.min_pilots:
-                candidates = [m]
-                break
-
-        if not candidates:
+        if not eligible:
             # -- 2. backlog ----------------------------------------------
             reason  = 'backlog'
             pending = pool_state.pending_queue()
@@ -263,33 +295,11 @@ class ConservativePolicy(DispatchPolicy):
             # Grow a member that can run the task at the head of the
             # backlog -- the oldest unservable one when there is one.
             head = unservable[0] if unservable else pending[0]
-            for m in members:
-                size = m.pilot_sizes.get(m.default_size)
-                if satisfies(head.requirements, m.attributes, size) is None:
-                    candidates.append(m)
-
-            if not candidates:
-                return
-
-        # -- 3. per-member guards ----------------------------------------
-        eligible = []
-        for m in candidates:
-            mid  = m.member_id
-            if self._in_backoff(mid, now_ts):
-                continue
-            mine = pool_state.live_pilots_for(mid)
-            if len(mine) >= m.max_pilots:
-                continue
-            if sum(1 for p in mine if p.state in _PRE_ACTIVE) \
-                    >= self._max_in_flight_subs:
-                continue
-            if now_ts - self._last_submit_ts.get(mid, 0.0) \
-                    < self._min_dwell_sec:
-                continue
-            left = pool_state.member_budget_left(mid, now_ts)
-            if left is not None and left <= 0:
-                continue
-            eligible.append(m)
+            candidates = [m for m in members
+                          if satisfies(head.requirements, m.attributes,
+                                       m.pilot_sizes.get(m.default_size))
+                          is None]
+            eligible = self._pass_guards(pool_state, candidates, now_ts)
 
         if not eligible:
             return
@@ -303,15 +313,18 @@ class ConservativePolicy(DispatchPolicy):
         if in_flight_subs >= pool_ceiling:
             return
 
-        # -- 4. rank -----------------------------------------------------
-        def _key(m: 'PoolMember'):
-            frac = self._budget_fraction(pool_state, m, now_ts)
-            load = len(pool_state.live_pilots_for(m.member_id))
-            if self._member_preference == 'least_loaded':
-                return (load, -frac, m.member_id)
-            return (-frac, load, m.member_id)
+        # -- 3. rank -----------------------------------------------------
+        # The floor is a debt owed in declaration order, so it is served in
+        # that order; only the backlog step ranks by member_preference.
+        if reason == 'backlog':
+            def _key(m: 'PoolMember'):
+                frac = self._budget_fraction(pool_state, m, now_ts)
+                load = len(pool_state.live_pilots_for(m.member_id))
+                if self._member_preference == 'least_loaded':
+                    return (load, -frac, m.member_id)
+                return (-frac, load, m.member_id)
 
-        eligible.sort(key=_key)
+            eligible.sort(key=_key)
         chosen = eligible[0]
 
         # -- 5. submit ---------------------------------------------------

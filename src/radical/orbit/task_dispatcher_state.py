@@ -202,6 +202,9 @@ def node_hours(history: list[dict] | None,
        whose records carry no snapshot.
     3. zero (the entry is skipped).
 
+    An entry with no ``active_at`` is skipped entirely: a pilot that never
+    reached ACTIVE consumed no allocation, and queue time is not charged.
+
     *pilot_sizes* accepts either ``{key: PilotSize}`` or the plain-dict
     form a summary carries, and is optional precisely because the snapshot
     makes it unnecessary for anything written by this version.
@@ -226,9 +229,12 @@ def node_hours(history: list[dict] | None,
         if not nodes:
             continue
 
-        # A record with no usable start (never submitted) must not be
-        # charged from the epoch to `now`.
-        start = entry.get('active_at') or entry.get('submitted_at') or 0.0
+        # Charge from ``active_at`` ONLY: a pilot's queue time is not
+        # allocation time, and a pilot that never reached ACTIVE consumed
+        # nothing.  (Falling back to ``submitted_at`` would both bill queue
+        # time and charge a never-started record from the epoch to `now`.)
+        # This matches the federation's node_hours_from_history semantics.
+        start = entry.get('active_at')
         if not start:
             continue
         end = entry.get('finished_at') or now

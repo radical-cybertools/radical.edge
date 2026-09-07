@@ -88,6 +88,13 @@ export function css() {
       letter-spacing: 0.3px;
     }
     .td-sizes-table tr.td-default-size td { background: var(--bg2); font-weight: 500; }
+    /* a member's own size table, nested one row below its member row */
+    .td-member-sizes > td {
+      padding: 0 0 8px 18px;
+      border-bottom: 1px solid var(--border, #e5e5e5);
+      background: var(--bg2);
+    }
+    .td-member-sizes .td-sizes-table { margin: 0; font-size: 0.78rem; }
     .td-empty-pools {
       padding: 12px;
       color: var(--muted);
@@ -179,10 +186,12 @@ function nodeHours(m) {
   return `${used} / ${left}`;
 }
 
-// Multi-member pools render a members table; each row expands (a plain
-// <details>, no framework) into that member's size table.  Per-member
-// node-hours come from the verbose `pool/{sid}/{name}` route, so a
-// non-verbose `pools` listing shows '?' until the card is expanded.
+// Multi-member pools render a members table; each member row is followed
+// by a nested row carrying that member's own size table, reusing the same
+// renderer as a single-site pool.  Per-member node-hours and pilot_sizes
+// come from the verbose `pool/{sid}/{name}` route, so a non-verbose
+// `pools` listing shows '?' and omits the nested row until the card is
+// opened.
 function membersTable(p, api) {
   const members = p.members || (p.member_ids || []).map(id => ({member_id: id}));
   const rows = members.map(m => {

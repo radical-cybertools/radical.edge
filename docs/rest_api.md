@@ -354,6 +354,39 @@ than waiting a tick.
   anything until a member is added back.
 - `404` for an unknown session, pool or member; `409` for a non-class pool.
 
+### Pool summaries
+
+`GET pools` (non-verbose) gains `pool_class`, `multi_member`,
+`member_ids` (a list of **strings**; empty for a legacy pool, whose single
+implicit member is an internal construct and never part of the wire) and
+`max_pilots_total` (`sum(member.max_pilots)` — the Explorer header needs
+it and this route must stay cheap).
+
+`GET pool/{sid}/{name}` (verbose) additionally gains `pilot_history` (the
+pool's pilots, oldest first, each carrying `member_id`, `attributes` and
+its size snapshot), a pool-total `node_hours_used`, and `members`: one
+object per member with
+
+```
+member_id, endpoint_name, queue, account, attributes, budget,
+min_pilots, max_pilots, shared_fs, pilot_sizes, default_size,
+live_pilots, pilots_active, node_hours_used,
+node_hours_remaining (null when no budget), pilot_history
+```
+
+`node_hours_used` is computed server-side from each pilot's own size
+snapshot, so a mixed-node-count pool is correct and a **departed** member's
+pilots still size themselves.  Node-hours are charged from a pilot's
+`active_at` only: queue time is not allocation time, and a pilot that never
+reached ACTIVE is charged nothing.  The pool total therefore covers pilots
+whose member has since been removed — which is why it is reported
+separately rather than summed from the member figures.
+
+`pilot_history` is **unbounded** (pre-existing behaviour: the pilot ledger
+itself is never pruned within a pool's lifetime, only whole pool state
+directories are, after 30 idle days).  A long-lived pool's verbose summary
+therefore grows with its pilot count; `recent_tasks` stays capped at 50.
+
 ### `submit/{sid}` body
 
 ```json
@@ -402,6 +435,20 @@ run.  The names land in the task record's `spooled` field — **not**
 `inputs`, which keeps its client-declared meaning.  The spool is dropped on
 every terminal state and deliberately **survives a re-queue** (the task is
 about to be dispatched somewhere else).
+
+The spool is written **synchronously**, on the submit path, before the
+response returns.  That is deliberate at this size: the caps above bound
+one submit to 8 MiB, and the alternative — acknowledging a task whose
+inputs are not yet on disk — would make a broker crash between the two
+silently produce a task that runs with missing files.
+
+The pilot serving a non-shared member must allow writes under that
+member's `scratch_base`.  The `staging` plugin's allow-list is `$HOME` plus
+`/tmp`, extended at session start with `$RADICAL_ORBIT_SCRATCH_BASE` —
+which the dispatcher sets on every pilot it launches, to that pilot's
+member `scratch_base`.  A pilot started outside the dispatcher needs the
+variable set by hand, or its puts are refused with *Path escapes allowed
+directories*.
 
 | status | when |
 |---|---|

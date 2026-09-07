@@ -574,3 +574,87 @@ def test_inputs_reach_a_non_shared_member(harness, tmp_path):
     assert _FakeRhapsody.received[0][1]['uid'] == 't.1'
     # nothing created on the broker host under the member's scratch
     assert not remote.exists()
+
+
+def test_inputs_reach_a_non_shared_member_through_the_real_staging_plugin(
+        harness, tmp_path, monkeypatch):
+    """The staging plugin's allow-list is `$HOME` + `/tmp` only, so a real
+    member's `scratch_base` (`/pscratch/...`) would be refused with "Path
+    escapes allowed directories" -- the dispatcher's own input placement
+    blocked by its own staging plugin.  The pilot is started with
+    `RADICAL_ORBIT_SCRATCH_BASE` set to that member's scratch_base
+    (`_build_pilot_env`), and the staging session extends its allow-list
+    from it.
+
+    To *prove* the mechanism rather than ride on /tmp already being
+    allowed, the static bases are narrowed to a nonexistent directory here:
+    only the env var can let this put through.
+    """
+    import base64
+    from radical.orbit.plugin_staging import PluginStaging, StagingSession
+
+    scratch = tmp_path / 'site_scratch'
+    scratch.mkdir()
+    monkeypatch.setattr(StagingSession, '_ALLOWED_BASES',
+                        ['/nonexistent/base'])
+    monkeypatch.setenv('RADICAL_ORBIT_SCRATCH_BASE', str(scratch))
+
+    fed = _Fed(harness, [_member('m_x', ['x'], shared_fs=False,
+                                 scratch_base=str(scratch))], tmp_path)
+
+    # the pilot serves the REAL staging plugin, not the fake one
+    before = set(fed.ps.pilots)
+    pid    = fed.on_loop(
+        lambda: fed.td._submit_pilot(fed.ps, None, member_id='m_x'))
+    assert fed.wait(lambda: fed.ps.pilots[pid].child_endpoint_name)
+    rec = fed.ps.pilots[pid]
+    fed.make_runtime(fed.srv.url, name=rec.child_endpoint_name,
+                     serve=[_FakeRhapsody, PluginStaging])
+    assert fed.wait(lambda: fed.ps.pilots[pid].state == 'ACTIVE')
+    assert set(fed.ps.pilots) - before == {pid}
+
+    r = fed.submit('t.1', requirements={'software': ['x']},
+                   inputs_b64={'md.json':
+                               base64.b64encode(b'{"a":1}').decode()})
+    assert r.status_code == 200, r.text
+    assert fed.wait(lambda: len(_FakeRhapsody.received) == 1), \
+        'task never reached the pilot: %s' % fed.ps.tasks['t.1'].error
+
+    task = fed.ps.tasks['t.1']
+    assert task.state == 'RUNNING', task.error
+    assert task.cwd   == str(scratch / 't.1')
+    # the real plugin actually wrote the bytes where the task will run
+    assert (scratch / 't.1' / 'md.json').read_bytes() == b'{"a":1}'
+
+
+def test_real_staging_refuses_a_scratch_outside_the_allow_list(
+        harness, tmp_path, monkeypatch):
+    """The negative half: without the env var the same put is refused, and
+    the task fails with a reason instead of running without its inputs."""
+    import base64
+    from radical.orbit.plugin_staging import PluginStaging, StagingSession
+
+    scratch = tmp_path / 'site_scratch'
+    scratch.mkdir()
+    monkeypatch.setattr(StagingSession, '_ALLOWED_BASES',
+                        ['/nonexistent/base'])
+    monkeypatch.delenv('RADICAL_ORBIT_SCRATCH_BASE', raising=False)
+
+    fed = _Fed(harness, [_member('m_x', ['x'], shared_fs=False,
+                                 scratch_base=str(scratch))], tmp_path)
+    pid = fed.on_loop(
+        lambda: fed.td._submit_pilot(fed.ps, None, member_id='m_x'))
+    assert fed.wait(lambda: fed.ps.pilots[pid].child_endpoint_name)
+    fed.make_runtime(fed.srv.url,
+                     name=fed.ps.pilots[pid].child_endpoint_name,
+                     serve=[_FakeRhapsody, PluginStaging])
+    assert fed.wait(lambda: fed.ps.pilots[pid].state == 'ACTIVE')
+
+    assert fed.submit('t.1', requirements={'software': ['x']},
+                      inputs_b64={'md.json':
+                                  base64.b64encode(b'x').decode()}
+                      ).status_code == 200
+    task = fed.ps.tasks['t.1']
+    assert fed.wait(lambda: task.state == 'FAILED')
+    assert task.error.startswith('could not place inputs on the pilot:')
+    assert _FakeRhapsody.received == []
