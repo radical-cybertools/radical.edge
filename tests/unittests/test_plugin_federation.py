@@ -17,6 +17,7 @@ Two layers:
 
 import asyncio
 import concurrent.futures
+import importlib.util
 import json
 import os
 import shutil
@@ -65,9 +66,20 @@ class _FakeDispatcher:
 
     Mirrors only what the federation calls; every method is async, like the
     real one, and raises ``HTTPException`` the same way so error mapping is
-    exercised.  ``add_member`` is idempotent by member id, as the frozen
-    contract requires, and ``del_member`` records its flags so a test can
-    assert ``force`` / ``fail_unsatisfiable`` rather than guess.
+    exercised.  ``del_member`` records its flags so a test can assert
+    ``force`` / ``fail_unsatisfiable`` rather than guess.
+
+    Two behaviours are modelled tightly because the plugin *relies* on them:
+
+    - ``register_session`` **ignores a re-declaration of a pool that already
+      exists** — the real ``_materialise_pool`` returns the existing
+      ``PoolState`` before any config merge, which is precisely why the
+      member routes exist.  A fake that quietly absorbed the members out of
+      a re-declaration would hide a missing ``add_member``.
+    - ``add_member`` is idempotent by member id but answers **409 on a
+      *differing* declaration**, as the frozen contract says.  That is what
+      makes the unconditional restart re-POST safe, so a fake that accepted
+      anything would not test it.
     """
 
     def __init__(self):
@@ -97,9 +109,11 @@ class _FakeDispatcher:
         self._maybe_fail('register_session')
         self.sessions[sid] = pools
         for decl in pools:
-            held = self.pools.setdefault(decl['name'], {})
-            for member in decl.get('members') or []:
-                held.setdefault(member['member_id'], member)
+            if decl['name'] in self.pools:
+                continue          # an existing pool is not re-configured
+            self.pools[decl['name']] = {
+                member['member_id']: member
+                for member in (decl.get('members') or [])}
         return {'sid': sid}
 
     async def unregister_session(self, sid):
@@ -116,7 +130,12 @@ class _FakeDispatcher:
         if self.fail_member == mid:
             raise HTTPException(status_code=400,
                                 detail=f'member {mid} refused')
-        held    = self.pools.setdefault(pool, {})
+        held     = self.pools.setdefault(pool, {})
+        existing = held.get(mid)
+        if existing is not None and existing != member:
+            raise HTTPException(
+                status_code=409,
+                detail=f'member {mid} is already declared differently')
         created = mid not in held
         held[mid] = member
         return {'pool': pool, 'member': member,
@@ -305,6 +324,35 @@ def _pool_summary(members, pilots=None, history=None):
             'pilots'       : list(pilots or []),
             'pilot_history': list(history or []),
             'pilot_sizes'  : {}}
+
+
+def _real_parse_member():
+    """Return the plan-121 ``parse_member``, or ``None`` if it is not here.
+
+    The dispatcher on *this* branch is the old per-resource one, so the
+    function that will validate every member declaration this plugin sends
+    does not exist here yet — it lives in ``task_dispatcher_config`` on the
+    branch that owns the multi-member dispatcher.  It has no relative
+    imports, so it loads standalone from a file path, and that is worth
+    doing: a declaration this plugin builds happily and the dispatcher then
+    refuses is exactly the class of bug a hand-written fake cannot catch.
+
+    AFTER THE PLAN-121 MERGE: delete this helper and its skip, and use
+    ``from radical.orbit.task_dispatcher_config import parse_member``.
+    """
+    root = os.environ.get('RADICAL_ORBIT_CP_TREE')
+    base = (Path(root) if root
+            else Path(__file__).resolve().parents[2].with_name(
+                'radical.orbit-cp'))
+    path = base / 'src' / 'radical' / 'orbit' / 'task_dispatcher_config.py'
+    if not path.is_file():
+        return None
+    spec = importlib.util.spec_from_file_location('_cp_td_config', path)
+    if spec is None or spec.loader is None:
+        return None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return getattr(mod, 'parse_member', None)
 
 
 def _run(coro):
@@ -745,6 +793,41 @@ class TestJoinWithMembers:
         client, plugin, _ = _joinable(tmp_path)
         assert _join(client, plugin, body).status_code == 400
 
+    def test_declaring_both_a_pool_block_and_members_400(self, tmp_path):
+        # the flat 'pool' block is the single-member shorthand; sending both
+        # means one of the two is silently ignored, which is worse than a
+        # refused join
+        body = _members_body()
+        body['pool'] = {'queue': 'regular', 'nodes': 1, 'cpus_per_node': 1,
+                        'walltime_sec': 60}
+        client, plugin, _ = _joinable(tmp_path)
+        r = _join(client, plugin, body)
+        assert r.status_code == 400
+        assert 'mutually exclusive' in r.json()['detail']
+
+    def test_an_over_long_pool_plus_member_id_400(self, tmp_path):
+        # 121 enforces len(pool_name) + len(member_id) <= 64 in parse_member;
+        # catching it here keeps the dispatcher untouched by a bad join
+        long_name = 'r' * 60          # 'fed-cpu' + '<name>.cpu' = 71 > 64
+        body = _members_body(name=long_name)
+        body['scratch_base'] = str(_SCRATCH_ROOT / 'long')
+        client, plugin, fake = _joinable(tmp_path)
+        r = _join(client, plugin, body)
+        assert r.status_code == 400
+        assert '64 characters' in r.json()['detail']
+        assert plugin._state.resources == {}
+        assert [c for c in fake.calls if c[0] == 'add_member'] == []
+
+    def test_a_member_id_at_the_limit_is_accepted(self, tmp_path):
+        # 'fed-cpu' (7) + '<name>.cpu' — the longest name that still fits
+        name = 'r' * (64 - len('fed-cpu') - len('.cpu'))
+        body = _members_body(name=name)
+        body['members'] = [body['members'][0]]
+        body['scratch_base'] = str(_SCRATCH_ROOT / 'fits')
+        client, plugin, _ = _joinable(tmp_path)
+        assert _join(client, plugin, body).status_code == 200
+        assert len('fed-cpu') + len(f'{name}.cpu') == 64
+
     def test_a_failed_add_member_rolls_the_others_back_with_force(self,
                                                                   tmp_path):
         # a join is all-or-nothing.  ``force`` matters: the first member of
@@ -845,6 +928,46 @@ class TestResources:
         assert rec['usage']['node_hours_remaining'] == 23.5
         assert rec['usage']['pilots_active']        == 3
         assert rec['usage']['stale'] is False
+
+    def test_node_hours_remaining_never_goes_negative(self, tmp_path):
+        # an overspent member has nothing left, not a debt: a negative term
+        # would drag the resource sum below its siblings and score the
+        # member as worse than empty
+        client, plugin, fake = _joinable(tmp_path)
+        _join(client, plugin, _members_body())
+        fake.details['fed-cpu'] = _pool_summary([
+            {'member_id': 'local_b.cpu', 'node_hours_used': 25.0,
+             'node_hours_remaining': -5.0, 'pilots_active': 1}])
+        fake.details['fed-gpu'] = _pool_summary([
+            {'member_id': 'local_b.gpu', 'node_hours_used': 2.0,
+             'node_hours_remaining': 6.0, 'pilots_active': 0}])
+        plugin._state.resources['local_b'].usage.updated_at = 0.0
+        plugin._detail_cache.clear()
+
+        rec = client.get(
+            f'{plugin.namespace}/resource/default/local_b').json()
+        assert rec['members'][0]['usage']['node_hours_remaining'] == 0.0
+        assert rec['usage']['node_hours_remaining'] == 6.0
+
+    def test_an_overspent_member_without_a_summary_clamps_too(self, tmp_path):
+        # the fallback branch computes budget - used itself
+        client, plugin, fake = _joinable(tmp_path)
+        _join(client, plugin, _members_body())
+        now = time.time()
+        fake.details['fed-cpu'] = _pool_summary(
+            [],
+            history=[{'member_id': 'local_b.cpu', 'size_key': 'default',
+                      'active_at': now - 3600 * 100, 'finished_at': now}],
+            pilots=[])
+        fake.details['fed-cpu']['pilot_sizes'] = {'default': {'nodes': 1}}
+        plugin._state.resources['local_b'].usage.updated_at = 0.0
+        plugin._detail_cache.clear()
+
+        rec = client.get(
+            f'{plugin.namespace}/resource/default/local_b').json()
+        cpu = rec['members'][0]['usage']
+        assert cpu['node_hours_used'] > 20.0          # budget is 20
+        assert cpu['node_hours_remaining'] == 0.0
 
     def test_one_dispatcher_call_per_distinct_class_pool(self, tmp_path):
         client, plugin, fake = _joinable(tmp_path)
@@ -1080,6 +1203,17 @@ class TestSubmit:
         assert payload['inputs']   == ['a.json']
         assert payload['outputs']  == ['b.json']
 
+    def test_a_non_numeric_priority_400(self, tmp_path):
+        # a declaration error, not a 500 out of int('high')
+        client, plugin, fake = self._one(tmp_path)
+        for bad in ('high', ['1'], {'p': 1}, True):
+            r = self._submit(client, plugin, {'task_id': 't.1',
+                                              'cmd': ['/bin/true'],
+                                              'priority': bad})
+            assert r.status_code == 400, bad
+            assert 'priority' in r.text
+        assert fake.submitted == []
+
     def test_inputs_b64_rides_through_verbatim(self, tmp_path):
         client, plugin, fake = self._one(tmp_path)
         self._submit(client, plugin, {
@@ -1195,6 +1329,39 @@ class TestTask:
         # ... and the ledger is corrected, not just the answer
         assert plugin._state.ledger['t.1'].resource  == 'other_res'
         assert plugin._state.ledger['t.1'].member_id == 'other_res.gpu'
+
+    def test_a_re_queued_task_loses_its_member(self, tmp_path):
+        # the dispatcher clears member_id beside pilot_id when it re-queues a
+        # task off a lost pilot (121 §7.3); the ledger must follow, or
+        # tasks_running keeps counting it on a member that is not running it
+        client, plugin, fake = self._submitted(tmp_path)
+        fake.tasks['t.1']['member_id'] = 'alpha.default'
+        fake.tasks['t.1']['state']     = 'RUNNING'
+        client.get(f'{plugin.namespace}/task/default/t.1')
+        assert plugin._state.ledger['t.1'].member_id == 'alpha.default'
+        assert plugin._state.resources['alpha'].members[
+            'default'].usage.tasks_running == 0        # not refreshed yet
+
+        fake.tasks['t.1']['member_id'] = None
+        fake.tasks['t.1']['state']     = 'QUEUED'
+        body = client.get(f'{plugin.namespace}/task/default/t.1').json()
+        assert body['member_id'] is None
+        assert body['member']    is None
+        entry = plugin._state.ledger['t.1']
+        assert entry.member_id is None
+        assert entry.resource  == 'alpha'      # advisory, and still true
+        assert plugin._state.member_task_counts('alpha.default') == (0, 0, 0)
+
+    def test_a_terminal_task_keeps_its_member(self, tmp_path):
+        # a DONE task reports where it ran; only a re-queue clears the member
+        client, plugin, fake = self._submitted(tmp_path)
+        fake.tasks['t.1']['member_id'] = 'alpha.default'
+        client.get(f'{plugin.namespace}/task/default/t.1')
+        fake.tasks['t.1']['member_id'] = None
+        fake.tasks['t.1']['state']     = 'DONE'
+        body = client.get(f'{plugin.namespace}/task/default/t.1').json()
+        assert body['member_id'] == 'alpha.default'
+        assert plugin._state.ledger['t.1'].member_id == 'alpha.default'
 
     def test_a_dotted_resource_name_splits_on_the_last_dot(self, tmp_path):
         client, plugin, fake = self._submitted(tmp_path)
@@ -1339,6 +1506,35 @@ class TestLeave:
         assert all(c['cancel_tasks'] is True for c in fake.removed)
         assert plugin._state.ledger == {}
 
+    def test_cancel_tasks_cancels_the_entries_the_drain_cannot_see(
+            self, tmp_path):
+        # del_member(cancel_tasks=True) only fails what was on the removed
+        # member's *pilots* (121 §7.4).  't.q' is QUEUED with no pilot and no
+        # member — merely attributed to this resource by the advisory submit
+        # — so without an explicit cancel it would survive the drain and then
+        # lose its ledger entry: a live task answering 404.
+        client, plugin, fake = self._with_tasks(tmp_path)
+        body = self._leave(client, plugin, cancel_tasks=True).json()
+        assert sorted(t for _sid, t in fake.canceled) == ['t.q', 't.run']
+        assert all(sid == FED_SESSION_SID for sid, _t in fake.canceled)
+        assert body['tasks_cancelled'] == 2          # 't.done' was terminal
+        assert plugin._state.ledger == {}
+
+    def test_a_plain_leave_cancels_nothing(self, tmp_path):
+        client, plugin, fake = self._with_tasks(tmp_path)
+        body = self._leave(client, plugin).json()
+        assert fake.canceled == []
+        assert body['tasks_cancelled'] == 0
+
+    def test_a_failing_cancel_still_tears_the_resource_down(self, tmp_path):
+        client, plugin, fake = self._with_tasks(tmp_path)
+        fake.fail = 'cancel_task'
+        r = self._leave(client, plugin, cancel_tasks=True)
+        assert r.status_code == 200
+        assert r.json()['tasks_cancelled'] == 2
+        assert plugin._state.ledger    == {}
+        assert plugin._state.resources == {}
+
     def test_the_drain_counters_are_summed_over_the_members(self, tmp_path):
         client, plugin, fake = self._with_tasks(tmp_path)
         fake.drain['local_b.cpu'] = {'tasks_requeued': 2, 'tasks_failed': 1}
@@ -1346,7 +1542,7 @@ class TestLeave:
         body = self._leave(client, plugin).json()
         assert body == {'resource': 'local_b', 'ok': True,
                         'members_removed': 2, 'tasks_requeued': 3,
-                        'tasks_failed': 1}
+                        'tasks_failed': 1, 'tasks_cancelled': 0}
 
     def test_an_emptied_class_pool_is_left_in_place(self, tmp_path):
         client, plugin, fake = self._with_tasks(tmp_path)
@@ -1367,6 +1563,23 @@ class TestLeave:
         assert r.status_code == 200
         assert r.json()['members_removed'] == 0
         assert plugin._state.resources == {}
+
+    def test_a_partial_removal_is_reported_not_swallowed(self, tmp_path):
+        # 'ok: true, members_removed: 0' said nothing about the dispatcher
+        # still believing in those members; a caller needs to know
+        client, plugin, fake = self._with_tasks(tmp_path)
+        fake.fail = 'del_member'
+        body = self._leave(client, plugin).json()
+        assert body['ok'] is False
+        assert len(body['errors']) == 2
+        assert 'local_b.cpu' in body['errors'][0]
+        assert 'local_b.gpu' in body['errors'][1]
+
+    def test_a_clean_leave_reports_no_errors_key(self, tmp_path):
+        client, plugin, _fake = self._with_tasks(tmp_path)
+        body = self._leave(client, plugin).json()
+        assert body['ok'] is True
+        assert 'errors' not in body
 
     def test_rejoin_after_leave_is_allowed(self, tmp_path):
         client, plugin, _ = self._with_tasks(tmp_path)
@@ -1680,6 +1893,38 @@ class TestUpgradeFromPre08:
         assert live.finished_at
 
     @pytest.mark.asyncio
+    async def test_polling_an_upgraded_task_answers_from_the_ledger(
+            self, tmp_path):
+        # its 'fed-legacy' session was just released, so asking the
+        # dispatcher would be a 404 on a sid it no longer holds — the
+        # ledger's FAILED verdict is the only truthful answer
+        plugin, fake = self._plugin(tmp_path)
+        client = TestClient(plugin._app)
+        await plugin.on_topology_change(_topo(ep0='present'))
+        fake.calls.clear()
+
+        r = client.get(f'{plugin.namespace}/task/default/t.live')
+        assert r.status_code == 200
+        body = r.json()
+        assert body['state']   == 'FAILED'
+        assert body['detail']  == 'the federation was upgraded'
+        assert body['task_id'] == 't.live'
+        assert body['finished_at']
+        assert [c for c in fake.calls if c[0] == 'task'] == []
+
+    @pytest.mark.asyncio
+    async def test_a_terminal_legacy_task_is_answered_the_same_way(
+            self, tmp_path):
+        plugin, fake = self._plugin(tmp_path)
+        client = TestClient(plugin._app)
+        await plugin.on_topology_change(_topo(ep0='present'))
+        fake.calls.clear()
+        body = client.get(f'{plugin.namespace}/task/default/t.old').json()
+        assert body['state'] == 'DONE'
+        assert 'detail' not in body
+        assert [c for c in fake.calls if c[0] == 'task'] == []
+
+    @pytest.mark.asyncio
     async def test_terminal_history_is_kept(self, tmp_path):
         plugin, _fake = self._plugin(tmp_path)
         await plugin.on_topology_change(_topo(ep0='present'))
@@ -1694,6 +1939,107 @@ class TestUpgradeFromPre08:
         await plugin.on_topology_change(_topo(ep0='present'))
         assert len([c for c in fake.calls
                     if c[0] == 'unregister_session']) == n
+
+
+# ---------------------------------------------------------------------------
+# The member declaration, through the parser that will actually receive it
+# ---------------------------------------------------------------------------
+
+_parse_member = _real_parse_member()
+
+_NO_PARSER = (
+    'needs the plan-121 task_dispatcher_config.parse_member; point '
+    'RADICAL_ORBIT_CP_TREE at that worktree, or run these after the merge'
+)
+
+
+@pytest.mark.skipif(_parse_member is None, reason=_NO_PARSER)
+class TestMemberDeclarationParses:
+    """Every declaration this plugin sends must survive ``parse_member``.
+
+    The fake dispatcher accepts any dict, so nothing else in this file
+    notices a member the *real* parser would 400 — and because
+    ``_class_pool_decls`` always re-sends the FULL member list, one bad
+    member anywhere in the state fails every later join and every restart
+    replay, not only its own record's.
+    """
+
+    def _decls(self, plugin):
+        return [(m.pool_name, plugin._member_decl(rec, m))
+                for rec in plugin._state.resources.values()
+                for m in rec.member_list()]
+
+    def _parse_all(self, plugin):
+        parsed = {}
+        for pool, decl in self._decls(plugin):
+            member = _parse_member(decl, f'test: {pool}', pool)
+            parsed[member.member_id] = member
+        assert parsed
+        return parsed
+
+    def test_a_declared_member_join_parses(self, tmp_path):
+        client, plugin, _ = _joinable(tmp_path)
+        _join(client, plugin, _members_body())
+        parsed = self._parse_all(plugin)
+        assert sorted(parsed) == ['local_b.cpu', 'local_b.gpu']
+        assert parsed['local_b.cpu'].attributes['site']     == 'NERSC'
+        assert parsed['local_b.cpu'].attributes['software'] == ['lammps',
+                                                                'pytorch']
+        assert parsed['local_b.gpu'].pilot_sizes['default'].gpus_per_node == 8
+
+    def test_an_allocation_join_parses(self, tmp_path):
+        client, plugin, _ = _joinable(tmp_path)
+        _join(client, plugin, _alloc_body())
+        parsed = self._parse_all(plugin)
+        assert parsed['alpha.default'].queue == 'allocation'
+        assert parsed['alpha.default'].attributes == {
+            'site': 'HERE', 'kind': 'workstation', 'mem_gb_per_node': 16,
+            'software': ['lammps']}
+
+    def test_a_login_join_without_members_parses(self, tmp_path):
+        client, plugin, _ = _joinable(tmp_path)
+        _join(client, plugin, _login_body())
+        assert 'beta.default' in self._parse_all(plugin)
+
+    def test_a_join_with_no_site_kind_or_mem_gb_parses(self, tmp_path):
+        # the empty/None attribute values parse_member refuses
+        client, plugin, caller = _joinable(tmp_path)
+        _join(client, plugin, _alloc_body(name='bare', site='', kind='',
+                                          capabilities={'cores': 4}))
+        parsed = self._parse_all(plugin)
+        assert parsed['bare.default'].attributes == {'software': []}
+
+    def test_a_pre08_record_read_off_disk_parses(self, tmp_path):
+        # BLOCKING regression: a record written before class pools derives
+        # its single member at load time, and used to derive
+        # {'site': '', 'kind': '', 'mem_gb_per_node': None} — which the real
+        # parser refuses, 400ing every subsequent join
+        pre08 = json.loads(json.dumps(TestUpgradeFromPre08._PRE08))
+        rec   = pre08['resources']['legacy']
+        rec['site'] = ''
+        rec['kind'] = ''
+        rec['capabilities'] = {'cores': 128, 'software': []}
+        state = tmp_path / 'fedroot' / 'federation' / 'state.json'
+        state.parent.mkdir(parents=True, exist_ok=True)
+        state.write_text(json.dumps(pre08))
+
+        _, plugin = _make_plugin(tmp_path, dispatcher=_FakeDispatcher())
+        parsed = self._parse_all(plugin)
+        assert parsed['legacy.default'].attributes == {'software': []}
+        assert parsed['legacy.default'].queue == 'regular'
+
+    def test_the_length_rule_this_plugin_pre_checks_is_the_parsers(self,
+                                                                   tmp_path):
+        # the join-time 400 must line up with what parse_member enforces
+        from radical.orbit.plugin_federation import _MAX_POOL_MEMBER_NAME_LEN
+        client, plugin, _ = _joinable(tmp_path)
+        _join(client, plugin, _alloc_body())
+        pool, decl = self._decls(plugin)[0]
+        decl = dict(decl)
+        decl['member_id'] = 'a' * (_MAX_POOL_MEMBER_NAME_LEN - len(pool) + 1)
+        with pytest.raises(Exception) as ei:
+            _parse_member(decl, 'test', pool)
+        assert str(_MAX_POOL_MEMBER_NAME_LEN) in str(ei.value)
 
 
 # ---------------------------------------------------------------------------
@@ -1887,6 +2233,16 @@ class TestCoHosted:
                                                                 cohosted):
         # two members, different software, one class pool: the dispatcher
         # picks the one that can run the task
+        #
+        # TODO (when un-skipping): this asserts the *pool*, which is only
+        # the federation's half of the decision.  The claim in the name is
+        # about the MEMBER, and that binding is made at dispatch — so it
+        # needs a pilot to dispatch onto.  Once a harness that fakes a live
+        # pilot in a class pool is available here, drive one dispatch tick
+        # and add:
+        #     ps = td._pool_states[FED_SESSION_SID]['fed-cpu']
+        #     assert ps.tasks['t.1'].member_id == 'local_b.cpu'
+        # Until then this is a routing test, not a placement test.
         await _call(cohosted, 'POST', '/federation/join/default',
                     _members_body(name='local_b'))
         r = await _call(cohosted, 'POST', '/federation/submit/default',

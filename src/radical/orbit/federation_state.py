@@ -357,6 +357,28 @@ class ResourceRecord:
         return out
 
 
+def resource_attributes(site: Any = '', kind: Any = '',
+                        mem_gb: Any = None) -> dict:
+    '''Return the attribute map a *resource-wide* declaration implies.
+
+    The one place the ``site`` / ``kind`` / ``mem_gb_per_node`` convention is
+    spelled out, shared by the two callers that synthesise a member from a
+    resource: :func:`_derive_member` (a pre-08 record read off disk) and
+    ``PluginFederation._implicit_member`` (a join with no ``members`` list).
+
+    **Empty and ``None`` values are dropped, and that is the whole point.**
+    The dispatcher's ``parse_member`` accepts an attribute value that is a
+    string, a number or a list of strings — a ``None`` (an undiscovered
+    ``mem_gb``) is a 400.  Since a member declaration is re-sent in full on
+    every registration, one such attribute anywhere in the state would fail
+    *every* subsequent join and every restart replay, not just its own
+    record's.  An empty string goes too: ``site: ''`` would match no label
+    while looking like a declaration.
+    '''
+    attrs = {'site': site, 'kind': kind, 'mem_gb_per_node': mem_gb}
+    return {k: v for k, v in attrs.items() if v is not None and v != ''}
+
+
 def _derive_member(rec: ResourceRecord) -> MemberRecord:
     '''Synthesise the single member of a record written before class pools.
 
@@ -393,9 +415,8 @@ def _derive_member(rec: ResourceRecord) -> MemberRecord:
         scratch_base     = rec.scratch_base,
         shared_fs        = True,
         software         = list(caps.get('software') or []),
-        attributes       = {'site'           : rec.site,
-                            'kind'           : rec.kind,
-                            'mem_gb_per_node': caps.get('mem_gb')},
+        attributes       = resource_attributes(rec.site, rec.kind,
+                                               caps.get('mem_gb')),
         budget           = dict(rec.budget or {}),
         liveness         = rec.liveness,
     )

@@ -46,85 +46,102 @@ class FederationPolicyError(ValueError):
 # Requirement matching
 # ---------------------------------------------------------------------------
 #
-# TODO (after the plan-121 merge): delete :func:`satisfies` below and replace
-# it with ``from .task_dispatcher_match import satisfies``.  This is a
-# *verbatim* implementation of 121 §3.3 — same rules, same reason strings —
-# living here only because ``task_dispatcher_match`` does not exist on this
-# branch yet.  Keeping it local (rather than adding the dispatcher module
-# here) means the merge is a one-line import swap and not an add/add
-# conflict with the branch that owns that file.
-
-def _number(value: Any) -> float:
-    '''Return *value* as a float, or 0.0 when it is not a plain number.'''
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return 0.0
-    return float(value)
+# TODO (after the plan-121 merge): delete :data:`NO_MPI_BACKENDS` and
+# :func:`satisfies` below and replace them with
+# ``from .task_dispatcher_match import satisfies``.  Everything from here to
+# the next rule is a **byte-for-byte copy** of ``task_dispatcher_match`` as
+# it stands on the branch that owns that file, kept here only because that
+# module does not exist on this branch yet.  Copying rather than adding the
+# module makes the merge a one-line import swap instead of an add/add
+# conflict — and byte-for-byte, because the whole point of the shared
+# matcher is that the federation and the dispatcher cannot answer the same
+# question differently.  Do not "improve" it here.
 
 
-def satisfies(requirements: dict, attributes: dict, size: Any) -> str | None:
+# Backends whose group launch needs a ``pmi`` value the dispatcher cannot
+# infer (rhapsody dragon v1, dragon.py:484-486): they slot-queue rather
+# than place ranks.  Kept here so the matcher and the submit-time gate in
+# ``plugin_task_dispatcher`` share one list.
+NO_MPI_BACKENDS = frozenset(['dragon_v1'])
+
+
+def satisfies(requirements: dict | None, attributes: dict | None,
+              size: Any | None) -> str | None:
     '''Return ``None`` when *requirements* fit this shape, else a reason.
 
-    Pure and stateless: it compares a task's declared needs against a
-    *declaration* — a member's attributes plus its pilot size — and knows
-    nothing about occupancy.  Free capacity stays the dispatcher's own
-    task-count slot test.
+    *attributes* is a member's declared attribute map (or a pilot's
+    snapshot of one); *size* is a :class:`PilotSize`-shaped object (or
+    ``None``, in which case the size-dependent rules are skipped).
 
-    Rules (121 §3.3), in the order they are checked:
+    Rules, in order:
 
-    - ``software``: must be a subset of ``attributes['software']``.
-    - ``cores`` / ``gpus``: compared **per node** against the pilot size, the
-      way the dispatcher compares them at submit — no shipped backend
-      spreads one task across nodes.
-    - ``mem_gb``: compared against ``attributes['mem_gb_per_node']`` *when
+    - ``software`` — ``set(req) <= set(attributes['software'])``.
+    - ``cores``    — per **node**: ``size.cpus_per_node >= cores``.
+    - ``gpus``     — per **node**: ``size.gpus_per_node >= gpus``.
+    - ``mem_gb``   — against ``attributes['mem_gb_per_node']`` *when
       declared*; a missing attribute never rejects.
-    - ``labels``: every ``k: v`` needs ``attributes[k] == v`` or ``v in
-      attributes[k]`` for a list-valued attribute.  An undeclared key
-      rejects.
-    - ``mpi``: a true value cannot run on a ``dragon_v1`` backend, which
-      slot-queues rather than places ranks.
-    - **every other key is ignored** — ``ranks`` included.  The submit-time
-      parser owns the key whitelist; a matcher that also rejected unknown
-      keys would double-own it and break the moment a key is added.
+    - ``labels``   — every ``k: v`` needs ``attributes[k] == v`` or
+      ``v in attributes[k]`` (list-valued attribute).  An undeclared label
+      key rejects.
+    - ``mpi``      — the backend must not be one that cannot place ranks.
+
+    **Every other key is ignored**, ``ranks`` and any key this module does
+    not know included: the submit-time parser
+    (``plugin_task_dispatcher.parse_requirements``) is the gate that
+    rejects unknown keys with a 400, and a matcher that also owned that
+    whitelist would break the moment a key is added there.
+
+    A requirement value ``<= 0``, an empty list or an empty map is always
+    satisfied.
     '''
-    req   = requirements or {}
-    attrs = attributes   or {}
+    if not requirements:
+        return None
 
-    want = req.get('software')
-    if isinstance(want, list) and want:
-        have    = set(attrs.get('software') or [])
-        missing = [w for w in want if w not in have]
+    attributes = attributes or {}
+
+    # -- software --------------------------------------------------------
+    want = requirements.get('software') or []
+    if want:
+        have = attributes.get('software') or []
+        if isinstance(have, str):
+            have = [have]
+        missing = [s for s in want if s not in set(have)]
         if missing:
-            return 'software missing: %s' % ', '.join(str(m) for m in missing)
+            return 'software missing: %s' % ', '.join(sorted(missing))
 
-    for key, field in (('cores', 'cpus_per_node'), ('gpus', 'gpus_per_node')):
-        need = _number(req.get(key))
-        if need <= 0:
-            continue
-        have = _number(getattr(size, field, 0)) if size is not None else 0.0
-        if have < need:
-            return f'{key} {have:g} < {need:g}'
+    # -- cores / gpus: shape only, per node (see module docstring) --------
+    if size is not None:
+        cores = requirements.get('cores') or 0
+        if cores > 0 and getattr(size, 'cpus_per_node', 0) < cores:
+            return 'cores %s < %s' % (getattr(size, 'cpus_per_node', 0), cores)
 
-    need = _number(req.get('mem_gb'))
-    if need > 0 and attrs.get('mem_gb_per_node') is not None:
-        have = _number(attrs.get('mem_gb_per_node'))
-        if have < need:
-            return f'mem_gb {have:g} < {need:g}'
+        gpus = requirements.get('gpus') or 0
+        if gpus > 0 and getattr(size, 'gpus_per_node', 0) < gpus:
+            return 'gpus %s < %s' % (getattr(size, 'gpus_per_node', 0), gpus)
 
-    labels = req.get('labels')
-    if isinstance(labels, dict):
-        for key, val in labels.items():
-            have = attrs.get(key)
-            if key not in attrs:
-                return f'label {key}={val} not matched'
-            if isinstance(have, list):
-                if val not in have:
-                    return f'label {key}={val} not matched'
-            elif have != val:
-                return f'label {key}={val} not matched'
+    # -- memory: only when the member declares it ------------------------
+    mem = requirements.get('mem_gb') or 0
+    if mem > 0 and 'mem_gb_per_node' in attributes:
+        have_mem = attributes.get('mem_gb_per_node') or 0
+        if have_mem < mem:
+            return 'mem_gb %s < %s' % (have_mem, mem)
 
-    if req.get('mpi') and size is not None and \
-            getattr(size, 'rhapsody_backend', '') == 'dragon_v1':
-        return 'backend dragon_v1 cannot run an mpi task'
+    # -- labels ----------------------------------------------------------
+    for key, val in (requirements.get('labels') or {}).items():
+        if key not in attributes:
+            return 'label %s=%s not matched' % (key, val)
+        have_val = attributes[key]
+        if isinstance(have_val, list):
+            if val not in have_val:
+                return 'label %s=%s not matched' % (key, val)
+        elif have_val != val:
+            return 'label %s=%s not matched' % (key, val)
+
+    # -- mpi -------------------------------------------------------------
+    if requirements.get('mpi') and size is not None:
+        backend = getattr(size, 'rhapsody_backend', '')
+        if backend in NO_MPI_BACKENDS:
+            return 'backend %s cannot run an mpi task' % backend
 
     return None
 

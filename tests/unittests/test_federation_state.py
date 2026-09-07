@@ -16,7 +16,8 @@ from radical.orbit.federation_state import (
     ResourceUsage, SubmitLedgerEntry,
     LIVENESS_LOST, MODE_LOGIN,
     allowed_bases, member_from_dict, node_hours_from_history,
-    record_from_dict, ledger_from_dict, validate_attributes, validate_budget,
+    record_from_dict, ledger_from_dict, resource_attributes,
+    validate_attributes, validate_budget,
     validate_capabilities, validate_class, validate_member_name,
     validate_name, validate_pool_int, validate_scratch_base,
     validate_software,
@@ -472,6 +473,30 @@ class TestSingleMemberDerivation:
         assert m.attributes == {'site': 'NERSC', 'kind': 'hpc',
                                 'mem_gb_per_node': 256}
 
+    def test_a_thin_pre08_record_declares_no_empty_attributes(self):
+        # BLOCKING regression: a record joined without site/kind and with no
+        # discovered mem_gb used to derive {'site': '', 'kind': '',
+        # 'mem_gb_per_node': None}.  The dispatcher's parse_member refuses a
+        # non string/number/list attribute value — and because every
+        # registration re-sends the FULL member list, one such record would
+        # 400 *every* later join and every restart replay, not just its own.
+        raw = dict(self._PRE08)
+        raw['site'] = ''
+        raw['kind'] = ''
+        raw['capabilities'] = {'cores': 128, 'software': []}
+        m = record_from_dict(raw).members['default']
+        assert m.attributes == {}
+        assert all(v is not None and v != ''
+                   for v in m.match_attributes().values()
+                   if not isinstance(v, list))
+
+    def test_a_partly_declared_pre08_record_keeps_what_it_has(self):
+        raw = dict(self._PRE08)
+        raw['kind'] = ''
+        raw['capabilities'] = {'cores': 128, 'mem_gb': 0}
+        m = record_from_dict(raw).members['default']
+        assert m.attributes == {'site': 'NERSC', 'mem_gb_per_node': 0}
+
     def test_a_record_without_a_pool_config_falls_back_to_the_pool_block(self):
         raw = dict(self._PRE08)
         raw.pop('pool_config')
@@ -497,6 +522,24 @@ class TestSingleMemberDerivation:
         st.save()
         back = FederationState(p).load().resources['beta']
         assert back.members['gpu'] == _member()
+
+
+class TestResourceAttributes:
+    """The one helper both member-synthesis paths share."""
+
+    def test_a_full_declaration_maps_straight_through(self):
+        assert resource_attributes('NERSC', 'hpc', 256) == \
+            {'site': 'NERSC', 'kind': 'hpc', 'mem_gb_per_node': 256}
+
+    def test_none_and_empty_values_are_dropped(self):
+        assert resource_attributes('', '', None) == {}
+        assert resource_attributes('NERSC', '', None) == {'site': 'NERSC'}
+
+    def test_a_zero_is_a_declaration_not_an_absence(self):
+        assert resource_attributes(mem_gb=0) == {'mem_gb_per_node': 0}
+
+    def test_the_defaults_declare_nothing(self):
+        assert resource_attributes() == {}
 
 
 class TestAggregate:

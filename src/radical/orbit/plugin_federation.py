@@ -113,10 +113,10 @@ from .federation_state      import (
     SubmitLedgerEntry,
     DEFAULT_MEMBER, LIVENESS_OK, LIVENESS_SUSPECT, LIVENESS_LOST,
     MODE_ALLOCATION, MODE_LOGIN, MODES,
-    node_hours_from_history, validate_attributes, validate_budget,
-    validate_capabilities, validate_class, validate_member_name,
-    validate_name, validate_pool_int, validate_scratch_base,
-    validate_software,
+    node_hours_from_history, resource_attributes, validate_attributes,
+    validate_budget, validate_capabilities, validate_class,
+    validate_member_name, validate_name, validate_pool_int,
+    validate_scratch_base, validate_software,
 )
 
 log = logging.getLogger('radical.orbit')
@@ -188,6 +188,17 @@ _FEDERATION_ONLY_REQUIREMENTS = ('node_hours',)
 # Sanity ceilings on a declared pool.  Not policy — just the line past which
 # a number is certainly a mistake (a typo'd walltime or node count reaches
 # the batch system as a real request).
+# ``<pool>_<member_id>_<pid>`` becomes a broker participant name, so the
+# dispatcher bounds the operator-chosen part: ``parse_member`` refuses a
+# declaration whose ``len(pool_name) + len(member_id)`` exceeds this (121
+# §14 R6, ``task_dispatcher_config.MAX_POOL_MEMBER_NAME_LEN``).  Checking it
+# here turns "the join half-succeeded and then a member 400'd" into a plain
+# declaration error, before the dispatcher is touched at all.
+#
+# TODO (after the plan-121 merge): ``from .task_dispatcher_config import
+# MAX_POOL_MEMBER_NAME_LEN`` instead of this copy.
+_MAX_POOL_MEMBER_NAME_LEN = 64
+
 _MAX_PILOTS_CAP   = 1024
 _MAX_NODES_CAP    = 100000
 _MAX_CPUS_CAP     = 4096
@@ -748,12 +759,15 @@ class PluginFederation(Plugin):
         attributes, and the resource's budget becomes the member's — which
         is exactly the aggregate view read back, so nothing changes for a
         single-member resource.
+
+        The attribute map comes from
+        :func:`~radical.orbit.federation_state.resource_attributes`, the one
+        helper this and ``_derive_member`` share, so a synthesised member is
+        built the same way whether it came from a join body or from a pre-08
+        ``state.json``.
         '''
         size = decl['pilot_sizes'][_SIZE_KEY]
         caps = rec.capabilities or {}
-        attrs = {'site'           : rec.site,
-                 'kind'           : rec.kind,
-                 'mem_gb_per_node': caps.get('mem_gb')}
         member = MemberRecord(
             member           = DEFAULT_MEMBER,
             queue            = decl['queue'],
@@ -768,8 +782,8 @@ class PluginFederation(Plugin):
             scratch_base     = rec.scratch_base,
             shared_fs        = True,
             software         = list(caps.get('software') or []),
-            attributes       = {k: v for k, v in attrs.items()
-                                if v not in (None, '')},
+            attributes       = resource_attributes(rec.site, rec.kind,
+                                                   caps.get('mem_gb')),
             budget           = dict(rec.budget or {}),
         )
         member.cls = member.default_class()
@@ -1103,6 +1117,11 @@ class PluginFederation(Plugin):
 
         declared_members = bool(body.get('members'))
         try:
+            if declared_members and body.get('pool') is not None:
+                raise FederationStateError(
+                    "'pool' and 'members' are mutually exclusive: the flat "
+                    "'pool' block is the single-member shorthand, so a join "
+                    'that lists members declares each one there')
             name = validate_name(body.get('name'))
             mode = body.get('mode', MODE_ALLOCATION)
             if mode not in MODES:
@@ -1171,8 +1190,17 @@ class PluginFederation(Plugin):
             member.pool_name = self.pool_name_for_class(member.cls)
             member.liveness  = rec.liveness
             member.usage.node_hours_remaining = member.budget_node_hours()
-            if not member.scratch_base:
-                member.scratch_base = rec.scratch_base
+            # the dispatcher builds a participant name out of both halves and
+            # refuses a declaration past its cap; say so here, before any
+            # member has been POSTed, rather than half way through the join
+            length = len(member.pool_name) + len(member.member_id)
+            if length > _MAX_POOL_MEMBER_NAME_LEN:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f'pool name plus member id must be at most '
+                           f'{_MAX_POOL_MEMBER_NAME_LEN} characters, got '
+                           f'{length} for {member.pool_name}/'
+                           f'{member.member_id}')
             rec.members[member.member] = member
 
         rec.aggregate()
@@ -1248,6 +1276,15 @@ class PluginFederation(Plugin):
           non-terminal entries stay, re-pointed to ``resource: null``, and
           the next poll fills the real placement back in.
 
+        ``cancel_tasks`` needs one thing done **here**, not by the
+        dispatcher: ``del_member(cancel_tasks=True)`` fails the tasks that
+        were on the removed member's *pilots* (121 §7.4), and a task merely
+        *attributed* to this resource by an advisory submit is still QUEUED
+        with no pilot at all.  Those would survive the drain and then lose
+        their ledger entry to the teardown — a live task answering 404.  So
+        every non-terminal entry of the resource is cancelled explicitly
+        first, and only the terminal ones are then dropped.
+
         ``fail_unsatisfiable`` is left at the dispatcher's default here: an
         explicit ``leave`` means the resource is gone, so a task only it
         could run should fail now rather than wait forever.  (The liveness
@@ -1265,6 +1302,7 @@ class PluginFederation(Plugin):
         rec  = self._resource(name)
 
         removed = requeued = failed = 0
+        errors: list[str] = []
         for member in rec.member_list():
             try:
                 resp = await self._dispatcher.del_member(
@@ -1276,8 +1314,11 @@ class PluginFederation(Plugin):
             except Exception as e:
                 log.info('[%s] leave %r: removing member %s failed: %s',
                          self.instance_name, name, member.member_id, e)
+                errors.append(f'{member.member_id}: {e}')
             self._attached.discard(member.member_id)
             self._detail_cache.pop(member.pool_name, None)
+
+        cancelled = await self._cancel_ledger(name) if cancel_tasks else 0
 
         # An emptied class pool is left in place: with no members it has no
         # pilots and dispatches nothing, and the next join of that class
@@ -1285,13 +1326,51 @@ class PluginFederation(Plugin):
         self._state.drop_resource(name, keep_active=not cancel_tasks)
         self._state.save()
         log.info('[%s] left %r (%d member(s) removed, %d task(s) requeued, '
-                 '%d failed)', self.instance_name, name, removed, requeued,
-                 failed)
-        return {'resource'       : name,
-                'ok'             : True,
-                'members_removed': removed,
-                'tasks_requeued' : requeued,
-                'tasks_failed'   : failed}
+                 '%d failed, %d cancelled, %d error(s))', self.instance_name,
+                 name, removed, requeued, failed, cancelled, len(errors))
+        out = {'resource'       : name,
+               'ok'             : not errors,
+               'members_removed': removed,
+               'tasks_requeued' : requeued,
+               'tasks_failed'   : failed,
+               'tasks_cancelled': cancelled}
+        if errors:
+            # a partial teardown is not a success: the resource is forgotten
+            # either way (its endpoint may be gone for good), but the caller
+            # is told which members the dispatcher still believes in
+            out['errors'] = errors
+        return out
+
+    async def _cancel_ledger(self, name: str) -> int:
+        '''Cancel every non-terminal ledger entry of resource *name*.
+
+        The counterpart of ``del_member(cancel_tasks=True)``, for the tasks
+        that drain cannot see: the dispatcher fails what was running on the
+        removed member's pilots, but a task the federation only *attributed*
+        to this resource (the advisory placement a submit answers with) is
+        still QUEUED in the class pool, bound to no pilot and to no member.
+        Dropping its ledger entry without cancelling it would leave a live
+        task that ``GET task/…`` answers 404 for.
+
+        A cancel that fails is logged and the entry is marked ``CANCELED``
+        anyway: the caller asked for a teardown, and the entry is about to
+        be dropped regardless — the dispatcher's own state stays the
+        authority for anything still running there.
+        '''
+        count = 0
+        for entry in self._state.ledger_for(name):
+            if entry.state in _TERMINAL_TASK_STATES:
+                continue
+            try:
+                await self._dispatcher.cancel_task(
+                    entry.dispatcher_sid or FED_SESSION_SID, entry.task_id)
+            except Exception as e:
+                log.info('[%s] leave %r: cancelling task %s failed: %s',
+                         self.instance_name, name, entry.task_id, e)
+            entry.state       = 'CANCELED'
+            entry.finished_at = time.time()
+            count += 1
+        return count
 
     async def _route_resources(self, request: Request) -> dict:
         '''List every resource, usage refreshed.'''
@@ -1385,6 +1464,14 @@ class PluginFederation(Plugin):
             raise HTTPException(status_code=400,
                                 detail="'requirements' must be an object")
 
+        # a declaration error, not a server error: ``int('high')`` would
+        # otherwise raise out of the payload construction below as a 500
+        priority = task.get('priority') or 0
+        if isinstance(priority, bool) or not isinstance(priority, (int,
+                                                                   float)):
+            raise HTTPException(status_code=400,
+                                detail="'task.priority' must be a number")
+
         inputs_b64 = task.get('inputs_b64')
         if inputs_b64 is not None:
             if not isinstance(inputs_b64, dict) or not all(
@@ -1406,7 +1493,7 @@ class PluginFederation(Plugin):
             'pool'    : pool,
             'task_id' : task_id,
             'cmd'     : list(cmd),
-            'priority': int(task.get('priority') or 0),
+            'priority': int(priority),
             'inputs'  : list(task.get('inputs')  or []),
             'outputs' : list(task.get('outputs') or []),
         }
@@ -1458,6 +1545,13 @@ class PluginFederation(Plugin):
         that is the endpoint name a caller needs to reach the pilot's own
         ``staging`` plugin, and it disappears from the dispatcher API the
         moment the pilot ends.
+
+        Two entries are answered **from the ledger alone**: one whose
+        dispatcher session is not ``fed`` (a pre-08 task whose per-resource
+        session the upgrade released — see :meth:`_upgrade_legacy`), because
+        the dispatcher would 404 on a sid it no longer holds and the ledger
+        already carries the ``FAILED`` verdict; and, implicitly, nothing
+        else — a live task is always the dispatcher's to answer.
         '''
         await self._require_session(request.path_params['sid'])
         task_id = request.path_params['task_id']
@@ -1466,7 +1560,10 @@ class PluginFederation(Plugin):
             raise HTTPException(status_code=404,
                                 detail=f'unknown task: {task_id}')
 
-        sid  = entry.dispatcher_sid or FED_SESSION_SID
+        sid = entry.dispatcher_sid or FED_SESSION_SID
+        if sid != FED_SESSION_SID:
+            return self._ledger_view(entry)
+
         task = await self._dispatcher.task(sid, task_id)
         task = dict(task or {})
 
@@ -1482,6 +1579,15 @@ class PluginFederation(Plugin):
         if member_id and member_id != entry.member_id:
             entry.member_id = member_id
             entry.resource  = self.split_member_id(member_id)[0] or None
+            dirty = True
+        elif not member_id and entry.member_id and \
+                state not in _TERMINAL_TASK_STATES:
+            # the dispatcher clears ``member_id`` beside ``pilot_id`` when it
+            # re-queues a task off a lost pilot (121 §7.3).  The entry must
+            # follow, or ``tasks_running`` keeps counting this task on a
+            # member that is no longer running it.  ``resource`` stays as it
+            # is: advisory, and the next dispatch overwrites both.
+            entry.member_id = None
             dirty = True
         if dirty:
             self._state.save()
@@ -1501,6 +1607,34 @@ class PluginFederation(Plugin):
                 if pilot.get('pid') == pilot_id:
                     task['child_endpoint'] = pilot.get('child_endpoint_name')
                     break
+        return task
+
+    def _ledger_view(self, entry: SubmitLedgerEntry) -> dict:
+        '''Return the ledger's own answer for a task the dispatcher cannot.
+
+        Same key set a proxied record carries — ``state``, ``member_id``,
+        ``member``, ``resource``, ``class`` — so a caller polling in a loop
+        does not have to branch on which half answered.  ``detail`` carries
+        the reason the ledger recorded (``'the federation was upgraded'``
+        for the pre-08 tasks), and no ``child_endpoint`` is offered: the
+        pilot that had one is gone.
+        '''
+        member_id = entry.member_id
+        task = {'task_id'       : entry.task_id,
+                'state'         : entry.state,
+                'pool'          : entry.pool,
+                'pilot_id'      : None,
+                'submitted_at'  : entry.submitted_at,
+                'finished_at'   : entry.finished_at,
+                'member_id'     : member_id,
+                'member'        : (self.split_member_id(member_id)[1]
+                                   if member_id else None),
+                'resource'      : entry.resource,
+                'dispatcher_sid': entry.dispatcher_sid}
+        if entry.detail:
+            task['detail'] = entry.detail
+        if entry.cls:
+            task['class'] = entry.cls
         return task
 
     # -- policy ----------------------------------------------------------
@@ -1657,9 +1791,13 @@ class PluginFederation(Plugin):
 
             budget = member.budget_node_hours()
             if remaining is None:
-                remaining = (max(0.0, budget - usage.node_hours_used)
+                remaining = (budget - usage.node_hours_used
                              if budget else 0.0)
-            usage.node_hours_remaining = float(remaining or 0.0)
+            # never negative, whoever computed it: an overspent member has
+            # nothing left, not a debt, and a negative term would otherwise
+            # drag the resource-level sum below the siblings that still have
+            # budget — and score a member as *worse than empty*
+            usage.node_hours_remaining = max(0.0, float(remaining or 0.0))
 
         (usage.tasks_running,
          usage.tasks_done,

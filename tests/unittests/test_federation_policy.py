@@ -119,6 +119,32 @@ class TestSatisfies:
         assert satisfies({'mpi': False}, {}, _Size(backend='dragon_v1')) \
             is None
 
+    # -- three details that are verbatim from task_dispatcher_match, and
+    # -- that a hand-rolled re-implementation gets wrong
+
+    def test_missing_software_is_reported_sorted(self):
+        # deterministic message: the reason string is compared in tests and
+        # read by humans, and the request order is not meaningful
+        assert satisfies({'software': ['pytorch', 'lammps', 'ase']},
+                         {'software': []}, _Size()) == \
+            'software missing: ase, lammps, pytorch'
+
+    def test_a_string_valued_software_attribute_is_wrapped(self):
+        # a member that declared software as a bare string must not have it
+        # matched character by character
+        assert satisfies({'software': ['lammps']},
+                         {'software': 'lammps'}, _Size()) is None
+        assert satisfies({'software': ['l']},
+                         {'software': 'lammps'}, _Size()) == \
+            'software missing: l'
+
+    def test_mem_gb_per_node_declared_as_none_rejects(self):
+        # declared-but-unknown is not the same as undeclared: the key is
+        # present, so the rule applies and 'unknown' loses
+        assert satisfies({'mem_gb': 8}, {'mem_gb_per_node': None},
+                         _Size()) == 'mem_gb 0 < 8'
+        assert satisfies({'mem_gb': 8}, {}, _Size()) is None
+
     def test_unknown_keys_are_ignored(self):
         # the submit-time parser owns the whitelist; a matcher that also
         # rejected unknown keys would double-own it

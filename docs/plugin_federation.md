@@ -98,7 +98,7 @@ Resource fields:
 | `budget` | `{"node_hours": <float>}` — the aggregate of the member budgets |
 | `scratch_base` | optional; defaults to `<state root>/scratch/<name>`. Must lie under `~` or `/tmp` (the same rule the `staging` plugin enforces). A member that declares none inherits it |
 | `members` | login mode only — one entry per shape (see below) |
-| `pool` | login mode only, and only **without** `members` — the flat batch declaration |
+| `pool` | login mode only, and only **without** `members` — the flat batch declaration. Sending both is a **400**: one of the two would be silently ignored |
 
 Member fields: `member` (required), `queue` (required, not the literal
 `"default"`), `account`, `nodes`, `cpus_per_node`, `gpus_per_node`,
@@ -129,7 +129,18 @@ alongside.
 body in the flat form — derives exactly one member named `default` from its
 stored pool declaration, with its class from `gpus_per_node`, its software
 from `capabilities.software`, and its budget from the resource's. So there
-is one shape at runtime and two on the wire.
+is one shape at runtime and two on the wire. Both derivation paths build
+their attribute map through one helper (`federation_state
+.resource_attributes`), which **drops empty and `None` values**: the
+dispatcher's member parser accepts a string, a number or a list of strings,
+and since every registration re-sends the full member list, one `None`
+anywhere in the state would fail every later join and every restart replay.
+
+**Member id length.** `<pool_name>` plus `<resource>.<member>` must be at
+most **64** characters — the dispatcher builds a broker participant name
+out of both halves and refuses a longer declaration. The join checks it
+before touching the dispatcher, so it is a plain **400** rather than a
+half-completed join.
 
 ### Join modes
 
@@ -233,7 +244,8 @@ Task counts come from the federation's **own submit ledger**, one entry per
 task it ever routed — the dispatcher's `recent_tasks` is capped at 50 per
 pool and would silently undercount a long run.
 
-Usage is refreshed on `resources`, `resource` and `pick`, cached for 2 s,
+Usage is refreshed on `resources`, `resource`, `pick` and `submit`, cached
+for 2 s,
 with a 3 s timeout. A refresh that cannot reach the dispatcher keeps the
 previous numbers and sets `"stale": true` — a member must not blink to zero
 because one poll timed out.
@@ -324,7 +336,7 @@ hour. Clients never register a session of their own.
 | Method | Path | Description |
 |----|----|----|
 | `POST` | `join/{sid}` | Join a resource. Body = the client fields of a resource record, with an optional `members` list. Returns the full record, members and all. |
-| `POST` | `leave/{sid}/{name}` | Remove each member from its class pool. Optional body `{"cancel_tasks": false}`. Returns `{resource, ok, members_removed, tasks_requeued, tasks_failed}`. |
+| `POST` | `leave/{sid}/{name}` | Remove each member from its class pool. Optional body `{"cancel_tasks": false}`. Returns `{resource, ok, members_removed, tasks_requeued, tasks_failed, tasks_cancelled}`, plus `errors` (and `ok: false`) when a member could not be removed. |
 | `GET` | `resources/{sid}` | `{"resources": [record, …]}`, usage refreshed, sorted by name. |
 | `GET` | `resource/{sid}/{name}` | One record, usage refreshed. |
 | `POST` | `pick/{sid}` | Body `{"requirements": {...}}` → `{class, pool, dispatcher_sid, members, resource, score}`. |
@@ -364,8 +376,20 @@ stay valid), and the next poll fills the real placement back in — dropping
 the entries would make `GET task/…` answer 404, which a campaign runner
 reads as a hard failure.
 
-`{"cancel_tasks": true}` is the full teardown: the dispatcher cancels them
-and the ledger entries are dropped.
+`{"cancel_tasks": true}` is the full teardown. It takes two steps, not one:
+`del_member(cancel_tasks=true)` fails the tasks that were on the removed
+member's **pilots**, and the federation then cancels every remaining
+non-terminal ledger entry of the resource itself — a task the advisory
+submit merely *attributed* here is still QUEUED with no pilot and no
+member, so the drain never sees it, and dropping its entry without
+cancelling it would leave a live task that `GET task/…` answers 404 for.
+`tasks_cancelled` counts that second step; the ledger entries are then
+dropped.
+
+A member the dispatcher refused to remove does not fail the call — the
+resource is forgotten either way, because its endpoint may be gone for good
+— but it is **reported**: `ok` is `false` and `errors` lists each member and
+its error, rather than the call answering `ok: true, members_removed: 0`.
 
 ### pick
 
@@ -428,7 +452,12 @@ verbatim, status and detail.
 
 - `member_id` — the authoritative placement, set by the dispatcher at
   dispatch. Reading it also **updates the ledger**, which is what re-points
-  a task whose resource has left;
+  a task whose resource has left — in both directions: a dispatcher that
+  reports **no** `member_id` on a still-running task has re-queued it off a
+  lost pilot, and the ledger entry's member is cleared with it, so
+  `tasks_running` stops counting the task on a member that is not running
+  it. (`resource` stays as it was — advisory — until the next dispatch.)
+  A terminal task keeps the member it ran on;
 - `member` and `resource` — that id split on its **last** dot (a resource
   name may contain dots, a member name may not);
 - `class` — the capability class the task was submitted into;
@@ -441,6 +470,13 @@ verbatim, status and detail.
 dispatch it is the advisory value from the submit, and for a task whose
 original resource left and which has not been re-dispatched yet there is no
 answer at all. That is "not placed", not a failure.
+
+**One class of task is answered from the ledger alone**: a pre-08 entry
+whose per-resource dispatcher session the upgrade released (below). Asking
+the dispatcher for it would be a 404 on a session it no longer holds, so
+the route returns the ledger's own view — `state: "FAILED"` with
+`detail: "the federation was upgraded"` — in the same key set. No
+`child_endpoint`: the pilot that had one is gone.
 
 ## How the pieces are wired
 
@@ -541,9 +577,11 @@ pilot sizes, budget and attributes; `POST pool/{sid}/{name}/members` and
 `cwd` and `member_id` are assigned at dispatch; `inputs_b64` on a submit is
 spooled by the dispatcher and placed on whichever member runs the task; and
 the verbose pool summary gains a per-member block with `node_hours_used`,
-`node_hours_remaining` and `pilots_active`. Requirement matching lives in
-one shared, stateless function so the federation and the dispatcher answer
-the same question with the same rules.
+`node_hours_remaining` and `pilots_active`. Requirement matching will live in one
+shared, stateless function (`task_dispatcher_match.satisfies`) so the
+federation and the dispatcher answer the same question with the same rules;
+until that branch merges, `federation_policy.satisfies` is a **byte-for-byte
+copy** of it, so the merge is a one-line import swap.
 
 Three earlier ones this plugin also required:
 
