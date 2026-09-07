@@ -11,8 +11,7 @@ Two layers:
   plugin is written against.
 - **Co-hosted** — a real :class:`BrokerPluginHost` running the *real* task
   dispatcher next to the federation.  Those tests need the multi-member
-  dispatcher and are **skipped** until it merges; see the marker on
-  :class:`TestCoHosted`.
+  dispatcher and run against the real multi-member dispatcher via ``BrokerPluginHost`` (see :class:`TestCoHosted`).
 """
 
 import asyncio

@@ -3159,11 +3159,11 @@ class PluginTaskDispatcher(Plugin):
                           self.instance_name, len(tasks), e)
             for task, fwd in fwds:
                 self._uid_to_task.pop(fwd['uid'], None)
-                task.rhapsody_uid = None
                 # a task that already reported terminal (submit_tasks can
                 # fail *after* the pilot accepted part of the batch) keeps
-                # the outcome the pilot gave it
+                # the outcome the pilot gave it, uid included
                 if task.state not in TASK_TERMINAL_STATES:
+                    task.rhapsody_uid = None
                     self._mark_task_failed(pool_state, task,
                                            f'rhapsody submit error: {e}')
 
