@@ -9,6 +9,8 @@ is the command to run on the remote endpoint.
 Usage:
     radical-orbit-run (--pool NAME | --endpoint NAME) --run-id ID \\
         [--priority N] [--in FILE]... [--out FILE]... \\
+        [--cores N] [--gpus N] [--mem GB] [--ranks N] [--mpi] \\
+        [--software NAME]... [--label K=V]... \\
         [--pools pools.json] -- COMMAND [ARG...]
 
 Targeting (exactly one required):
@@ -27,6 +29,21 @@ Options:
                   (repeatable; --pool only)
     --pools FILE  pools.json declaring the workflow's pools; forwarded
                   to the dispatcher on register_session
+
+Per-task resource requirements (all optional; every one left at its
+default means no ``requirements`` key on the wire at all):
+    --cores N     total CPU cores for the task; default 1
+    --gpus N      total GPUs for the task; default 0
+    --mem GB      memory in GB (float); default 0
+    --ranks N     process replicas -- MPI ranks under --mpi; default 1
+    --mpi         select the backend's MPI launch path
+    --software NAME  required software attribute (repeatable)
+    --label K=V   placement label (repeatable)
+
+The dispatcher forwards these to the pilot's rhapsody backend where the
+backend understands them; it does not reserve or pin.  A resubmit of an
+already-known task id returns the cached record, so *changed* requirements
+on a retry are ignored (same as a changed --priority).
 
 Exit code mirrors the task's exit code (0 on DONE without one, 1 on
 FAILED/CANCELED without one).
@@ -90,6 +107,18 @@ def _parse_opts(opts: list[str]) -> argparse.Namespace:
     ap.add_argument('--priority', type=int, default=0)
     ap.add_argument('--in',  dest='inputs',  action='append', default=[])
     ap.add_argument('--out', dest='outputs', action='append', default=[])
+    # Per-task resource requirements.  All optional; every flag left at its
+    # default yields requirements=None, so the wire body of an existing
+    # caller is byte-identical (see _requirements_from_args).
+    ap.add_argument('--cores', type=int,   default=1)
+    ap.add_argument('--gpus',  type=int,   default=0)
+    ap.add_argument('--mem',   type=float, default=0.0)
+    ap.add_argument('--ranks', type=int,   default=1)
+    ap.add_argument('--mpi',   action='store_true')
+    ap.add_argument('--software', dest='software', action='append',
+                    default=[])
+    ap.add_argument('--label',    dest='labels',   action='append',
+                    default=[])
     ap.add_argument('--pools', dest='pools_file', default=None,
                     help='Path to a pools.json declaring the workflow\'s '
                          'pools.  Sent to the dispatcher on register_session; '
@@ -104,8 +133,14 @@ def _parse_opts(opts: list[str]) -> argparse.Namespace:
         sys.exit(0)
     # Flatten space-separated forms: "--in a b c" becomes one append;
     # argparse keeps each as a single element, so split post-hoc.
-    args.inputs  = _flatten(args.inputs)
-    args.outputs = _flatten(args.outputs)
+    args.inputs   = _flatten(args.inputs)
+    args.outputs  = _flatten(args.outputs)
+    args.software = _flatten(args.software)
+    for label in args.labels:
+        if '=' not in label:
+            print(f'radical-orbit-run: --label expects K=V, got {label!r}',
+                  file=sys.stderr)
+            sys.exit(2)
     # Endpoint mode does not support file staging yet.
     if args.endpoint and (args.inputs or args.outputs):
         print('radical-orbit-run: --in/--out are not supported with --endpoint; '
@@ -123,6 +158,39 @@ def _flatten(items: list[str]) -> list[str]:
     return out
 
 
+def _requirements_from_args(args) -> dict | None:
+    '''Assemble the ``requirements`` block, or ``None`` when all-default.
+
+    Only non-default values are emitted, and an entirely default set
+    yields ``None`` so ``submit_task`` omits the key altogether — the
+    request body of a caller that uses none of these flags stays
+    byte-identical to what it sent before the flags existed.
+
+    Labels are ``K=V`` strings, split on the first ``=`` (validated in
+    :func:`_parse_opts`), and their values stay strings.
+    '''
+    req: dict = {}
+    if args.cores != 1:
+        req['cores'] = args.cores
+    if args.gpus:
+        req['gpus'] = args.gpus
+    if args.mem:
+        req['mem_gb'] = args.mem
+    if args.ranks != 1:
+        req['ranks'] = args.ranks
+    if args.mpi:
+        req['mpi'] = True
+    if args.software:
+        req['software'] = list(args.software)
+    if args.labels:
+        labels = {}
+        for label in args.labels:
+            key, _, value = label.partition('=')
+            labels[key] = value
+        req['labels'] = labels
+    return req or None
+
+
 # ---------------------------------------------------------------------------
 # Task id
 # ---------------------------------------------------------------------------
@@ -133,6 +201,13 @@ def compute_task_id(cmd: list[str], inputs: list[str], outputs: list[str],
 
     See design doc §3.3 for the resubmit semantics that this
     stability enables.
+
+    Resource requirements (``--cores``/``--gpus``/``--mem``/``--ranks``/
+    ``--mpi``/``--software``/``--label``) are deliberately **not** hashed:
+    they are placement, not identity.  Re-running the same rule with more
+    cores must still attach to the same task record — and the dispatcher
+    would ignore the change anyway, since a resubmit of a known task id
+    returns the cached record.
     '''
     h = hashlib.sha1()
     for arg in cmd:
@@ -353,6 +428,7 @@ class Wrapper:
                             for p in self.args.inputs],
                 outputs  = [os.path.basename(p)
                             for p in self.args.outputs],
+                requirements = _requirements_from_args(self.args),
             )
         except Exception as e:
             print(f'radical-orbit-run: submit failed: {e}', file=sys.stderr)
