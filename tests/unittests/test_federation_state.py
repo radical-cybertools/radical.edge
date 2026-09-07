@@ -12,12 +12,14 @@ from pathlib import Path
 import pytest
 
 from radical.orbit.federation_state import (
-    FederationState, FederationStateError, ResourceRecord, ResourceUsage,
-    SubmitLedgerEntry,
+    FederationState, FederationStateError, MemberRecord, ResourceRecord,
+    ResourceUsage, SubmitLedgerEntry,
     LIVENESS_LOST, MODE_LOGIN,
-    allowed_bases, node_hours_from_history, record_from_dict,
-    ledger_from_dict, validate_budget, validate_capabilities,
+    allowed_bases, member_from_dict, node_hours_from_history,
+    record_from_dict, ledger_from_dict, validate_attributes, validate_budget,
+    validate_capabilities, validate_class, validate_member_name,
     validate_name, validate_pool_int, validate_scratch_base,
+    validate_software,
 )
 
 
@@ -346,3 +348,307 @@ class TestModes:
         st.save()
         assert FederationState(p).load().resources['a'].liveness == \
             LIVENESS_LOST
+
+
+# ---------------------------------------------------------------------------
+# Members
+# ---------------------------------------------------------------------------
+
+def _member(**overrides) -> MemberRecord:
+    defaults = dict(member='gpu', member_id='beta.gpu', cls='gpu',
+                    pool_name='fed-gpu', queue='GPU', account='m1234',
+                    nodes=1, cpus_per_node=64, gpus_per_node=8,
+                    walltime_sec=1800, min_pilots=0, max_pilots=2,
+                    software=['pytorch'],
+                    attributes={'site': 'PSC', 'mem_gb_per_node': 256},
+                    budget={'node_hours': 8.0})
+    defaults.update(overrides)
+    return MemberRecord(**defaults)
+
+
+class TestMemberRecord:
+
+    def test_to_wire_renames_cls_to_class(self):
+        wire = _member().to_wire()
+        assert wire['class'] == 'gpu'
+        assert 'cls' not in wire
+        # everything the CLI and the Explorer read is there
+        for key in ('member', 'member_id', 'pool_name', 'queue', 'nodes',
+                    'cpus_per_node', 'gpus_per_node', 'software',
+                    'attributes', 'budget', 'usage', 'liveness'):
+            assert key in wire
+
+    def test_member_from_dict_accepts_both_spellings(self):
+        assert member_from_dict({'member': 'a', 'class': 'gpu'}).cls == 'gpu'
+        assert member_from_dict({'member': 'a', 'cls': 'gpu'}).cls   == 'gpu'
+
+    def test_member_round_trip_through_the_wire(self):
+        back = member_from_dict(_member().to_wire())
+        assert back == _member()
+
+    def test_member_from_dict_drops_unknowns_and_rebuilds_usage(self):
+        m = member_from_dict({'member': 'a', 'future': 1,
+                              'usage': {'pilots_active': 2, 'bogus': 9}})
+        assert isinstance(m.usage, ResourceUsage)
+        assert m.usage.pilots_active == 2
+        assert not hasattr(m, 'future')
+
+    def test_default_class_follows_the_declared_gpus(self):
+        assert _member(gpus_per_node=0).default_class() == 'cpu'
+        assert _member(gpus_per_node=1).default_class() == 'gpu'
+
+    def test_pilot_size_is_the_shape_the_matcher_compares(self):
+        size = _member().pilot_size()
+        assert (size.nodes, size.cpus_per_node, size.gpus_per_node) == \
+            (1, 64, 8)
+
+    def test_match_attributes_folds_software_in(self):
+        attrs = _member().match_attributes()
+        assert attrs['software'] == ['pytorch']
+        assert attrs['site']     == 'PSC'
+        # and does not mutate the member
+        assert 'software' not in _member().attributes
+
+    def test_budget_node_hours(self):
+        assert _member().budget_node_hours() == 8.0
+        assert _member(budget={}).budget_node_hours() == 0.0
+
+
+class TestSingleMemberDerivation:
+    """A state.json written before class pools must still load."""
+
+    _PRE08 = {
+        'name': 'legacy', 'endpoint': 'ep0', 'mode': 'login',
+        'site': 'NERSC', 'kind': 'hpc',
+        'capabilities': {'cores': 128, 'gpus': 4, 'mem_gb': 256,
+                         'software': ['lammps', 'pytorch']},
+        'budget': {'node_hours': 40.0},
+        'scratch_base': '/tmp/fed/legacy',
+        'dispatcher_sid': 'fed-legacy', 'pool_name': 'fed-legacy',
+        'pool_config': {
+            'name': 'fed-legacy', 'endpoint_name': 'ep0',
+            'queue': 'regular', 'account': 'm1234',
+            'min_pilots': 0, 'max_pilots': 2, 'default_size': 'default',
+            'pilot_sizes': {'default': {'nodes': 2, 'cpus_per_node': 64,
+                                        'gpus_per_node': 4,
+                                        'walltime_sec': 1800,
+                                        'rhapsody_backend': 'concurrent'}}},
+    }
+
+    def test_exactly_one_member_is_derived(self):
+        rec = record_from_dict(dict(self._PRE08))
+        assert list(rec.members) == ['default']
+
+    def test_the_derived_member_carries_the_stored_pool_shape(self):
+        m = record_from_dict(dict(self._PRE08)).members['default']
+        assert m.member_id  == 'legacy.default'
+        assert m.queue      == 'regular'
+        assert m.account    == 'm1234'
+        assert (m.nodes, m.cpus_per_node, m.gpus_per_node,
+                m.walltime_sec) == (2, 64, 4, 1800)
+        assert m.max_pilots == 2
+        assert m.rhapsody_backend == 'concurrent'
+        assert m.scratch_base == '/tmp/fed/legacy'
+        assert m.shared_fs is True
+
+    def test_the_derived_member_is_classified_by_its_gpus(self):
+        m = record_from_dict(dict(self._PRE08)).members['default']
+        assert m.cls       == 'gpu'
+        assert m.pool_name == 'fed-gpu'
+
+        cpu = dict(self._PRE08)
+        cpu['pool_config'] = dict(cpu['pool_config'])
+        cpu['pool_config']['pilot_sizes'] = {
+            'default': {'nodes': 1, 'cpus_per_node': 8, 'gpus_per_node': 0,
+                        'walltime_sec': 3600,
+                        'rhapsody_backend': 'concurrent'}}
+        m2 = record_from_dict(cpu).members['default']
+        assert (m2.cls, m2.pool_name) == ('cpu', 'fed-cpu')
+
+    def test_the_derived_member_inherits_budget_software_attributes(self):
+        m = record_from_dict(dict(self._PRE08)).members['default']
+        assert m.budget   == {'node_hours': 40.0}
+        assert m.software == ['lammps', 'pytorch']
+        assert m.attributes == {'site': 'NERSC', 'kind': 'hpc',
+                                'mem_gb_per_node': 256}
+
+    def test_a_record_without_a_pool_config_falls_back_to_the_pool_block(self):
+        raw = dict(self._PRE08)
+        raw.pop('pool_config')
+        raw['pool'] = {'queue': 'regular', 'nodes': 3, 'cpus_per_node': 16,
+                       'gpus_per_node': 0, 'walltime_sec': 600}
+        m = record_from_dict(raw).members['default']
+        assert (m.queue, m.nodes, m.cpus_per_node) == ('regular', 3, 16)
+        assert m.cls == 'cpu'
+
+    def test_an_explicit_members_list_wins(self):
+        raw = dict(self._PRE08)
+        raw['members'] = [_member().to_wire()]
+        rec = record_from_dict(raw)
+        assert list(rec.members) == ['gpu']
+        assert rec.members['gpu'].member_id == 'beta.gpu'
+
+    def test_members_survive_persistence(self, tmp_path):
+        p   = tmp_path / 'state.json'
+        st  = FederationState(p)
+        rec = _rec(name='beta')
+        rec.members['gpu'] = _member()
+        st.resources['beta'] = rec
+        st.save()
+        back = FederationState(p).load().resources['beta']
+        assert back.members['gpu'] == _member()
+
+
+class TestAggregate:
+
+    def _two_member(self) -> ResourceRecord:
+        rec = _rec(name='beta', capabilities={'mem_gb': 64,
+                                              'cores': 1, 'gpus': 0},
+                   budget={'node_hours': 1.0})
+        rec.members['cpu'] = _member(member='cpu', cls='cpu', gpus_per_node=0,
+                                     nodes=2, cpus_per_node=128,
+                                     software=['lammps'],
+                                     budget={'node_hours': 20.0})
+        rec.members['gpu'] = _member(member='gpu', nodes=1, cpus_per_node=64,
+                                     gpus_per_node=8, software=['pytorch'],
+                                     budget={'node_hours': 8.0})
+        return rec
+
+    def test_cores_and_gpus_are_summed_over_the_members(self):
+        rec = self._two_member()
+        rec.aggregate()
+        assert rec.capabilities['cores'] == 2 * 128 + 1 * 64
+        assert rec.capabilities['gpus']  == 1 * 8
+
+    def test_software_is_the_union_in_declaration_order(self):
+        rec = self._two_member()
+        rec.aggregate()
+        assert rec.capabilities['software'] == ['lammps', 'pytorch']
+
+    def test_other_declared_capabilities_are_left_alone(self):
+        # an operator's mem_gb is a statement about the machine; the
+        # aggregate answers a different question and must not overwrite it
+        rec = self._two_member()
+        rec.aggregate()
+        assert rec.capabilities['mem_gb'] == 64
+
+    def test_budget_is_the_sum_of_the_member_budgets(self):
+        rec = self._two_member()
+        rec.aggregate()
+        assert rec.budget == {'node_hours': 28.0}
+
+    def test_a_member_less_record_is_untouched(self):
+        rec = _rec()
+        before = dict(rec.capabilities)
+        rec.aggregate()
+        assert rec.capabilities == before
+
+    def test_to_wire_renders_members_as_a_list(self):
+        rec = self._two_member()
+        wire = rec.to_wire()
+        assert [m['member'] for m in wire['members']] == ['cpu', 'gpu']
+        assert wire['members'][1]['class'] == 'gpu'
+
+
+# ---------------------------------------------------------------------------
+# Ledger: placement is late, and survives a leave
+# ---------------------------------------------------------------------------
+
+class TestLedgerPlacement:
+
+    def _state(self, tmp_path) -> FederationState:
+        st = FederationState(tmp_path / 'state.json')
+        st.resources['a'] = _rec(name='a')
+        for tid, res, mid, state in (
+                ('t.run',  'a', 'a.default', 'RUNNING'),
+                ('t.q',    'a', None,        'QUEUED'),
+                ('t.done', 'a', 'a.default', 'DONE'),
+                ('t.other', 'b', 'b.default', 'RUNNING')):
+            st.ledger[tid] = SubmitLedgerEntry(
+                task_id=tid, resource=res, member_id=mid, state=state,
+                pool='fed-cpu', dispatcher_sid='fed', cls='cpu')
+        return st
+
+    def test_member_counts_only_see_placed_tasks(self, tmp_path):
+        st = self._state(tmp_path)
+        # t.q has no member yet: it counts on the resource, not on a member
+        assert st.member_task_counts('a.default') == (1, 1, 0)
+        assert st.task_counts('a')                == (2, 1, 0)
+
+    def test_leave_keeps_live_entries_and_re_points_them(self, tmp_path):
+        st = self._state(tmp_path)
+        st.drop_resource('a', keep_active=True)
+        assert 'a' not in st.resources
+        assert set(st.ledger) == {'t.run', 't.q', 't.other'}   # t.done gone
+        for tid in ('t.run', 't.q'):
+            entry = st.ledger[tid]
+            assert entry.resource  is None
+            assert entry.member_id is None
+            # the class pool and the fed session outlive the resource
+            assert entry.pool           == 'fed-cpu'
+            assert entry.dispatcher_sid == 'fed'
+        assert st.ledger['t.other'].resource == 'b'
+
+    def test_a_full_teardown_drops_everything(self, tmp_path):
+        st = self._state(tmp_path)
+        st.drop_resource('a', keep_active=False)
+        assert set(st.ledger) == {'t.other'}
+
+    def test_the_ledger_round_trips_its_placement(self, tmp_path):
+        st = self._state(tmp_path)
+        st.save()
+        back = FederationState(st.path).load().ledger['t.run']
+        assert back.member_id == 'a.default'
+        assert back.cls       == 'cpu'
+
+    def test_a_null_resource_persists(self, tmp_path):
+        st = self._state(tmp_path)
+        st.drop_resource('a', keep_active=True)
+        st.save()
+        assert FederationState(st.path).load().ledger['t.q'].resource is None
+
+
+# ---------------------------------------------------------------------------
+# Member validators
+# ---------------------------------------------------------------------------
+
+class TestMemberValidators:
+
+    def test_member_name_pattern(self):
+        assert validate_member_name('gpu-1_a') == 'gpu-1_a'
+        # a dot is the resource/member separator and must not appear here
+        for bad in ('', None, 'Upper', 'has space', 'a.b', '-lead', 42):
+            with pytest.raises(FederationStateError):
+                validate_member_name(bad)
+
+    def test_class_is_refused_not_coerced(self):
+        assert validate_class('gpu') == 'gpu'
+        with pytest.raises(FederationStateError, match='never coerced'):
+            validate_class('GPU')
+        for bad in ('', None, 'a b', 'a.b', '_x'):
+            with pytest.raises(FederationStateError):
+                validate_class(bad)
+
+    def test_attributes_accept_strings_numbers_and_string_lists(self):
+        assert validate_attributes({'site': 'NERSC', 'mem_gb_per_node': 256,
+                                    'tags': ['a', 'b']}) == \
+            {'site': 'NERSC', 'mem_gb_per_node': 256, 'tags': ['a', 'b']}
+
+    def test_attributes_drop_nulls_and_reject_the_rest(self):
+        assert validate_attributes({'site': None}) == {}
+        assert validate_attributes(None) == {}
+        for bad in ([], {'k': True}, {'k': {'nested': 1}}, {'k': [1]},
+                    {'': 'v'}):
+            with pytest.raises(FederationStateError):
+                validate_attributes(bad)
+
+    def test_software_is_a_list_of_strings(self):
+        assert validate_software(None) == []
+        assert validate_software(['a']) == ['a']
+        for bad in ('lammps', [1], {}):
+            with pytest.raises(FederationStateError):
+                validate_software(bad)
+
+    def test_pool_int_message_can_name_a_member(self):
+        with pytest.raises(FederationStateError, match="'member gpu.nodes'"):
+            validate_pool_int({}, 'nodes', minimum=1, label='member gpu')

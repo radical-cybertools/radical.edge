@@ -1,12 +1,16 @@
 '''
 Federation — resource records, usage accounting and the durable store.
 
-Three record types make up a federation's state:
+Four record types make up a federation's state:
 
-- :class:`ResourceRecord` — one joined resource: what it is, what it can
-  do, what it may spend, and which dispatcher session/pool serves it.
+- :class:`ResourceRecord` — one joined resource: what it is, what its
+  **members** are, and which dispatcher session serves them.
+- :class:`MemberRecord` — one resource shape inside a resource: a queue, a
+  pilot size, its own software/attributes/budget, and the capability
+  **class** whose pool (``fed-<class>``) it belongs to.  Budget and
+  node-hours live here, not on the resource — an allocation is per site.
 - :class:`ResourceUsage`  — the derived, refreshed-on-read view of what a
-  resource has actually consumed and is running.
+  resource (or one of its members) has actually consumed and is running.
 - :class:`SubmitLedgerEntry` — the federation's own record of one task it
   routed, so ``tasks_running`` / ``tasks_done`` survive the dispatcher's
   capped ``recent_tasks`` window (50 per pool).
@@ -38,7 +42,8 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any
 
-from .task_dispatcher_state import write_json_atomic, read_json
+from .task_dispatcher_config import PilotSize
+from .task_dispatcher_state  import write_json_atomic, read_json
 
 log = logging.getLogger('radical.orbit')
 
@@ -60,9 +65,24 @@ LIVENESS_OK      = 'ok'
 LIVENESS_SUSPECT = 'suspect'
 LIVENESS_LOST    = 'lost'
 
-# Resource names ride in URLs and in a pool name (``fed-<name>``), so they
-# are restricted to a conservative, path-safe alphabet.
+# Resource names ride in URLs and in a member id, so they are restricted to
+# a conservative, path-safe alphabet.  A resource name **may** contain dots.
 NAME_RE = re.compile(r'^[a-z0-9_.-]+$')
+
+# A member's short name must **not** contain a dot: the member id is
+# ``<resource>.<member>`` and the resource half may itself carry dots, so the
+# dot is unambiguously the separator only if the member half has none.  Split
+# a member id with ``rpartition('.')``, never ``partition``.
+MEMBER_NAME_RE = re.compile(r'^[a-z0-9][a-z0-9_-]*$')
+
+# A capability class names a dispatcher pool (``fed-<class>``).  A name that
+# does not match is a declaration error — never lower-cased or otherwise
+# coerced, because silently accepting ``GPU`` would create a second,
+# invisible ``fed-GPU`` pool nobody else routes to.
+CLASS_RE = re.compile(r'^[a-z0-9][a-z0-9_-]*$')
+
+# The member name a resource with exactly one (implicit) member gets.
+DEFAULT_MEMBER = 'default'
 
 # Capability keys whose value is a list of strings; everything else in a
 # capability dict is a number.
@@ -104,14 +124,128 @@ class SubmitLedgerEntry:
     verbose summary, so counting completed work off *that* would silently
     undercount a long run.  This ledger is the federation's answer: one
     entry per task it ever routed, updated whenever the task is polled.
+
+    ``resource`` and ``member_id`` are **placement**, and placement is late:
+    a class pool binds a task to a member only at dispatch.  Both are
+    therefore nullable — the submit fills ``resource`` with the advisory
+    top-scoring member's resource, and the first poll that reports a
+    ``member_id`` overwrites both with the truth.  A ``leave`` re-points
+    them to ``None`` rather than dropping the entry, because the task keeps
+    running on a sibling member.
     '''
     task_id       : str
-    resource      : str
+    resource      : str | None
     pool          : str   = ''
     dispatcher_sid: str   = ''
     state         : str   = 'QUEUED'
     submitted_at  : float = 0.0
     finished_at   : float | None = None
+    member_id     : str | None = None
+    cls           : str   = ''
+    detail        : str   = ''
+
+
+@dataclass
+class MemberRecord:
+    '''One resource shape inside a resource — the unit the dispatcher sees.
+
+    A member is what an operator is willing to run: one queue, one pilot
+    size, its own software and free-form attributes, and its own node-hour
+    budget.  Its **class** (``cpu``, ``gpu``, …) selects the dispatcher pool
+    ``fed-<class>`` it is added to, so every member of a class competes for
+    the same task queue and the dispatcher — not the federation — chooses
+    between them at dispatch time.
+
+    ``cls`` is spelled ``class`` on the wire (``class`` is a Python
+    keyword); :meth:`to_wire` renames it and :func:`member_from_dict`
+    accepts either spelling.
+    '''
+    member          : str
+    member_id       : str = ''            # '<resource>.<member>', server-filled
+    cls             : str = ''            # 'cpu' | 'gpu' | … ; wire key "class"
+    pool_name       : str = ''            # 'fed-<class>', server-filled
+    queue           : str = ''
+    account         : str | None = None
+    nodes           : int = 1
+    cpus_per_node   : int = 1
+    gpus_per_node   : int = 0
+    walltime_sec    : int = 3600
+    min_pilots      : int = 0
+    max_pilots      : int = 1
+    rhapsody_backend: str = 'concurrent'
+    scratch_base    : str | None = None   # on the MEMBER's host
+    shared_fs       : bool = True
+    software        : list = field(default_factory=list)
+    attributes      : dict = field(default_factory=dict)
+    budget          : dict = field(default_factory=dict)
+    usage           : ResourceUsage = field(default_factory=ResourceUsage)
+    liveness        : str = LIVENESS_OK
+
+    def budget_node_hours(self) -> float:
+        '''Return this member's declared node-hour allowance (0.0 = none).'''
+        try:
+            return float((self.budget or {}).get('node_hours') or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def default_class(self) -> str:
+        '''Return the class this member falls into when none is declared.
+
+        A *default*, not a rule: an explicit ``class`` on the member always
+        wins, so a new class needs no code change here.
+        '''
+        return 'gpu' if (self.gpus_per_node or 0) > 0 else 'cpu'
+
+    def pilot_size(self) -> PilotSize:
+        '''Return this member's single pilot shape.
+
+        The same object the dispatcher's matcher compares a task's
+        ``cores`` / ``gpus`` / ``mpi`` against, so federation and dispatcher
+        answer the same question with the same data.
+        '''
+        return PilotSize(nodes            = int(self.nodes or 1),
+                         cpus_per_node    = int(self.cpus_per_node or 1),
+                         rhapsody_backend = self.rhapsody_backend or '',
+                         gpus_per_node    = int(self.gpus_per_node or 0),
+                         walltime_sec     = int(self.walltime_sec or 0))
+
+    def match_attributes(self) -> dict:
+        '''Return the attribute map a requirement is matched against.
+
+        ``software`` is an attribute by convention (the dispatcher knows no
+        federation vocabulary), so it is folded in here rather than kept as
+        a second, parallel channel.
+        '''
+        attrs = dict(self.attributes or {})
+        attrs['software'] = list(self.software or [])
+        return attrs
+
+    def to_wire(self) -> dict:
+        '''Return the client-facing view, with ``cls`` renamed to ``class``.'''
+        out = asdict(self)
+        out['class'] = out.pop('cls')
+        return out
+
+
+def member_from_dict(data: dict) -> MemberRecord:
+    '''Rebuild a :class:`MemberRecord` from JSON (wire *or* persisted).
+
+    Accepts both the wire key ``class`` and the persisted key ``cls``, drops
+    unknown keys, and rebuilds a missing ``usage`` block empty — so both a
+    client declaration and an older ``state.json`` load through one path.
+    '''
+    data  = dict(data or {})
+    known = set(MemberRecord.__dataclass_fields__)
+    if 'class' in data:
+        data.setdefault('cls', data.pop('class'))
+    kw    = {k: v for k, v in data.items() if k in known}
+    usage = kw.pop('usage', None)
+    rec   = MemberRecord(**kw)
+    if isinstance(usage, dict):
+        ukeys = set(ResourceUsage.__dataclass_fields__)
+        rec.usage = ResourceUsage(
+            **{k: v for k, v in usage.items() if k in ukeys})
+    return rec
 
 
 @dataclass
@@ -120,6 +254,11 @@ class ResourceRecord:
 
     Client-declared fields (``name`` … ``pool``) come from the join body;
     the rest are server-filled and must not be accepted from a client.
+
+    ``capabilities`` and ``budget`` stay on the record but are now the
+    **aggregate view** of its members (see :meth:`aggregate`), so every
+    existing consumer keeps rendering while the per-member view is added
+    alongside.
     '''
     # -- declared at join --------------------------------------------------
     name        : str
@@ -139,10 +278,16 @@ class ResourceRecord:
     usage         : ResourceUsage = field(default_factory=ResourceUsage)
     liveness      : str   = LIVENESS_OK
 
-    # The exact pool declaration handed to the dispatcher at join.  Internal
-    # (see :meth:`to_wire`): it is persisted so a restart can re-register the
-    # *identical* pool — an allocation-mode size is derived from the
-    # endpoint's live allocation and cannot be recomputed offline.
+    # The members this resource offers, keyed by short name, insertion
+    # ordered.  Authoritative: everything the dispatcher is told about this
+    # resource is built from here.
+    members       : dict = field(default_factory=dict)
+
+    # The exact pool declaration handed to the dispatcher at join, for a
+    # record written **before** class pools.  Internal (see :meth:`to_wire`)
+    # and kept only so the upgrade path can re-own and release the legacy
+    # ``fed-<name>`` pool; a class-pool join leaves it empty, because the
+    # declaration is rebuilt from ``members`` on every registration.
     pool_config   : dict  = field(default_factory=dict)
 
     # -- derived views -----------------------------------------------------
@@ -158,6 +303,42 @@ class ResourceRecord:
         '''Return one declared capability value.'''
         return (self.capabilities or {}).get(key, default)
 
+    def member_list(self) -> list:
+        '''Return this resource's members in declaration order.'''
+        return list(self.members.values())
+
+    def aggregate(self) -> None:
+        '''Recompute the resource-level view from the members.
+
+        ``cores`` = Σ ``nodes × cpus_per_node``, ``gpus`` = Σ ``nodes ×
+        gpus_per_node``, ``software`` = union, ``budget.node_hours`` = Σ
+        member budgets.  Every other declared capability (``mem_gb`` and
+        friends) is left exactly as declared — the aggregate answers what
+        the members add up to, it does not overwrite what an operator said
+        about the machine.
+        '''
+        members = self.member_list()
+        if not members:
+            return
+
+        caps = dict(self.capabilities or {})
+        caps['cores'] = sum(int(m.nodes or 0) * int(m.cpus_per_node or 0)
+                            for m in members)
+        caps['gpus']  = sum(int(m.nodes or 0) * int(m.gpus_per_node or 0)
+                            for m in members)
+
+        software: list = []
+        for m in members:
+            for tag in (m.software or []):
+                if tag not in software:
+                    software.append(tag)
+        caps['software'] = software
+        self.capabilities = caps
+
+        total = sum(m.budget_node_hours() for m in members)
+        if total > 0:
+            self.budget = {'node_hours': round(total, 6)}
+
     def to_dict(self) -> dict:
         '''Return the full persisted view of this record.'''
         return asdict(self)
@@ -167,27 +348,92 @@ class ResourceRecord:
 
         The resolved pool declaration is an implementation detail of how the
         federation drives the dispatcher; a client sees the resource, its
+        ``members`` (as a **list**, each with its wire ``class``), its
         ``pool_name``, and its ``dispatcher_sid``.
         '''
         out = asdict(self)
         out.pop('pool_config', None)
+        out['members'] = [m.to_wire() for m in self.member_list()]
         return out
+
+
+def _derive_member(rec: ResourceRecord) -> MemberRecord:
+    '''Synthesise the single member of a record written before class pools.
+
+    The pool declaration stored at join (``pool_config``) is the authority:
+    an allocation-mode size was derived from the endpoint's live allocation
+    and cannot be recomputed offline.  The declared ``pool`` block is the
+    fallback for a record that never got one.
+    '''
+    decl  = dict(rec.pool_config or {})
+    sizes = decl.get('pilot_sizes') or {}
+    size  = dict((sizes.get(decl.get('default_size') or 'default')
+                  or next(iter(sizes.values()), None) or {}))
+    if not size:
+        size = dict(rec.pool or {})
+    caps = rec.capabilities or {}
+    pool = rec.pool or {}
+
+    member = MemberRecord(
+        member           = DEFAULT_MEMBER,
+        member_id        = f'{rec.name}.{DEFAULT_MEMBER}',
+        queue            = str(decl.get('queue') or pool.get('queue') or ''),
+        account          = decl.get('account', pool.get('account')),
+        nodes            = int(size.get('nodes') or 1),
+        cpus_per_node    = int(size.get('cpus_per_node') or 1),
+        gpus_per_node    = int(size.get('gpus_per_node') or 0),
+        walltime_sec     = int(size.get('walltime_sec') or 3600),
+        min_pilots       = int(decl.get('min_pilots')
+                               if decl.get('min_pilots') is not None
+                               else pool.get('min_pilots') or 0),
+        max_pilots       = int(decl.get('max_pilots')
+                               if decl.get('max_pilots') is not None
+                               else pool.get('max_pilots') or 1),
+        rhapsody_backend = str(size.get('rhapsody_backend') or 'concurrent'),
+        scratch_base     = rec.scratch_base,
+        shared_fs        = True,
+        software         = list(caps.get('software') or []),
+        attributes       = {'site'           : rec.site,
+                            'kind'           : rec.kind,
+                            'mem_gb_per_node': caps.get('mem_gb')},
+        budget           = dict(rec.budget or {}),
+        liveness         = rec.liveness,
+    )
+    member.cls       = member.default_class()
+    member.pool_name = f'fed-{member.cls}'
+    member.usage     = ResourceUsage(**asdict(rec.usage))
+    return member
 
 
 def record_from_dict(data: dict) -> ResourceRecord:
     '''Rebuild a :class:`ResourceRecord` from persisted JSON.
 
     Unknown keys are dropped and a missing ``usage`` block is rebuilt empty,
-    so an older ``state.json`` survives a schema addition.
+    so an older ``state.json`` survives a schema addition.  A record with no
+    ``members`` at all is **pre-08**: exactly one member is derived from its
+    stored pool declaration (:func:`_derive_member`), so the rest of the
+    federation only ever sees one shape.
     '''
     known = {f for f in ResourceRecord.__dataclass_fields__}
     kw    = {k: v for k, v in (data or {}).items() if k in known}
     usage = kw.pop('usage', None)
+    raw   = kw.pop('members', None)
     rec   = ResourceRecord(**kw)
     if isinstance(usage, dict):
         ukeys = set(ResourceUsage.__dataclass_fields__)
         rec.usage = ResourceUsage(
             **{k: v for k, v in usage.items() if k in ukeys})
+
+    members = list(raw.values()) if isinstance(raw, dict) else (raw or [])
+    if members:
+        for entry in members:
+            if not isinstance(entry, dict):
+                continue
+            m = member_from_dict(entry)
+            rec.members[m.member] = m
+    else:
+        m = _derive_member(rec)
+        rec.members[m.member] = m
     return rec
 
 
@@ -299,24 +545,60 @@ class FederationState:
         '''Return every ledger entry routed to *resource*.'''
         return [e for e in self.ledger.values() if e.resource == resource]
 
+    def ledger_for_member(self, member_id: str) -> list[SubmitLedgerEntry]:
+        '''Return every ledger entry a poll placed on *member_id*.'''
+        return [e for e in self.ledger.values() if e.member_id == member_id]
+
+    @staticmethod
+    def _counts(entries) -> tuple[int, int, int]:
+        running = done = failed = 0
+        for e in entries:
+            if   e.state == 'DONE':                 done    += 1
+            elif e.state in ('FAILED', 'CANCELED'): failed  += 1
+            else:                                   running += 1
+        return running, done, failed
+
     def task_counts(self, resource: str) -> tuple[int, int, int]:
         '''Return ``(running, done, failed)`` task counts for *resource*.
 
         "Running" is everything not yet terminal — a task queued behind a
         warming pilot is work in flight from the federation's point of view.
         '''
-        running = done = failed = 0
-        for e in self.ledger_for(resource):
-            if   e.state == 'DONE':                 done    += 1
-            elif e.state in ('FAILED', 'CANCELED'): failed  += 1
-            else:                                   running += 1
-        return running, done, failed
+        return self._counts(self.ledger_for(resource))
 
-    def drop_resource(self, name: str) -> None:
-        '''Forget a resource and every ledger entry that named it.'''
+    def member_task_counts(self, member_id: str) -> tuple[int, int, int]:
+        '''Return ``(running, done, failed)`` counts for one member.
+
+        Only tasks a poll actually **placed** on this member count here: a
+        task that has not been dispatched has no member yet and shows on the
+        resource row alone.
+        '''
+        return self._counts(self.ledger_for_member(member_id))
+
+    def drop_resource(self, name: str, keep_active: bool = False) -> None:
+        '''Forget a resource; *keep_active* decides its live ledger entries.
+
+        With class pools a resource is not the owner of its tasks: a task
+        it submitted sits in a **class** pool and may keep running, or start
+        running, on a sibling member of another resource.  So a plain
+        ``leave`` drops only the *terminal* entries and re-points the rest
+        (``resource`` / ``member_id`` → ``None``, ``pool`` and
+        ``dispatcher_sid`` untouched — both still valid).  The next poll
+        fills the real placement back in.
+
+        Dropping the live entries too (``keep_active=False``) is the full
+        teardown, and is correct only when the caller has already had the
+        dispatcher cancel them.
+        '''
         self.resources.pop(name, None)
-        for tid in [t for t, e in self.ledger.items() if e.resource == name]:
-            self.ledger.pop(tid, None)
+        for tid, e in list(self.ledger.items()):
+            if e.resource != name:
+                continue
+            if not keep_active or e.state in ('DONE', 'FAILED', 'CANCELED'):
+                self.ledger.pop(tid, None)
+            else:
+                e.resource  = None
+                e.member_id = None
 
 
 # ---------------------------------------------------------------------------
@@ -362,30 +644,107 @@ def validate_scratch_base(path: str, *, field: str = 'scratch_base') -> str:
 
 def validate_pool_int(decl: dict, key: str, *, default: int | None = None,
                       minimum: int = 0,
-                      maximum: int | None = None) -> int:
-    '''Return one integer field of a login-mode pool block, or raise.
+                      maximum: int | None = None,
+                      label: str = 'pool') -> int:
+    '''Return one integer field of a pool or member declaration, or raise.
 
     A bad value here would otherwise reach the dispatcher's own parser or an
     ``int()`` call deep in pool construction and surface as a 500; a
-    declaration error deserves a 400.
+    declaration error deserves a 400.  *label* names the block in the error
+    message, so a member's message says which member.
     '''
     if key not in decl or decl[key] is None:
         if default is None:
             raise FederationStateError(
-                f"'pool.{key}' is required")
+                f"'{label}.{key}' is required")
         return default
     val = decl[key]
     if isinstance(val, bool) or not isinstance(val, int):
         raise FederationStateError(
-            f"'pool.{key}' must be an integer, got "
+            f"'{label}.{key}' must be an integer, got "
             f'{type(val).__name__}')
     if val < minimum:
         raise FederationStateError(
-            f"'pool.{key}' must be >= {minimum}, got {val}")
+            f"'{label}.{key}' must be >= {minimum}, got {val}")
     if maximum is not None and val > maximum:
         raise FederationStateError(
-            f"'pool.{key}' must be <= {maximum}, got {val}")
+            f"'{label}.{key}' must be <= {maximum}, got {val}")
     return val
+
+
+def validate_member_name(name: Any) -> str:
+    '''Validate a member's short name against :data:`MEMBER_NAME_RE`.'''
+    if not isinstance(name, str) or not name:
+        raise FederationStateError("'member' must be a non-empty string")
+    if not MEMBER_NAME_RE.match(name):
+        raise FederationStateError(
+            f"'member' must match {MEMBER_NAME_RE.pattern} — no dot, the dot "
+            f'separates resource and member (got {name!r})')
+    return name
+
+
+def validate_class(cls: Any, *, label: str = 'member') -> str:
+    '''Validate a declared capability class against :data:`CLASS_RE`.
+
+    A name that does not match is **refused**, never coerced: lower-casing
+    ``GPU`` into ``gpu`` would hide the typo, and accepting it verbatim
+    would create a second, invisible ``fed-GPU`` pool that nothing else
+    routes to.
+    '''
+    if not isinstance(cls, str) or not cls:
+        raise FederationStateError(f"'{label}.class' must be a non-empty "
+                                   f'string')
+    if not CLASS_RE.match(cls):
+        raise FederationStateError(
+            f"'{label}.class' must match {CLASS_RE.pattern} (got {cls!r}) — "
+            f'a class names the pool fed-<class> and is never coerced')
+    return cls
+
+
+def validate_attributes(attrs: Any, *, label: str = 'member') -> dict:
+    '''Validate a member's free-form attribute map.
+
+    The dispatcher's matcher compares a task's ``labels`` against these, so
+    the value types are exactly the ones it can compare: a string, a number,
+    or a list of strings.  Anything else is a declaration error rather than
+    an attribute that silently never matches.
+    '''
+    if attrs is None:
+        return {}
+    if not isinstance(attrs, dict):
+        raise FederationStateError(f"'{label}.attributes' must be an object")
+    out: dict = {}
+    for key, val in attrs.items():
+        if not isinstance(key, str) or not key:
+            raise FederationStateError(
+                f"'{label}.attributes' keys must be non-empty strings")
+        if val is None:
+            continue
+        if isinstance(val, list):
+            if not all(isinstance(v, str) for v in val):
+                raise FederationStateError(
+                    f"'{label}.attributes.{key}' must be a list of strings")
+            out[key] = list(val)
+        elif isinstance(val, str):
+            out[key] = val
+        elif isinstance(val, bool) or not isinstance(val, (int, float)):
+            raise FederationStateError(
+                f"'{label}.attributes.{key}' must be a string, a number or "
+                f'a list of strings')
+        else:
+            out[key] = val
+    return out
+
+
+def validate_software(value: Any, *, label: str = 'member') -> list:
+    '''Validate a member's ``software`` list.'''
+    if value is None:
+        return []
+    if not isinstance(value, list) or \
+            not all(isinstance(v, str) for v in value):
+        raise FederationStateError(
+            f"'{label}.software' must be a list of strings")
+    return list(value)
 
 
 def validate_capabilities(caps: Any) -> dict:

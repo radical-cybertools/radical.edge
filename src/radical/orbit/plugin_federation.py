@@ -5,28 +5,41 @@ The task dispatcher answers "run this task on *that* pool".  The federation
 answers the question one level up: **which** resource should run it at all.
 It is a broker-hosted plugin that
 
-- keeps a registry of joined resources — what each one is, what it can do
-  (``capabilities``), and what it may spend (``budget``);
-- creates, per joined resource, exactly one dispatcher session holding
-  exactly one pool, so the dispatcher's single-endpoint-per-pool model is
-  left completely untouched;
-- derives node-hour usage from the dispatcher's pilot history and keeps its
-  own ledger of the tasks it routed;
-- picks a resource for a set of requirements through a pluggable
-  :class:`~radical.orbit.federation_policy.FederationPolicy`.
+- keeps a registry of joined resources and their **members** — one member per
+  resource shape an operator is willing to run, each with its own queue,
+  pilot size, software, attributes and node-hour budget;
+- adds every member to the dispatcher pool of its **capability class**
+  (``fed-cpu``, ``fed-gpu``, …), all inside one persistent dispatcher
+  session, ``fed``;
+- derives node-hour usage per member from the dispatcher and keeps its own
+  ledger of the tasks it routed;
+- picks a *class* for a set of requirements through a pluggable
+  :class:`~radical.orbit.federation_policy.FederationPolicy` — the
+  dispatcher then picks the member, at dispatch.
 
 Nothing here is domain-specific: a "resource" is whatever an operator joined,
 and requirements are plain capability keys.
 
-Why it is built this way (verified against the dispatcher, 2026-09-06)
----------------------------------------------------------------------
-- **Pools are declared per session.**  ``register_session`` is the *only*
-  way a pool comes into existence (``PluginTaskDispatcher.register_session``);
-  there is no add-pool route, and pool identity is ``(owning_sid, name)``.
-  Hence one dispatcher session per resource, with the deterministic sid
-  ``fed-<name>`` so a restart re-attaches to exactly the pool the dispatcher
-  already replayed off disk (``_materialise_pool`` returns the existing
-  ``PoolState`` for a re-declared pool).
+Why it is built this way
+------------------------
+- **A pool is a capability class, not a site.**  Every member of a class
+  competes for the same task queue, so work spreads across resources
+  automatically and a departing member's tasks can keep running elsewhere.
+  The federation therefore keeps exactly **one** dispatcher session,
+  :data:`FED_SESSION_SID`, holding every class pool, and drives membership
+  through the dispatcher's ``pool/{sid}/{pool}/members`` routes.
+- **Placement is late.**  ``submit`` names a class, not a site: the binding
+  choice happens at dispatch and is reported by ``task`` as ``member_id``.
+  The ``resource`` a submit answers with is **advisory** — the top-scoring
+  eligible member's resource, so a caller has something to show — and every
+  poll may correct it.  That is also why the task's ``cwd`` is never
+  computed here: only the dispatcher knows which member's filesystem the
+  task landed on.
+- **Re-registration is always the FULL pool list.**  ``parse_pools`` rejects
+  an empty ``pools`` list and ``_materialise_pool`` is idempotent by name,
+  so re-sending every class pool is both required and free.  One helper,
+  ``_class_pool_decls``, builds it for join, restart replay and liveness
+  re-attach alike — three callers, one declaration shape, no drift.
 - **Dispatcher sessions expire.**  A session registered through the
   in-process host path carries no ``x-orbit-src`` owner, so it is an
   owner-less *ephemeral* session and the base sweep drops it
@@ -64,11 +77,15 @@ Known limitations
   the endpoint that runs the pilot.  Correct for a co-located broker and for
   ``allocation`` mode; a ``login``-mode resource on a Slurm cluster reached
   from a non-Slurm broker host will submit with the wrong executor.
-- Pool-mode staging assumes a **shared filesystem** between the broker host
-  and the pilot: the dispatcher writes ``<scratch_base>/<task_id>/`` locally
-  and the pilot runs with that as its cwd.  Across hosts, results must be
-  pulled through the pilot's own ``staging`` plugin instead — which is why
-  ``task`` reports the pilot's ``child_endpoint`` while it is alive.
+- **A class is declared, not reserved.**  ``fed-gpu`` means "every member
+  here declares GPUs", not "a GPU is held exclusively for your task":
+  pilot capacity is task-count based and nothing reserves a device.
+- **Task inputs ride the submit** as ``inputs_b64`` and are forwarded
+  verbatim to the dispatcher, which spools them and places them wherever the
+  task lands.  Outputs have no such answer: for a member that does not share
+  a filesystem with the broker they must be pulled through the pilot's own
+  ``staging`` plugin — which is why ``task`` reports ``child_endpoint``
+  while the pilot is alive.
 - Usage is refreshed by polling (cached 2 s).  The plugin does not subscribe
   to the broker event tap; a caller that wants sub-second accounting should.
 '''
@@ -92,11 +109,14 @@ from .plugin_base           import Plugin
 from .plugin_session_base   import PluginSession
 from .federation_policy     import make_policy
 from .federation_state      import (
-    FederationState, FederationStateError, ResourceRecord, SubmitLedgerEntry,
-    LIVENESS_OK, LIVENESS_SUSPECT, LIVENESS_LOST,
+    FederationState, FederationStateError, MemberRecord, ResourceRecord,
+    SubmitLedgerEntry,
+    DEFAULT_MEMBER, LIVENESS_OK, LIVENESS_SUSPECT, LIVENESS_LOST,
     MODE_ALLOCATION, MODE_LOGIN, MODES,
-    node_hours_from_history, validate_budget, validate_capabilities,
+    node_hours_from_history, validate_attributes, validate_budget,
+    validate_capabilities, validate_class, validate_member_name,
     validate_name, validate_pool_int, validate_scratch_base,
+    validate_software,
 )
 
 log = logging.getLogger('radical.orbit')
@@ -117,9 +137,15 @@ _DEFAULT_STATE_ROOT  = Path('~/.radical/orbit/federation').expanduser()
 # The dispatcher instance the federation drives.
 _DISPATCHER_INSTANCE = 'task_dispatcher'
 
-# Both the pool name and the dispatcher session id are derived from the
-# resource name with this prefix — deterministic, so a restart re-attaches.
+# Class pools are named ``fed-<class>``.  The prefix is a constant, not a
+# per-resource derivation any more: a pool is a capability class shared by
+# every resource that declares it.
 _FED_PREFIX = 'fed-'
+
+# The single dispatcher session that holds every class pool.  One session,
+# because a class pool outlives any one resource: unregistering it would
+# take *every* class down (see the R4 note in plan 08).
+FED_SESSION_SID = 'fed'
 
 # Usage is recomputed at most this often, and a refresh that cannot reach the
 # dispatcher within this long keeps the previous values and flags them stale.
@@ -144,6 +170,20 @@ _LOGIN_POOL_KEYS = frozenset((
     'queue', 'account', 'nodes', 'cpus_per_node', 'gpus_per_node',
     'walltime_sec', 'min_pilots', 'max_pilots', 'rhapsody_backend',
 ))
+
+# The fields one entry of a join body's ``members`` list may carry, for the
+# same reason: a dropped ``max_pilots`` or a misspelled ``software`` must be
+# a refused join, not a silently different resource.
+_MEMBER_KEYS = frozenset((
+    'member', 'queue', 'account', 'nodes', 'cpus_per_node', 'gpus_per_node',
+    'walltime_sec', 'min_pilots', 'max_pilots', 'rhapsody_backend',
+    'scratch_base', 'shared_fs', 'software', 'class', 'attributes', 'budget',
+))
+
+# ``node_hours`` is the federation's own budget key.  The dispatcher's
+# requirements parser rejects unknown keys with a 400, so it is stripped
+# before a submit is forwarded.
+_FEDERATION_ONLY_REQUIREMENTS = ('node_hours',)
 
 # Sanity ceilings on a declared pool.  Not policy — just the line past which
 # a number is certainly a mistake (a typo'd walltime or node count reaches
@@ -227,7 +267,7 @@ class _DispatcherAPI:
             method, f'/{self._instance}/{route}', headers, payload)
         return self._decode(resp)
 
-    # -- the six verbs the federation needs --------------------------------
+    # -- the verbs the federation needs ------------------------------------
 
     async def register_session(self, sid: str, pools: list) -> dict:
         '''Register a *persistent* dispatcher session declaring *pools*.'''
@@ -242,6 +282,44 @@ class _DispatcherAPI:
         '''Return the verbose summary of one pool (pilots + pilot_history).'''
         return await self._call('GET', f'pool/{sid}/{name}')
 
+    async def add_member(self, sid: str, pool: str, member: dict) -> dict:
+        '''Add (or re-assert) one member of a class pool.
+
+        Idempotent by contract: an identical re-POST is a ``200`` no-op, a
+        *differing* one is a ``409``.  That is what lets restart replay send
+        every member unconditionally.
+        '''
+        return await self._call('POST', f'pool/{sid}/{pool}/members', member)
+
+    async def del_member(self, sid: str, pool: str, member_id: str, *,
+                         cancel_tasks: bool = False,
+                         force: bool = False,
+                         fail_unsatisfiable: bool = True) -> dict:
+        '''Remove one member; returns the drain counters.
+
+        The flags travel in the **body**, not the query string: the plugin
+        host's ``handle_request`` takes no query string, so ``?force=true``
+        would end up in the path and match no route.
+
+        ``DELETE`` is the primary form; a host that does not route it falls
+        back to the ``POST …/members/{id}/remove`` twin with the identical
+        body.  A failure of the fallback re-raises the *original* error, so
+        a genuine 404 still reads as a 404.
+        '''
+        body = {'cancel_tasks'      : bool(cancel_tasks),
+                'force'             : bool(force),
+                'fail_unsatisfiable': bool(fail_unsatisfiable)}
+        route = f'pool/{sid}/{pool}/members/{member_id}'
+        try:
+            return await self._call('DELETE', route, body)
+        except HTTPException as e:
+            if e.status_code not in (404, 405):
+                raise
+            try:
+                return await self._call('POST', f'{route}/remove', body)
+            except HTTPException:
+                raise e from None
+
     async def submit(self, sid: str, payload: dict) -> dict:
         '''Submit one task into a pool.'''
         return await self._call('POST', f'submit/{sid}', payload)
@@ -254,9 +332,10 @@ class _DispatcherAPI:
         '''Cancel one task.'''
         return await self._call('POST', f'cancel/{sid}/{task_id}')
 
-    async def cancel_all(self, sid: str) -> dict:
-        '''Tear down a session's pools (cancel pilots, drop the pools).'''
-        return await self._call('POST', f'cancel_all/{sid}')
+    # There is deliberately no ``cancel_all`` any more: it tears down a
+    # session's pools, and the one session now holds *every* class pool, so
+    # calling it on behalf of one leaving resource would take the whole
+    # federation with it.  Cancellation rides ``del_member(cancel_tasks=…)``.
 
 
 # ---------------------------------------------------------------------------
@@ -293,9 +372,16 @@ class FederationClient(PluginClient):
         self._raise(resp, 'join')
         return resp.json()
 
-    def leave(self, name: str) -> dict:
-        '''Remove a resource: cancel its work, release its pool.'''
-        resp = self._http.post(self._url(f'leave/{self.DEFAULT_SID}/{name}'))
+    def leave(self, name: str, cancel_tasks: bool = False) -> dict:
+        '''Remove a resource: drop its members from their class pools.
+
+        Its in-flight tasks are **not** cancelled by default: they live in a
+        class pool and may keep running, or start running, on a sibling
+        member of another resource.  ``cancel_tasks=True`` is the full
+        teardown.
+        '''
+        resp = self._http.post(self._url(f'leave/{self.DEFAULT_SID}/{name}'),
+                               json={'cancel_tasks': bool(cancel_tasks)})
         self._raise(resp, f'leave {name!r}')
         return resp.json()
 
@@ -396,12 +482,21 @@ class PluginFederation(Plugin):
         # route work at an endpoint that may have been gone for days.
         for rec in self._state.resources.values():
             rec.liveness = LIVENESS_LOST
+            for member in rec.member_list():
+                member.liveness = LIVENESS_LOST
 
         # endpoint_name → {'liveness': …, 'role': …} from the rich topology.
         self._participants: dict[str, dict] = {}
 
-        # Resource names whose dispatcher session is currently registered.
+        # Member ids currently POSTed into their class pool.  Per *member*,
+        # not per resource: a resource's two members live behind one
+        # endpoint but attach independently, and one can fail while the
+        # other succeeds.
         self._attached: set[str] = set()
+
+        # Class pool names the ``fed`` session was last registered with, so
+        # a re-attach knows whether it must re-declare the pool first.
+        self._pools: set[str] = set()
 
         # Restart re-attach runs exactly once, whichever comes first: the
         # first topology delivery or the first route.  See
@@ -426,20 +521,25 @@ class PluginFederation(Plugin):
     # -- naming ---------------------------------------------------------
 
     @staticmethod
-    def pool_name_for(name: str) -> str:
-        '''Return the dispatcher pool name backing resource *name*.'''
-        return f'{_FED_PREFIX}{name}'
+    def pool_name_for_class(cls: str) -> str:
+        '''Return the dispatcher pool name backing capability class *cls*.
+
+        Created on first use and reused by every resource that declares the
+        class; an emptied class pool is left in place (no members ⇒ no
+        pilots ⇒ nothing runs) and picked up again by the next join.
+        '''
+        return f'{_FED_PREFIX}{cls}'
 
     @staticmethod
-    def dispatcher_sid_for(name: str) -> str:
-        '''Return the dispatcher session id backing resource *name*.
+    def split_member_id(member_id: str) -> tuple[str, str]:
+        '''Split ``<resource>.<member>``; a resource name may contain dots.
 
-        Deterministic on purpose: after a broker restart the dispatcher has
-        already replayed ``(sid, pool)`` off disk, so re-registering under
-        the same sid with the same pool declaration re-attaches to the very
-        same :class:`PoolState` rather than creating a second one.
+        Hence ``rpartition`` — the member half is dot-free by
+        :data:`~radical.orbit.federation_state.MEMBER_NAME_RE`, so the last
+        dot is unambiguously the separator.
         '''
-        return f'{_FED_PREFIX}{name}'
+        resource, _, member = str(member_id or '').rpartition('.')
+        return resource, member
 
     def _scratch_for(self, name: str) -> Path:
         '''Return the default scratch base for resource *name*.'''
@@ -593,32 +693,261 @@ class PluginFederation(Plugin):
             caps['mem_gb'] = round(float(mem['total']) / (1024 ** 3), 1)
         return caps
 
-    # -- pool construction ------------------------------------------------
+    # -- member construction ----------------------------------------------
 
-    async def _build_pool(self, rec: ResourceRecord) -> dict:
-        '''Build the dispatcher pool declaration backing *rec*.
+    async def _build_members(self, rec: ResourceRecord,
+                             body: dict) -> list[MemberRecord]:
+        '''Return the members *rec* declares — one per resource shape.
 
-        Allocation mode derives the pilot size from the endpoint's own
-        allocation (one pilot that *is* the allocation, started at join via
-        ``min_pilots=1``); login mode takes everything from the declared
-        ``pool`` block and starts pilots on demand (``min_pilots=0``).
+        Three shapes, one result:
+
+        - ``login`` **with** ``members`` — each entry validated on its own
+          and turned into a member;
+        - ``login`` **without** ``members`` — exactly one member
+          ``default``, from today's flat ``pool`` block, so a join body that
+          works today keeps working byte for byte;
+        - ``allocation`` — exactly one member ``default``, sized from the
+          endpoint's own allocation.  Declaring ``members`` here is an error:
+          the allocation *is* the resource.
         '''
-        common = {
-            'name'           : rec.pool_name,
-            'endpoint_name'  : rec.endpoint,
-            'scratch_base'   : rec.scratch_base,
-            'default_size'   : _SIZE_KEY,
-            'strategy'       : 'conservative',
-            'strategy_config': dict(_STRATEGY_CONFIG),
-        }
+        raw = body.get('members')
+        if raw is not None and not isinstance(raw, list):
+            raise FederationStateError("'members' must be a list")
+        if isinstance(raw, list) and not raw:
+            raise FederationStateError("'members' must not be empty")
 
         if rec.mode == MODE_ALLOCATION:
-            common.update(self._allocation_pool(
-                rec, await self._job_allocation(rec.endpoint) or {}))
-            return common
+            if raw:
+                raise FederationStateError(
+                    "'members' is not valid in allocation mode: the "
+                    'allocation is the resource, so it has exactly one '
+                    'member')
+            decl = self._allocation_pool(
+                rec, await self._job_allocation(rec.endpoint) or {})
+            return [self._implicit_member(rec, decl)]
 
-        common.update(self._login_pool(rec))
-        return common
+        if not raw:
+            return [self._implicit_member(rec, self._login_pool(rec))]
+
+        members: list[MemberRecord] = []
+        seen: set[str] = set()
+        for entry in raw:
+            member = self._declared_member(rec, entry)
+            if member.member in seen:
+                raise FederationStateError(
+                    f'duplicate member name: {member.member}')
+            seen.add(member.member)
+            members.append(member)
+        return members
+
+    @staticmethod
+    def _implicit_member(rec: ResourceRecord, decl: dict) -> MemberRecord:
+        '''Turn a flat pool declaration into the resource's one member.
+
+        The resource-wide capabilities become the member's ``software`` and
+        attributes, and the resource's budget becomes the member's — which
+        is exactly the aggregate view read back, so nothing changes for a
+        single-member resource.
+        '''
+        size = decl['pilot_sizes'][_SIZE_KEY]
+        caps = rec.capabilities or {}
+        attrs = {'site'           : rec.site,
+                 'kind'           : rec.kind,
+                 'mem_gb_per_node': caps.get('mem_gb')}
+        member = MemberRecord(
+            member           = DEFAULT_MEMBER,
+            queue            = decl['queue'],
+            account          = decl['account'],
+            nodes            = size['nodes'],
+            cpus_per_node    = size['cpus_per_node'],
+            gpus_per_node    = size['gpus_per_node'],
+            walltime_sec     = size['walltime_sec'],
+            min_pilots       = decl['min_pilots'],
+            max_pilots       = decl['max_pilots'],
+            rhapsody_backend = size['rhapsody_backend'],
+            scratch_base     = rec.scratch_base,
+            shared_fs        = True,
+            software         = list(caps.get('software') or []),
+            attributes       = {k: v for k, v in attrs.items()
+                                if v not in (None, '')},
+            budget           = dict(rec.budget or {}),
+        )
+        member.cls = member.default_class()
+        return member
+
+    @staticmethod
+    def _declared_member(rec: ResourceRecord, decl: Any) -> MemberRecord:
+        '''Validate one entry of a join body's ``members`` list.
+
+        Same strictness as the flat ``pool`` block, per member: every count
+        is an integer in a sane range, the queue is not the dispatcher's
+        ``default`` sentinel, an unknown key is refused rather than ignored,
+        and a declared ``class`` must match ``^[a-z0-9][a-z0-9_-]*$`` — a
+        name that does not is a 400, never a lower-cased guess.
+        '''
+        if not isinstance(decl, dict):
+            raise FederationStateError(
+                "each entry of 'members' must be an object")
+        unknown = set(decl) - _MEMBER_KEYS
+        if unknown:
+            raise FederationStateError(
+                f"unknown member field(s): {', '.join(sorted(unknown))} "
+                f"(known: {', '.join(sorted(_MEMBER_KEYS))})")
+
+        name  = validate_member_name(decl.get('member'))
+        label = f'member {name}'
+
+        queue = decl.get('queue')
+        if not isinstance(queue, str) or not queue:
+            raise FederationStateError(
+                f"'{label}.queue' must be a non-empty string")
+        if queue == 'default':
+            raise FederationStateError(
+                f"'{label}.queue' must not be the dispatcher sentinel "
+                f"'default'")
+
+        account = decl.get('account')
+        if account is not None and not isinstance(account, str):
+            raise FederationStateError(
+                f"'{label}.account' must be a string or null")
+
+        backend = decl.get('rhapsody_backend') or _DEFAULT_BACKEND
+        if not isinstance(backend, str) or not backend:
+            raise FederationStateError(
+                f"'{label}.rhapsody_backend' must be a non-empty string")
+
+        shared = decl.get('shared_fs', True)
+        if not isinstance(shared, bool):
+            raise FederationStateError(f"'{label}.shared_fs' must be a bool")
+
+        scratch = decl.get('scratch_base')
+        if scratch:
+            scratch = validate_scratch_base(
+                scratch, field=f'{label}.scratch_base')
+        else:
+            # a member that names no scratch inherits the resource's — the
+            # common case, where every member shares one home tree
+            scratch = rec.scratch_base
+
+        max_pilots = validate_pool_int(decl, 'max_pilots', default=1,
+                                       minimum=1, maximum=_MAX_PILOTS_CAP,
+                                       label=label)
+        try:
+            budget = validate_budget(decl.get('budget'), required=True)
+        except FederationStateError as e:
+            raise FederationStateError(f'{label}: {e}') from e
+
+        member = MemberRecord(
+            member           = name,
+            queue            = queue,
+            account          = account,
+            nodes            = validate_pool_int(
+                decl, 'nodes', minimum=1, maximum=_MAX_NODES_CAP,
+                label=label),
+            cpus_per_node    = validate_pool_int(
+                decl, 'cpus_per_node', minimum=1, maximum=_MAX_CPUS_CAP,
+                label=label),
+            gpus_per_node    = validate_pool_int(
+                decl, 'gpus_per_node', default=0, minimum=0,
+                maximum=_MAX_GPUS_CAP, label=label),
+            walltime_sec     = validate_pool_int(
+                decl, 'walltime_sec', minimum=1, maximum=_MAX_WALLTIME_CAP,
+                label=label),
+            min_pilots       = validate_pool_int(
+                decl, 'min_pilots', default=0, minimum=0,
+                maximum=max_pilots, label=label),
+            max_pilots       = max_pilots,
+            rhapsody_backend = backend,
+            scratch_base     = scratch,
+            shared_fs        = shared,
+            software         = validate_software(decl.get('software'),
+                                                 label=label),
+            attributes       = validate_attributes(decl.get('attributes'),
+                                                   label=label),
+            budget           = budget,
+        )
+        declared   = decl.get('class')
+        member.cls = (validate_class(declared, label=label) if declared
+                      else member.default_class())
+        return member
+
+    # -- dispatcher declarations -------------------------------------------
+
+    @staticmethod
+    def _member_decl(rec: ResourceRecord, member: MemberRecord) -> dict:
+        '''Return the dispatcher's view of one member.
+
+        ``software`` rides inside ``attributes`` because that is the
+        dispatcher's vocabulary — it matches a task's declared needs against
+        a member's attribute map and knows nothing about federations.
+        '''
+        return {
+            'member_id'    : member.member_id,
+            'endpoint_name': rec.endpoint,
+            'queue'        : member.queue,
+            'account'      : member.account,
+            'pilot_sizes'  : {_SIZE_KEY: {
+                'nodes'           : int(member.nodes),
+                'cpus_per_node'   : int(member.cpus_per_node),
+                'gpus_per_node'   : int(member.gpus_per_node),
+                'walltime_sec'    : int(member.walltime_sec),
+                'rhapsody_backend': member.rhapsody_backend,
+            }},
+            'default_size' : _SIZE_KEY,
+            'min_pilots'   : int(member.min_pilots),
+            'max_pilots'   : int(member.max_pilots),
+            'scratch_base' : member.scratch_base,
+            'shared_fs'    : bool(member.shared_fs),
+            'attributes'   : member.match_attributes(),
+            'budget'       : dict(member.budget or {}),
+        }
+
+    def _class_pool_decls(self,
+                          extra: ResourceRecord | None = None) -> list[dict]:
+        '''Return the FULL class-pool declaration list, never a delta.
+
+        One helper for all three callers (``join``, restart replay, liveness
+        re-attach): ``parse_pools`` refuses an empty ``pools`` list and
+        ``_materialise_pool`` is idempotent by name, so re-sending every
+        pool is both required and free — and there is exactly one place the
+        declaration shape can drift.
+
+        The ``members`` carried here only matter for a dispatcher that does
+        not have the pool yet; a re-declaration of an existing pool is
+        ignored, which is precisely why the member routes exist.
+        '''
+        records = list(self._state.resources.values())
+        if extra is not None and \
+                self._state.resources.get(extra.name) is not extra:
+            records.append(extra)
+
+        by_class: dict[str, list] = {}
+        for rec in records:
+            for member in rec.member_list():
+                by_class.setdefault(member.cls, []).append(
+                    self._member_decl(rec, member))
+
+        return [{'name'           : self.pool_name_for_class(cls),
+                 'pool_class'     : cls,
+                 'multi_member'   : True,
+                 'members'        : by_class[cls],
+                 'strategy'       : 'conservative',
+                 'strategy_config': dict(_STRATEGY_CONFIG)}
+                for cls in sorted(by_class)]
+
+    async def _register_fed(self,
+                            extra: ResourceRecord | None = None) -> list:
+        '''Register the single ``fed`` session with every class pool.
+
+        A federation with no resources at all simply does not register —
+        there is nothing to declare, and an empty ``pools`` list is refused.
+        '''
+        decls = self._class_pool_decls(extra)
+        if not decls:
+            return []
+        await self._dispatcher.register_session(FED_SESSION_SID, decls)
+        self._pools = {d['name'] for d in decls}
+        return decls
 
     @staticmethod
     def _allocation_walltime(alloc: dict) -> int:
@@ -756,10 +1085,12 @@ class PluginFederation(Plugin):
     # -- routes ----------------------------------------------------------
 
     async def _route_join(self, request: Request) -> dict:
-        '''Join one resource: validate, build its pool, register its session.
+        '''Join one resource: validate, build its members, add them to pools.
 
         Ordering matters: everything that can be rejected is rejected before
-        a dispatcher session exists, so a bad join leaves nothing behind.
+        the dispatcher is touched, so a bad join leaves nothing behind — and
+        a join that fails *part way through* its members rolls the earlier
+        ones back, so a join is all-or-nothing.
         '''
         await self._require_session(request.path_params['sid'])
         try:
@@ -770,6 +1101,7 @@ class PluginFederation(Plugin):
             raise HTTPException(status_code=400,
                                 detail='join body must be a JSON object')
 
+        declared_members = bool(body.get('members'))
         try:
             name = validate_name(body.get('name'))
             mode = body.get('mode', MODE_ALLOCATION)
@@ -781,9 +1113,12 @@ class PluginFederation(Plugin):
             if not isinstance(endpoint, str) or not endpoint:
                 raise FederationStateError(
                     "'endpoint' must be a non-empty string")
-            caps   = validate_capabilities(body.get('capabilities'))
-            budget = validate_budget(body.get('budget'),
-                                     required=(mode == MODE_LOGIN))
+            caps = validate_capabilities(body.get('capabilities'))
+            # with members the budget lives on each member; the record-level
+            # one is the aggregate and is recomputed from them
+            budget = validate_budget(
+                body.get('budget'),
+                required=(mode == MODE_LOGIN and not declared_members))
             scratch = body.get('scratch_base')
             scratch = (validate_scratch_base(scratch) if scratch
                        else str(self._scratch_for(name)))
@@ -814,32 +1149,74 @@ class PluginFederation(Plugin):
             capabilities   = await self._discover_capabilities(endpoint, caps),
             budget         = budget,
             scratch_base   = scratch,
-            pool           = body.get('pool'),
+            pool           = None if declared_members else body.get('pool'),
             joined_at      = time.time(),
-            dispatcher_sid = self.dispatcher_sid_for(name),
-            pool_name      = self.pool_name_for(name),
+            dispatcher_sid = FED_SESSION_SID,
             liveness       = self._liveness_for(endpoint),
         )
 
         try:
-            pool_decl = await self._build_pool(rec)
+            members = await self._build_members(rec, body)
         except FederationStateError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
-        rec.pool_config = pool_decl
 
         # An undeclared allocation budget is the allocation itself: the pilot
         # holds ``nodes`` for at most its walltime, so that is exactly what
         # this join may spend.
-        if not rec.budget_node_hours():
-            size = pool_decl['pilot_sizes'][_SIZE_KEY]
-            rec.budget = {'node_hours': round(
-                size['nodes'] * size['walltime_sec'] / 3600.0, 4)}
+        for member in members:
+            if not member.budget_node_hours():
+                member.budget = {'node_hours': round(
+                    member.nodes * member.walltime_sec / 3600.0, 4)}
+            member.member_id = f'{name}.{member.member}'
+            member.pool_name = self.pool_name_for_class(member.cls)
+            member.liveness  = rec.liveness
+            member.usage.node_hours_remaining = member.budget_node_hours()
+            if not member.scratch_base:
+                member.scratch_base = rec.scratch_base
+            rec.members[member.member] = member
+
+        rec.aggregate()
+        rec.pool_name = members[0].pool_name
         rec.usage.node_hours_remaining = rec.budget_node_hours()
+
+        # R5: a class name is free-form, so a typo would create a second,
+        # invisible pool.  Only worth saying once the federation has other
+        # members to be inconsistent with — on the very first join every
+        # class is new by definition.
+        known = {m.cls for r in self._state.resources.values()
+                 for m in r.member_list()}
+        if known:
+            for cls in sorted({m.cls for m in members} - known):
+                log.warning('[%s] %r declares class %r, which no other '
+                            'member uses — a typo would create a pool '
+                            'nothing routes to', self.instance_name, name,
+                            cls)
 
         # The dispatcher is the last thing touched: after this the join has
         # side effects that ``leave`` has to undo.
-        await self._dispatcher.register_session(rec.dispatcher_sid,
-                                                [pool_decl])
+        await self._register_fed(rec)
+        added: list[MemberRecord] = []
+        try:
+            for member in members:
+                await self._dispatcher.add_member(
+                    FED_SESSION_SID, member.pool_name,
+                    self._member_decl(rec, member))
+                added.append(member)
+        except Exception:
+            # a join is all-or-nothing.  ``force`` matters: the first member
+            # of a brand-new class pool is also its last, and the dispatcher
+            # refuses to remove a last member without it.
+            for member in added:
+                try:
+                    await self._dispatcher.del_member(
+                        FED_SESSION_SID, member.pool_name, member.member_id,
+                        cancel_tasks=False, force=True)
+                except Exception as e:
+                    log.warning('[%s] join %r: rollback of member %s '
+                                'failed: %s', self.instance_name, name,
+                                member.member_id, e)
+            raise
+
         try:
             Path(rec.scratch_base).mkdir(parents=True, exist_ok=True)
         except OSError as e:
@@ -847,52 +1224,74 @@ class PluginFederation(Plugin):
                         self.instance_name, rec.scratch_base, e)
 
         self._state.resources[name] = rec
-        self._attached.add(name)
+        self._attached.update(m.member_id for m in members)
         self._state.save()
-        log.info('[%s] joined %r on %s (%s, pool %s)', self.instance_name,
-                 name, endpoint, mode, rec.pool_name)
+        log.info('[%s] joined %r on %s (%s, %d member(s): %s)',
+                 self.instance_name, name, endpoint, mode, len(members),
+                 ', '.join(f'{m.member_id}→{m.pool_name}' for m in members))
         return rec.to_wire()
 
     async def _route_leave(self, request: Request) -> dict:
-        '''Remove a resource: cancel its work, release its dispatcher session.
+        '''Remove a resource: drop each of its members from its class pool.
 
-        Tasks are cancelled **before** the session teardown, not after.
-        Session close re-queues a RUNNING task (``_finalize_pilot`` returns
-        it to QUEUED) and persists it, so a later join of the same name —
-        which re-attaches to the very same pool state — would dispatch a
-        client's stale tasks onto the fresh pilot.
+        Three things this deliberately does **not** do any more:
+
+        - it does not ``unregister_session`` — the ``fed`` session holds
+          every *other* resource's class pools too;
+        - it does not blanket-cancel the ledger.  That was right when a pool
+          served exactly one resource; with class pools a queued task can
+          legitimately run somewhere else.  ``{"cancel_tasks": true}``
+          restores the full teardown;
+        - it does not drop the live ledger entries.  A re-queued task keeps
+          running on a sibling member, and ``GET task/…`` 404s without its
+          entry — which a campaign runner reads as a hard failure.  So the
+          non-terminal entries stay, re-pointed to ``resource: null``, and
+          the next poll fills the real placement back in.
+
+        ``fail_unsatisfiable`` is left at the dispatcher's default here: an
+        explicit ``leave`` means the resource is gone, so a task only it
+        could run should fail now rather than wait forever.  (The liveness
+        path passes ``false`` — that is the difference between "gone" and
+        "blinked".)
         '''
         await self._require_session(request.path_params['sid'])
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        cancel_tasks = bool((body or {}).get('cancel_tasks'))
+
         name = request.path_params['name']
         rec  = self._resource(name)
 
-        canceled = 0
-        for entry in self._state.ledger_for(name):
-            if entry.state in _TERMINAL_TASK_STATES:
-                continue
+        removed = requeued = failed = 0
+        for member in rec.member_list():
             try:
-                await self._dispatcher.cancel_task(rec.dispatcher_sid,
-                                                   entry.task_id)
-                canceled += 1
+                resp = await self._dispatcher.del_member(
+                    FED_SESSION_SID, member.pool_name, member.member_id,
+                    cancel_tasks=cancel_tasks, force=True)
+                removed  += 1
+                requeued += int((resp or {}).get('tasks_requeued') or 0)
+                failed   += int((resp or {}).get('tasks_failed')   or 0)
             except Exception as e:
-                log.info('[%s] leave %r: cancel %s failed: %s',
-                         self.instance_name, name, entry.task_id, e)
+                log.info('[%s] leave %r: removing member %s failed: %s',
+                         self.instance_name, name, member.member_id, e)
+            self._attached.discard(member.member_id)
+            self._detail_cache.pop(member.pool_name, None)
 
-        for verb in (self._dispatcher.cancel_all,
-                     self._dispatcher.unregister_session):
-            try:
-                await verb(rec.dispatcher_sid)
-            except Exception as e:
-                log.info('[%s] leave %r: %s failed: %s', self.instance_name,
-                         name, verb.__name__, e)
-
-        self._state.drop_resource(name)
-        self._attached.discard(name)
-        self._detail_cache.pop(rec.pool_name, None)
+        # An emptied class pool is left in place: with no members it has no
+        # pilots and dispatches nothing, and the next join of that class
+        # reuses it.
+        self._state.drop_resource(name, keep_active=not cancel_tasks)
         self._state.save()
-        log.info('[%s] left %r (%d task(s) cancelled)',
-                 self.instance_name, name, canceled)
-        return {'resource': name, 'ok': True, 'tasks_canceled': canceled}
+        log.info('[%s] left %r (%d member(s) removed, %d task(s) requeued, '
+                 '%d failed)', self.instance_name, name, removed, requeued,
+                 failed)
+        return {'resource'       : name,
+                'ok'             : True,
+                'members_removed': removed,
+                'tasks_requeued' : requeued,
+                'tasks_failed'   : failed}
 
     async def _route_resources(self, request: Request) -> dict:
         '''List every resource, usage refreshed.'''
@@ -910,7 +1309,13 @@ class PluginFederation(Plugin):
         return rec.to_wire()
 
     async def _route_pick(self, request: Request):
-        '''Return the resource the policy chooses for a requirement set.'''
+        '''Return the **class** the policy chooses for a requirement set.
+
+        Plus the members the dispatcher would consider, for display only.
+        ``resource`` is the highest-scoring member's resource and is
+        explicitly **advisory**: the binding placement is made by the
+        dispatcher at dispatch and reported by ``task``.
+        '''
         await self._require_session(request.path_params['sid'])
         try:
             body = await request.json()
@@ -924,17 +1329,36 @@ class PluginFederation(Plugin):
         chosen = self._pick(requirements)
         if chosen is None:
             return self._no_resource(requirements)
-        rec, score = chosen
-        return {'resource'      : rec.name,
-                'pool'          : rec.pool_name,
-                'dispatcher_sid': rec.dispatcher_sid,
+        cls, score, ranked = chosen
+        return {'pool'          : self.pool_name_for_class(cls),
+                'class'         : cls,
+                'dispatcher_sid': FED_SESSION_SID,
+                'members'       : self._member_view(ranked),
+                'resource'      : self._advisory_resource(ranked),
                 'score'         : score}
 
     async def _route_submit(self, request: Request):
-        '''Pick a resource and submit one task to its pool.
+        '''Choose a class and submit one task to its pool.
 
         The single call a workload manager needs: it never learns a pool
-        name, a dispatcher session, or an endpoint.
+        name, a dispatcher session, or an endpoint — and, since class pools,
+        not even a resource, because the resource is not chosen yet.
+
+        Three things travel differently from before:
+
+        - **no ``cwd``**, ever.  The dispatcher assigns it at dispatch from
+          the member that actually runs the task, which is the only correct
+          answer once one pool can mix members on different filesystems.  A
+          client-supplied ``task.cwd`` is refused: the federation cannot
+          honour it across members.
+        - **``inputs_b64`` rides along**, forwarded verbatim.  That is what
+          removes the client's need to know the placement before the
+          placement exists; the dispatcher spools the files and puts them
+          wherever the task lands.
+        - **``requirements`` are forwarded** (minus the federation-only
+          ``node_hours``, which the dispatcher's parser would reject as an
+          unknown key), so the dispatcher can match software and shape
+          against each member.
         '''
         await self._require_session(request.path_params['sid'])
         try:
@@ -951,63 +1375,84 @@ class PluginFederation(Plugin):
             raise HTTPException(
                 status_code=400,
                 detail="task requires 'task_id' and a non-empty 'cmd' list")
+        if task.get('cwd'):
+            raise HTTPException(
+                status_code=400,
+                detail="'task.cwd' is not accepted: a class pool assigns the "
+                       'cwd at dispatch, from the member that runs the task')
         requirements = body.get('requirements') or {}
         if not isinstance(requirements, dict):
             raise HTTPException(status_code=400,
                                 detail="'requirements' must be an object")
 
+        inputs_b64 = task.get('inputs_b64')
+        if inputs_b64 is not None:
+            if not isinstance(inputs_b64, dict) or not all(
+                    isinstance(k, str) and isinstance(v, str)
+                    for k, v in inputs_b64.items()):
+                raise HTTPException(
+                    status_code=400,
+                    detail="'task.inputs_b64' must be an object of "
+                           '{filename: base64}')
+
         await self._refresh_all()
         chosen = self._pick(requirements)
         if chosen is None:
             return self._no_resource(requirements)
-        rec, _score = chosen
+        cls, _score, ranked = chosen
+        pool = self.pool_name_for_class(cls)
 
-        # cwd defaults to this task's scratch dir under the pool's scratch
-        # base — the same path the dispatcher stages into, created here
-        # because a plain submit (no stage_in) never creates it.  An
-        # *explicit* cwd is held to the same ~ // tmp rule as scratch_base:
-        # the broker creates and the pilot writes this directory, so a
-        # submit must not be the way around the join-time check.
-        if task.get('cwd'):
-            try:
-                cwd = validate_scratch_base(task['cwd'], field='task.cwd')
-            except FederationStateError as e:
-                raise HTTPException(status_code=400, detail=str(e)) from e
-        else:
-            cwd = str(Path(rec.scratch_base) / str(task_id))
-        try:
-            Path(cwd).mkdir(parents=True, exist_ok=True)
-        except OSError as e:
-            raise HTTPException(
-                status_code=500,
-                detail=f'cannot create task cwd {cwd}: {e}') from e
-
-        result = await self._dispatcher.submit(rec.dispatcher_sid, {
-            'pool'    : rec.pool_name,
+        payload = {
+            'pool'    : pool,
             'task_id' : task_id,
             'cmd'     : list(cmd),
-            'cwd'     : cwd,
             'priority': int(task.get('priority') or 0),
             'inputs'  : list(task.get('inputs')  or []),
             'outputs' : list(task.get('outputs') or []),
-        })
+        }
+        forward = {k: v for k, v in requirements.items()
+                   if k not in _FEDERATION_ONLY_REQUIREMENTS}
+        if forward:
+            payload['requirements'] = forward
+        if inputs_b64:
+            payload['inputs_b64'] = dict(inputs_b64)
 
+        # A dispatcher 400 ("no member satisfies the task requirements")
+        # propagates verbatim — status and detail — so the caller sees the
+        # dispatcher's own vocabulary rather than a re-worded guess.
+        result = await self._dispatcher.submit(FED_SESSION_SID, payload)
+
+        advisory = self._advisory_resource(ranked)
         self._state.ledger[str(task_id)] = SubmitLedgerEntry(
             task_id        = str(task_id),
-            resource       = rec.name,
-            pool           = rec.pool_name,
-            dispatcher_sid = rec.dispatcher_sid,
+            resource       = advisory,
+            pool           = pool,
+            dispatcher_sid = FED_SESSION_SID,
             state          = str((result or {}).get('state') or 'QUEUED'),
             submitted_at   = time.time(),
+            member_id      = None,
+            cls            = cls,
         )
         self._state.save()
-        return {'task'          : result,
-                'resource'      : rec.name,
-                'pool'          : rec.pool_name,
-                'dispatcher_sid': rec.dispatcher_sid}
+        return {'task'            : result,
+                'pool'            : pool,
+                'class'           : cls,
+                'dispatcher_sid'  : FED_SESSION_SID,
+                'resource'        : advisory,
+                'member'          : None,
+                'members_eligible': [m.member_id for m, _ in ranked]}
 
     async def _route_task(self, request: Request) -> dict:
-        '''Proxy one task's dispatcher record, annotated with its resource.
+        '''Proxy one task's dispatcher record, annotated with its placement.
+
+        **This is where placement becomes true.** The dispatcher's
+        ``member_id`` is the authoritative answer — it is set at dispatch —
+        so it overwrites the advisory resource the submit answered with, and
+        it is also what re-points an entry whose resource has left the
+        federation.  Before dispatch the advisory value stands, and
+        ``resource`` may legitimately be ``null`` (a task whose resource left
+        and which has not been re-dispatched yet); a caller must treat that
+        as "not placed", not as a failure.
 
         ``child_endpoint`` is added while the task's pilot is still alive:
         that is the endpoint name a caller needs to reach the pilot's own
@@ -1021,21 +1466,37 @@ class PluginFederation(Plugin):
             raise HTTPException(status_code=404,
                                 detail=f'unknown task: {task_id}')
 
-        task = await self._dispatcher.task(entry.dispatcher_sid, task_id)
+        sid  = entry.dispatcher_sid or FED_SESSION_SID
+        task = await self._dispatcher.task(sid, task_id)
         task = dict(task or {})
 
+        dirty = False
         state = str(task.get('state') or entry.state)
         if state != entry.state:
             entry.state = state
             if state in _TERMINAL_TASK_STATES:
                 entry.finished_at = task.get('finished_at') or time.time()
+            dirty = True
+
+        member_id = task.get('member_id') or None
+        if member_id and member_id != entry.member_id:
+            entry.member_id = member_id
+            entry.resource  = self.split_member_id(member_id)[0] or None
+            dirty = True
+        if dirty:
             self._state.save()
 
-        task['resource'] = entry.resource
-        rec = self._state.resources.get(entry.resource)
+        member_id = entry.member_id
+        task['member_id'] = member_id
+        task['member']    = (self.split_member_id(member_id)[1]
+                             if member_id else None)
+        task['resource']  = entry.resource
+        if entry.cls:
+            task['class'] = entry.cls
+
         pilot_id = task.get('pilot_id')
-        if rec is not None and pilot_id:
-            detail = await self._pool_detail(rec)
+        if entry.pool and pilot_id:
+            detail = await self._pool_detail(entry.pool)
             for pilot in (detail or {}).get('pilots') or []:
                 if pilot.get('pid') == pilot_id:
                     task['child_endpoint'] = pilot.get('child_endpoint_name')
@@ -1044,33 +1505,76 @@ class PluginFederation(Plugin):
 
     # -- policy ----------------------------------------------------------
 
+    def _classes(self) -> dict[str, list]:
+        '''Return ``{class: [members]}`` over every joined resource.'''
+        out: dict[str, list] = {}
+        for rec in self._state.resources.values():
+            for member in rec.member_list():
+                out.setdefault(member.cls, []).append(member)
+        return out
+
+    def _members(self) -> list:
+        '''Return every member of every joined resource.'''
+        return [m for rec in self._state.resources.values()
+                for m in rec.member_list()]
+
+    def _member_view(self, ranked: list) -> list[dict]:
+        '''Render an eligible-member ranking for a client (display only).'''
+        return [{'member_id': m.member_id,
+                 'resource' : self.split_member_id(m.member_id)[0],
+                 'score'    : round(float(score), 6),
+                 'reason'   : None}
+                for m, score in ranked]
+
+    def _advisory_resource(self, ranked: list) -> str | None:
+        '''Return the top-scoring member's resource, or ``None``.
+
+        Advisory by construction: the dispatcher makes the binding choice at
+        dispatch.  It is populated anyway so a UI has a chip to show at once
+        — one that may change exactly once, when the first poll lands.
+        '''
+        if not ranked:
+            return None
+        return self.split_member_id(ranked[0][0].member_id)[0] or None
+
     def _pick(self, requirements: dict):
-        '''Ask the policy for a resource; log and swallow a policy blow-up.'''
+        '''Return ``(class, score, ranked members)``, or ``None``.
+
+        Swallows a policy blow-up into "nothing fits": a broken custom
+        policy must not turn every submit into a 500.
+        '''
         try:
-            return self._policy.pick(requirements,
-                                     list(self._state.resources.values()))
+            classes = self._classes()
+            chosen  = self._policy.pick_class(requirements, classes)
+            if chosen is None:
+                return None
+            cls, score = chosen
+            ranked = self._policy.eligible(requirements,
+                                           classes.get(cls) or [])
+            return cls, score, ranked
         except Exception as e:
             log.exception('[%s] policy pick raised: %s',
                           self.instance_name, e)
             return None
 
     def _no_resource(self, requirements: dict) -> JSONResponse:
-        '''Return the 409 body: the verdict plus why each resource lost.
+        '''Return the 409 body: the verdict plus why each **member** lost.
 
         A caller that cannot place work needs the reasons, not just the
-        refusal — "gpus 0 < 1 on a, node_hours exhausted on b" is actionable
-        where a bare 409 is not.  Returned as a **response object** rather
-        than raised so the reasons are a first-class part of the body: a
-        raised ``HTTPException`` renders through the gateway's canonical
-        error envelope, whose ``detail`` reads as a human message, and
-        smuggling a dict through it would leave in-process and HTTP callers
-        looking at different shapes.  In-process callers must therefore check
+        refusal — "gpus 0 < 1 on a.cpu, node_hours exhausted on b.gpu" is
+        actionable where a bare 409 is not.  The map is keyed by
+        ``member_id`` now, because that is the granularity the decision is
+        made at.  Returned as a **response object** rather than raised so the
+        reasons are a first-class part of the body: a raised
+        ``HTTPException`` renders through the gateway's canonical error
+        envelope, whose ``detail`` reads as a human message, and smuggling a
+        dict through it would leave in-process and HTTP callers looking at
+        different shapes.  In-process callers must therefore check
         ``resp.status_code`` — ``pick`` and ``submit`` are the two routes
         that can answer without raising.
         '''
         try:
-            reasons = self._policy.explain(
-                requirements, list(self._state.resources.values()))
+            reasons = self._policy.explain(requirements, self._members())
         except Exception as e:
             log.exception('[%s] policy explain raised: %s',
                           self.instance_name, e)
@@ -1082,71 +1586,142 @@ class PluginFederation(Plugin):
 
     # -- usage accounting -------------------------------------------------
 
-    async def _pool_detail(self, rec: ResourceRecord) -> dict | None:
-        '''Return *rec*'s verbose pool summary, cached for 2 s.
+    async def _pool_detail(self, pool: str) -> dict | None:
+        '''Return one class pool's verbose summary, cached for 2 s.
 
-        One dispatcher round-trip serves both the usage refresh and the
-        ``child_endpoint`` lookup, so a caller polling a task at 1 Hz does
-        not multiply calls.  ``None`` when the dispatcher is unreachable or
-        slow — the caller decides what a missing answer means.
+        Keyed by **pool**, not by resource: a pool is a capability class
+        shared by every resource that declares it, so N resources in two
+        classes cost two dispatcher round-trips, not N.  One round-trip
+        serves both the usage refresh and the ``child_endpoint`` lookup, so
+        a caller polling a task at 1 Hz does not multiply calls.  ``None``
+        when the dispatcher is unreachable or slow — the caller decides what
+        a missing answer means.
         '''
         now    = time.time()
-        cached = self._detail_cache.get(rec.pool_name)
+        cached = self._detail_cache.get(pool)
         if cached and now - cached[0] < _USAGE_CACHE_SEC:
             return cached[1]
         try:
             detail = await asyncio.wait_for(
-                self._dispatcher.pool_detail(rec.dispatcher_sid,
-                                             rec.pool_name),
+                self._dispatcher.pool_detail(FED_SESSION_SID, pool),
                 _USAGE_TIMEOUT_SEC)
         except Exception as e:
-            log.info('[%s] usage refresh for %r failed: %s',
-                     self.instance_name, rec.name, e)
+            log.info('[%s] usage refresh for pool %r failed: %s',
+                     self.instance_name, pool, e)
             return None
-        self._detail_cache[rec.pool_name] = (now, detail)
+        self._detail_cache[pool] = (now, detail)
         return detail
 
-    async def _refresh_usage(self, rec: ResourceRecord) -> None:
-        '''Recompute *rec*'s usage from the dispatcher plus the ledger.
+    def _apply_member_usage(self, member: MemberRecord,
+                            detail: dict | None, now: float) -> None:
+        '''Recompute one member's usage from its class pool's summary.
 
-        Node-hours and live pilots come from the dispatcher; task counts come
-        from the federation's own ledger (the dispatcher keeps only the 50
-        most recent tasks per pool).  A failed refresh keeps the previous
-        numbers and sets ``stale`` — a resource must not blink to zero
-        because one poll timed out.
+        Node-hours and live pilots come straight off the dispatcher's
+        per-member block — no arithmetic here, so the Explorer, the CLI and
+        the federation cannot disagree about the same number.  A dispatcher
+        that reports no such block (or no entry for this member) falls back
+        to this member's own slice of the pool history.  Task counts come
+        from the federation's own ledger, because the dispatcher keeps only
+        the 50 most recent tasks per pool.
         '''
+        usage = member.usage
+        if detail is None:
+            # a failed refresh keeps the previous numbers: a member must not
+            # blink to zero because one poll timed out
+            usage.stale = True
+        else:
+            usage.stale = False
+            summary = None
+            for entry in (detail.get('members') or []):
+                if isinstance(entry, dict) and \
+                        entry.get('member_id') == member.member_id:
+                    summary = entry
+                    break
+
+            if summary is not None:
+                usage.node_hours_used = float(
+                    summary.get('node_hours_used') or 0.0)
+                usage.pilots_active = int(summary.get('pilots_active') or 0)
+                remaining = summary.get('node_hours_remaining')
+            else:
+                history = [e for e in (detail.get('pilot_history') or [])
+                           if isinstance(e, dict)
+                           and e.get('member_id') == member.member_id]
+                usage.node_hours_used = node_hours_from_history(
+                    history, detail.get('pilot_sizes'), now)
+                usage.pilots_active = len(
+                    [p for p in (detail.get('pilots') or [])
+                     if isinstance(p, dict)
+                     and p.get('member_id') == member.member_id])
+                remaining = None
+
+            budget = member.budget_node_hours()
+            if remaining is None:
+                remaining = (max(0.0, budget - usage.node_hours_used)
+                             if budget else 0.0)
+            usage.node_hours_remaining = float(remaining or 0.0)
+
+        (usage.tasks_running,
+         usage.tasks_done,
+         usage.tasks_failed) = self._state.member_task_counts(
+            member.member_id)
+        usage.updated_at = now
+
+    def _aggregate_usage(self, rec: ResourceRecord, now: float) -> None:
+        '''Sum the member usages onto the resource row.
+
+        Task counts are **not** summed: a task the dispatcher has not placed
+        yet belongs to no member, so it would vanish.  They come from the
+        ledger by resource, which counts it.
+        '''
+        members = rec.member_list()
+        usage   = rec.usage
+        usage.node_hours_used      = sum(m.usage.node_hours_used
+                                         for m in members)
+        usage.node_hours_remaining = sum(m.usage.node_hours_remaining
+                                         for m in members)
+        usage.pilots_active        = sum(m.usage.pilots_active
+                                         for m in members)
+        usage.stale                = any(m.usage.stale for m in members)
+        (usage.tasks_running,
+         usage.tasks_done,
+         usage.tasks_failed) = self._state.task_counts(rec.name)
+        usage.updated_at = now
+
+    async def _refresh_usage(self, rec: ResourceRecord) -> None:
+        '''Refresh one resource: its members, then its aggregate row.'''
         now = time.time()
         if now - rec.usage.updated_at < _USAGE_CACHE_SEC:
             return
-        detail = await self._pool_detail(rec)
-        if detail is None:
-            rec.usage.stale = True
-        else:
-            rec.usage.stale = False
-            rec.usage.node_hours_used = node_hours_from_history(
-                detail.get('pilot_history'), detail.get('pilot_sizes'), now)
-            rec.usage.pilots_active = len(detail.get('pilots') or [])
-
-        budget = rec.budget_node_hours()
-        rec.usage.node_hours_remaining = max(
-            0.0, budget - rec.usage.node_hours_used) if budget else 0.0
-        (rec.usage.tasks_running,
-         rec.usage.tasks_done,
-         rec.usage.tasks_failed) = self._state.task_counts(rec.name)
-        rec.usage.updated_at = now
+        pools   = sorted({m.pool_name for m in rec.member_list()})
+        details = {p: await self._pool_detail(p) for p in pools}
+        for member in rec.member_list():
+            self._apply_member_usage(member, details.get(member.pool_name),
+                                     now)
+        self._aggregate_usage(rec, now)
 
     async def _refresh_all(self) -> None:
-        '''Refresh usage for every resource (each still 2 s-cached).
+        '''Refresh every resource (each still 2 s-cached).
 
-        Concurrently: each refresh is one dispatcher round-trip with a 3 s
-        timeout, so a federation of N resources with one slow member would
-        otherwise make every ``resources`` call wait N × 3 s instead of 3 s.
+        One dispatcher call per **distinct class pool**, all concurrently:
+        each is one round-trip with a 3 s timeout, so a federation with one
+        slow pool waits 3 s rather than 3 s × pools.
         '''
-        recs = list(self._state.resources.values())
-        if not recs:
+        now = time.time()
+        due = [r for r in self._state.resources.values()
+               if now - r.usage.updated_at >= _USAGE_CACHE_SEC]
+        if not due:
             return
-        await asyncio.gather(*(self._refresh_usage(r) for r in recs),
-                             return_exceptions=True)
+        pools   = sorted({m.pool_name for r in due for m in r.member_list()})
+        fetched = await asyncio.gather(
+            *(self._pool_detail(p) for p in pools), return_exceptions=True)
+        details = {p: (d if isinstance(d, dict) else None)
+                   for p, d in zip(pools, fetched)}
+        for rec in due:
+            for member in rec.member_list():
+                self._apply_member_usage(
+                    member, details.get(member.pool_name), now)
+            self._aggregate_usage(rec, now)
 
     # -- topology / attachment -------------------------------------------
 
@@ -1172,15 +1747,70 @@ class PluginFederation(Plugin):
         await self._sync_attachments()
         await super().on_topology_change(participants)
 
-    async def _replay_attachments(self) -> None:
-        '''Re-register every stored resource's dispatcher session, once.
+    async def _upgrade_legacy(self) -> None:
+        '''Release the per-resource ``fed-<name>`` sessions of a pre-08 state.
 
-        Run before liveness is applied, and for *every* stored resource —
-        including the ones whose endpoint is gone.  The dispatcher replayed
-        those pools off disk at its own construction; re-registering makes
-        each one session-owned again, so :meth:`_sync_attachments` can then
-        release the dead ones through the ordinary ``unregister_session``
-        teardown instead of leaving owner-less pools behind.
+        A record written before class pools carries its own dispatcher sid.
+        After an in-place upgrade the dispatcher has replayed those pools off
+        disk — but **owner-less**: housekeeping skips a pool whose session is
+        not live, while ``unregister_session`` on a sid the dispatcher does
+        not know is a 404 that tears down nothing.  So each legacy sid is
+        **re-owned first and released second**: ``register_session(old_sid,
+        [stored pool])`` then ``unregister_session(old_sid)``, which runs the
+        ordinary teardown and actually cancels the pilots instead of leaving
+        them holding a psij job and a child endpoint.
+
+        The tasks of those pools cannot be recovered — their pool has just
+        been torn down — so their live ledger entries are failed with a plain
+        reason rather than left polling a session that no longer exists.  The
+        records themselves lose nothing: their single member was already
+        derived from the stored declaration at load time.
+        '''
+        legacy: dict[str, ResourceRecord] = {}
+        for rec in self._state.resources.values():
+            sid = rec.dispatcher_sid
+            if sid and sid != FED_SESSION_SID:
+                legacy.setdefault(sid, rec)
+        if not legacy:
+            return
+
+        log.info('[%s] upgrading %d pre-08 dispatcher session(s) to the '
+                 'single %r session', self.instance_name, len(legacy),
+                 FED_SESSION_SID)
+        for sid, rec in legacy.items():
+            try:
+                if rec.pool_config:
+                    await self._dispatcher.register_session(
+                        sid, [rec.pool_config])
+                await self._dispatcher.unregister_session(sid)
+            except Exception as e:
+                log.warning('[%s] releasing legacy session %r failed: %s',
+                            self.instance_name, sid, e)
+
+        for entry in self._state.ledger.values():
+            if entry.dispatcher_sid and \
+                    entry.dispatcher_sid != FED_SESSION_SID and \
+                    entry.state not in _TERMINAL_TASK_STATES:
+                entry.state       = 'FAILED'
+                entry.detail      = 'the federation was upgraded'
+                entry.finished_at = time.time()
+
+        for rec in self._state.resources.values():
+            rec.dispatcher_sid = FED_SESSION_SID
+            members = rec.member_list()
+            if members:
+                rec.pool_name = members[0].pool_name
+
+    async def _replay_attachments(self) -> None:
+        '''Re-attach every stored member to its class pool, once.
+
+        In order: release any pre-08 per-resource session, register ``fed``
+        with the **full** class-pool list, then re-POST *every* member of
+        *every* stored record.  The dispatcher has already replayed those
+        pools with their persisted members, so the re-POST is a no-op — and
+        it is the recovery path when the dispatcher's own state was wiped,
+        which is exactly why an identical re-POST must be a no-op rather
+        than an error.
 
         Called from whichever comes first after a restart: the first
         topology delivery (the normal case) or the first route
@@ -1190,58 +1820,84 @@ class PluginFederation(Plugin):
         a resource, while ``pick`` correctly refuses to route new work to an
         endpoint nobody has seen yet.
         '''
+        await self._upgrade_legacy()
+
+        try:
+            await self._register_fed()
+        except Exception as e:
+            log.warning('[%s] could not register the %r session: %s',
+                        self.instance_name, FED_SESSION_SID, e)
+            for rec in self._state.resources.values():
+                rec.liveness = LIVENESS_LOST
+            self._state.save()
+            return
+
         for rec in list(self._state.resources.values()):
-            decl = rec.pool_config or None
-            if not decl:
-                log.warning('[%s] resource %r has no stored pool config; '
-                            'marking lost', self.instance_name, rec.name)
-                rec.liveness = LIVENESS_LOST
-                continue
-            try:
-                await self._dispatcher.register_session(rec.dispatcher_sid,
-                                                        [decl])
-                self._attached.add(rec.name)
-            except Exception as e:
-                log.warning('[%s] could not re-attach resource %r: %s',
-                            self.instance_name, rec.name, e)
-                rec.liveness = LIVENESS_LOST
+            for member in rec.member_list():
+                try:
+                    await self._dispatcher.add_member(
+                        FED_SESSION_SID, member.pool_name,
+                        self._member_decl(rec, member))
+                    self._attached.add(member.member_id)
+                except Exception as e:
+                    log.warning('[%s] could not re-attach member %s: %s',
+                                self.instance_name, member.member_id, e)
+                    member.liveness = LIVENESS_LOST
+                    rec.liveness    = LIVENESS_LOST
         self._state.save()
 
     async def _sync_attachments(self) -> None:
-        '''Apply endpoint liveness to every resource and its dispatcher session.
+        '''Apply endpoint liveness to every member, at member granularity.
 
-        A resource whose endpoint is gone is released (its pool and pilots go
-        with the session) and marked ``lost``; one whose endpoint comes back
-        is re-attached to the same sid and pool declaration.
-        '''
+        | endpoint | action |
+        |---|---|
+        | ``present``, not attached | ``add_member`` (re-declaring the class pool first when it no longer exists — every member of that class may have left while the endpoint was down) |
+        | ``suspect`` | mark ``suspect``, **nothing else**.  The policy already refuses to route to a non-``ok`` member, which is the whole point of ``suspect``; a blip must not touch the dispatcher |
+        | ``lost``, attached | ``del_member`` with ``fail_unsatisfiable=False``.  Its pilots died with the endpoint anyway and its RUNNING tasks re-queue onto a sibling — but a task only *this* member could run stays QUEUED instead of failing, because a lost endpoint is very often back in a minute |
+        '''  # noqa: E501
         dirty = False
         for rec in list(self._state.resources.values()):
             target = self._liveness_for(rec.endpoint)
+            result = target
 
-            if target == LIVENESS_LOST and rec.name in self._attached:
-                try:
-                    await self._dispatcher.unregister_session(
-                        rec.dispatcher_sid)
-                except Exception as e:
-                    log.info('[%s] detach %r: %s',
-                             self.instance_name, rec.name, e)
-                self._attached.discard(rec.name)
-                self._detail_cache.pop(rec.pool_name, None)
-            elif target != LIVENESS_LOST and rec.name not in self._attached \
-                    and rec.pool_config:
-                try:
-                    await self._dispatcher.register_session(
-                        rec.dispatcher_sid, [rec.pool_config])
-                    self._attached.add(rec.name)
-                    log.info('[%s] re-attached resource %r',
-                             self.instance_name, rec.name)
-                except Exception as e:
-                    log.warning('[%s] re-attach %r failed: %s',
-                                self.instance_name, rec.name, e)
-                    target = LIVENESS_LOST
+            for member in rec.member_list():
+                if target == LIVENESS_LOST:
+                    if member.member_id in self._attached:
+                        try:
+                            await self._dispatcher.del_member(
+                                FED_SESSION_SID, member.pool_name,
+                                member.member_id, cancel_tasks=False,
+                                force=True, fail_unsatisfiable=False)
+                        except Exception as e:
+                            log.info('[%s] detach %s: %s',
+                                     self.instance_name, member.member_id, e)
+                        self._attached.discard(member.member_id)
+                        self._detail_cache.pop(member.pool_name, None)
 
-            if rec.liveness != target:
-                rec.liveness = target
+                elif target == LIVENESS_SUSPECT:
+                    continue
+
+                elif member.member_id not in self._attached:
+                    try:
+                        if member.pool_name not in self._pools:
+                            await self._register_fed()
+                        await self._dispatcher.add_member(
+                            FED_SESSION_SID, member.pool_name,
+                            self._member_decl(rec, member))
+                        self._attached.add(member.member_id)
+                        log.info('[%s] re-attached member %s',
+                                 self.instance_name, member.member_id)
+                    except Exception as e:
+                        log.warning('[%s] re-attach %s failed: %s',
+                                    self.instance_name, member.member_id, e)
+                        result = LIVENESS_LOST
+
+            for member in rec.member_list():
+                if member.liveness != result:
+                    member.liveness = result
+                    dirty = True
+            if rec.liveness != result:
+                rec.liveness = result
                 dirty = True
         if dirty:
             self._state.save()

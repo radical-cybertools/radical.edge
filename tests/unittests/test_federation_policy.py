@@ -1,33 +1,52 @@
 """Unit tests for federation_policy.
 
-Covers the default :class:`BudgetLoadPolicy` — capability filtering,
+Covers the requirement matcher (the 121 §3.3 rules the dispatcher and the
+federation share), the default :class:`BudgetLoadPolicy` — member filtering,
 budget exhaustion, liveness exclusion, the load term, the deterministic
-tie-break, and the ``explain`` reasons a 409 carries — plus the
-``module:Class`` loader.
+tie-break, the **cheapest-class** rule and the ``explain`` reasons a 409
+carries — plus the ``module:Class`` loader.
+
+The pre-class-pool ``pick(requirements, resources)`` /
+``explain(requirements, resources)`` pair is **gone**, not deprecated: there
+is exactly one policy API and nothing to drift against.
 """
 
 import pytest
 
 from radical.orbit.federation_policy import (
     BudgetLoadPolicy, FederationPolicy, FederationPolicyError,
-    DEFAULT_POLICY, make_policy,
+    DEFAULT_POLICY, make_policy, satisfies,
 )
 from radical.orbit.federation_state import (
-    ResourceRecord, LIVENESS_LOST, LIVENESS_SUSPECT,
+    MemberRecord, LIVENESS_LOST, LIVENESS_SUSPECT,
 )
 
 
-def _res(name, *, cores=8, gpus=0, mem_gb=16, software=None,
-         node_hours=10.0, used=0.0, running=0, liveness='ok'):
-    r = ResourceRecord(
-        name=name, endpoint=f'ep_{name}',
-        capabilities={'cores': cores, 'gpus': gpus, 'mem_gb': mem_gb,
-                      'software': list(software or [])},
-        budget={'node_hours': node_hours}, liveness=liveness)
-    r.usage.node_hours_used      = used
-    r.usage.node_hours_remaining = max(0.0, node_hours - used)
-    r.usage.tasks_running        = running
-    return r
+def _mem(member_id, *, cls=None, nodes=1, cpus=8, gpus=0, software=None,
+         attributes=None, node_hours=10.0, used=0.0, running=0,
+         liveness='ok', backend='concurrent', max_pilots=1):
+    resource, _, name = member_id.rpartition('.')
+    m = MemberRecord(
+        member=name, member_id=member_id, queue='q', nodes=nodes,
+        cpus_per_node=cpus, gpus_per_node=gpus, max_pilots=max_pilots,
+        rhapsody_backend=backend, software=list(software or []),
+        attributes=dict(attributes or {}),
+        budget={'node_hours': node_hours} if node_hours else {},
+        liveness=liveness)
+    m.cls       = cls or m.default_class()
+    m.pool_name = f'fed-{m.cls}'
+    m.usage.node_hours_used      = used
+    m.usage.node_hours_remaining = max(0.0, node_hours - used)
+    m.usage.tasks_running        = running
+    assert resource                                  # member ids are qualified
+    return m
+
+
+def _classes(*members):
+    out = {}
+    for m in members:
+        out.setdefault(m.cls, []).append(m)
+    return out
 
 
 @pytest.fixture
@@ -36,132 +55,248 @@ def policy():
 
 
 # ---------------------------------------------------------------------------
-# Filtering
+# The shared matcher
 # ---------------------------------------------------------------------------
 
-class TestCapabilityFilter:
+class _Size:
+    def __init__(self, cpus=8, gpus=0, backend='concurrent'):
+        self.nodes            = 1
+        self.cpus_per_node    = cpus
+        self.gpus_per_node    = gpus
+        self.rhapsody_backend = backend
 
-    def test_picks_the_only_fitting_resource(self, policy):
-        small = _res('small', cores=2)
-        big   = _res('big',   cores=64)
-        got = policy.pick({'cores': 32}, [small, big])
-        assert got is not None and got[0].name == 'big'
 
-    def test_numeric_shortfall_excludes(self, policy):
-        assert policy.pick({'cores': 128}, [_res('a', cores=8)]) is None
+class TestSatisfies:
 
-    def test_zero_requirement_is_always_satisfied(self, policy):
-        # "gpus: 0" must not exclude a CPU-only resource that never declared
-        # a gpu count at all.
-        r = ResourceRecord(name='cpu_only', endpoint='e',
-                           capabilities={'cores': 4},
-                           budget={'node_hours': 1.0})
-        r.usage.node_hours_remaining = 1.0
-        assert policy.reject_reason({'gpus': 0, 'cores': 2}, r) is None
+    def test_empty_requirements_always_fit(self):
+        assert satisfies({}, {}, _Size()) is None
+        assert satisfies(None, None, None) is None
 
-    def test_undeclared_capability_excludes_a_positive_requirement(self,
-                                                                   policy):
-        r = ResourceRecord(name='cpu_only', endpoint='e',
-                           capabilities={'cores': 4})
-        reason = policy.reject_reason({'gpus': 1}, r)
-        assert reason is not None and 'gpus' in reason
+    def test_software_must_be_a_subset(self):
+        attrs = {'software': ['lammps']}
+        assert satisfies({'software': ['lammps']}, attrs, _Size()) is None
+        assert satisfies({'software': ['lammps', 'pytorch']}, attrs,
+                         _Size()) == 'software missing: pytorch'
+
+    def test_cores_and_gpus_are_compared_per_node(self):
+        size = _Size(cpus=4, gpus=1)
+        assert satisfies({'cores': 4}, {}, size) is None
+        assert satisfies({'cores': 8}, {}, size) == 'cores 4 < 8'
+        assert satisfies({'gpus': 1},  {}, size) is None
+        assert satisfies({'gpus': 2},  {}, size) == 'gpus 1 < 2'
+
+    def test_zero_or_negative_requirements_are_always_satisfied(self):
+        size = _Size(cpus=1, gpus=0)
+        assert satisfies({'gpus': 0, 'cores': 0, 'mem_gb': 0}, {}, size) \
+            is None
+        assert satisfies({'software': []}, {}, size) is None
+
+    def test_mem_gb_uses_the_per_node_attribute_when_declared(self):
+        assert satisfies({'mem_gb': 8}, {'mem_gb_per_node': 16}, _Size()) \
+            is None
+        assert satisfies({'mem_gb': 32}, {'mem_gb_per_node': 16},
+                         _Size()) == 'mem_gb 16 < 32'
+
+    def test_an_undeclared_mem_gb_never_rejects(self):
+        assert satisfies({'mem_gb': 999}, {}, _Size()) is None
+
+    def test_labels_match_a_scalar_or_a_list_attribute(self):
+        attrs = {'site': 'NERSC', 'tags': ['fast', 'io']}
+        assert satisfies({'labels': {'site': 'NERSC'}}, attrs, _Size()) is None
+        assert satisfies({'labels': {'tags': 'io'}}, attrs, _Size()) is None
+        assert satisfies({'labels': {'site': 'PSC'}}, attrs, _Size()) == \
+            'label site=PSC not matched'
+
+    def test_an_undeclared_label_key_rejects(self):
+        assert satisfies({'labels': {'zone': 'a'}}, {}, _Size()) == \
+            'label zone=a not matched'
+
+    def test_mpi_cannot_run_on_dragon_v1(self):
+        assert satisfies({'mpi': True}, {}, _Size(backend='dragon_v1')) == \
+            'backend dragon_v1 cannot run an mpi task'
+        assert satisfies({'mpi': True}, {}, _Size(backend='concurrent')) \
+            is None
+        assert satisfies({'mpi': False}, {}, _Size(backend='dragon_v1')) \
+            is None
+
+    def test_unknown_keys_are_ignored(self):
+        # the submit-time parser owns the whitelist; a matcher that also
+        # rejected unknown keys would double-own it
+        assert satisfies({'ranks': 4}, {}, _Size()) is None
+        assert satisfies({'whatever': 'x', 'ranks': 8}, {}, _Size()) is None
+
+
+# ---------------------------------------------------------------------------
+# Member filtering
+# ---------------------------------------------------------------------------
+
+class TestMemberFilter:
+
+    def test_the_only_fitting_member_is_chosen(self, policy):
+        small = _mem('a.default', cpus=2)
+        big   = _mem('b.default', cpus=16)
+        ranked = policy.eligible({'cores': 8}, [small, big])
+        assert [m.member_id for m, _ in ranked] == ['b.default']
+
+    def test_cores_are_now_compared_per_node_not_resource_wide(self, policy):
+        # semantic change from the pre-class-pool policy: a member with
+        # 4 nodes x 2 cores no longer serves a 8-core task, because no
+        # shipped backend spreads one task across nodes
+        wide = _mem('a.default', nodes=4, cpus=2)
+        assert policy.reject_reason({'cores': 8}, wide) == 'cores 2 < 8'
 
     def test_software_must_be_a_subset(self, policy):
-        have = _res('a', software=['lammps', 'pytorch'])
-        assert policy.reject_reason({'software': ['lammps']}, have) is None
-        assert policy.reject_reason({'software': ['lammps', 'gromacs']},
-                                    have) is not None
+        m = _mem('a.default', software=['lammps'])
+        assert policy.reject_reason({'software': ['lammps']}, m) is None
+        assert 'pytorch' in policy.reject_reason(
+            {'software': ['pytorch']}, m)
 
-    def test_software_reason_names_what_is_missing(self, policy):
-        have = _res('a', software=['lammps'])
-        reason = policy.reject_reason({'software': ['gromacs']}, have)
-        assert 'gromacs' in reason
+    def test_labels_reach_the_matcher_through_attributes(self, policy):
+        m = _mem('a.default', attributes={'site': 'NERSC'})
+        assert policy.reject_reason({'labels': {'site': 'NERSC'}}, m) is None
+        assert policy.reject_reason({'labels': {'site': 'PSC'}}, m) == \
+            'label site=PSC not matched'
 
-    def test_non_numeric_requirement_is_rejected(self, policy):
-        reason = policy.reject_reason({'cores': 'many'}, _res('a'))
-        assert 'not a number' in reason
+    def test_ranks_and_mpi_do_not_reject_a_sane_member(self, policy):
+        m = _mem('a.default')
+        assert policy.reject_reason({'cores': 1, 'gpus': 0, 'mem_gb': 0,
+                                     'ranks': 4, 'mpi': False,
+                                     'software': [], 'labels': {}}, m) is None
 
 
 class TestBudgetFilter:
 
-    def test_exhausted_budget_excludes(self, policy):
-        broke = _res('broke', node_hours=10.0, used=10.0)
-        assert policy.pick({'node_hours': 0.5}, [broke]) is None
+    def test_exhausted_budget_excludes_the_member(self, policy):
+        m = _mem('a.default', node_hours=1.0, used=1.0)
+        assert 'node_hours' in policy.reject_reason({'node_hours': 0.5}, m)
 
-    def test_partial_budget_still_serves_a_small_request(self, policy):
-        r = _res('r', node_hours=10.0, used=9.5)
-        assert policy.pick({'node_hours': 0.25}, [r]) is not None
+    def test_a_sibling_is_not_excluded_with_it(self, policy):
+        poor = _mem('a.cpu', cls='cpu', node_hours=1.0, used=1.0)
+        rich = _mem('b.cpu', cls='cpu', node_hours=10.0)
+        ranked = policy.eligible({'node_hours': 0.5}, [poor, rich])
+        assert [m.member_id for m, _ in ranked] == ['b.cpu']
 
     def test_no_node_hours_requested_ignores_the_budget(self, policy):
-        broke = _res('broke', node_hours=10.0, used=10.0)
-        assert policy.pick({}, [broke]) is not None
+        m = _mem('a.default', node_hours=1.0, used=1.0)
+        assert policy.reject_reason({}, m) is None
 
-    def test_reason_reports_the_shortfall(self, policy):
-        broke = _res('broke', node_hours=10.0, used=10.0)
-        assert 'node_hours' in policy.reject_reason({'node_hours': 1.0},
-                                                    broke)
+    def test_the_reason_reports_the_shortfall(self, policy):
+        m = _mem('a.default', node_hours=2.0, used=1.5)
+        assert policy.reject_reason({'node_hours': 1.0}, m) == \
+            'node_hours 0.500 < 1.000'
 
 
 class TestLivenessFilter:
 
     def test_lost_is_excluded(self, policy):
-        assert policy.pick({}, [_res('a', liveness=LIVENESS_LOST)]) is None
+        m = _mem('a.default', liveness=LIVENESS_LOST)
+        assert policy.reject_reason({}, m) == 'liveness is lost'
 
     def test_suspect_is_excluded_too(self, policy):
-        # A suspect endpoint may be seconds from lost; a task routed there
-        # would sit in a pool nobody is serving.
-        assert policy.pick({}, [_res('a', liveness=LIVENESS_SUSPECT)]) is None
+        m = _mem('a.default', liveness=LIVENESS_SUSPECT)
+        assert policy.reject_reason({}, m) == 'liveness is suspect'
 
     def test_a_live_peer_wins_over_a_lost_one(self, policy):
-        lost = _res('a', cores=64, liveness=LIVENESS_LOST)
-        live = _res('b', cores=8)
-        got = policy.pick({'cores': 4}, [lost, live])
-        assert got[0].name == 'b'
-
-    def test_reason_states_the_liveness(self, policy):
-        assert policy.reject_reason({}, _res('a', liveness=LIVENESS_LOST)) \
-            == 'liveness is lost'
+        dead = _mem('a.cpu', cls='cpu', liveness=LIVENESS_LOST)
+        live = _mem('b.cpu', cls='cpu')
+        ranked = policy.eligible({}, [dead, live])
+        assert [m.member_id for m, _ in ranked] == ['b.cpu']
 
 
 # ---------------------------------------------------------------------------
-# Scoring
+# Scoring and the tie-break
 # ---------------------------------------------------------------------------
 
 class TestScoring:
 
-    def test_load_orders_two_otherwise_equal_resources(self, policy):
-        idle  = _res('bbb', cores=8, running=0)
-        busy  = _res('aaa', cores=8, running=4)
-        got = policy.pick({'cores': 1}, [busy, idle])
-        # 'aaa' sorts first by name — only the load term can flip this
-        assert got[0].name == 'bbb'
+    def test_load_orders_two_otherwise_equal_members(self, policy):
+        busy = _mem('a.cpu', cls='cpu', cpus=8, running=4)
+        idle = _mem('b.cpu', cls='cpu', cpus=8, running=0)
+        ranked = policy.eligible({}, [busy, idle])
+        assert [m.member_id for m, _ in ranked] == ['b.cpu', 'a.cpu']
+
+    def test_load_uses_the_member_slot_count(self, policy):
+        # nodes x cpus_per_node, not the resource's total cores
+        m = _mem('a.default', nodes=2, cpus=4, running=4)
+        assert policy.score({}, m) == pytest.approx(1.0 - 4 / 8)
 
     def test_more_remaining_budget_wins(self, policy):
-        spent = _res('aaa', node_hours=10.0, used=9.0)
-        fresh = _res('bbb', node_hours=10.0, used=0.0)
-        got = policy.pick({'cores': 1}, [spent, fresh])
-        assert got[0].name == 'bbb'
-
-    def test_tie_breaks_deterministically_by_name(self, policy):
-        a = _res('zeta')
-        b = _res('alpha')
-        for _ in range(5):
-            assert policy.pick({'cores': 1}, [a, b])[0].name == 'alpha'
-            assert policy.pick({'cores': 1}, [b, a])[0].name == 'alpha'
-
-    def test_score_is_returned_with_the_pick(self, policy):
-        rec, score = policy.pick({'cores': 1}, [_res('a')])
-        assert rec.name == 'a'
-        assert score == pytest.approx(1.0)   # full budget, no load
+        spent = _mem('a.cpu', cls='cpu', node_hours=10.0, used=9.0)
+        fresh = _mem('b.cpu', cls='cpu', node_hours=10.0, used=0.0)
+        ranked = policy.eligible({}, [spent, fresh])
+        assert ranked[0][0].member_id == 'b.cpu'
 
     def test_undeclared_budget_scores_as_full(self, policy):
-        r = ResourceRecord(name='a', endpoint='e',
-                           capabilities={'cores': 4})
-        assert policy.score({}, r) == pytest.approx(1.0)
+        m = _mem('a.default', node_hours=0.0)
+        assert policy.score({}, m) == pytest.approx(1.0)
 
-    def test_load_uses_declared_cores(self, policy):
-        r = _res('a', cores=4, running=2)
-        assert policy.score({}, r) == pytest.approx(1.0 - 0.5)
+    def test_ties_break_deterministically_on_the_member_id(self, policy):
+        one = _mem('b.cpu', cls='cpu')
+        two = _mem('a.cpu', cls='cpu')
+        for members in ([one, two], [two, one]):
+            ranked = policy.eligible({}, members)
+            assert [m.member_id for m, _ in ranked] == ['a.cpu', 'b.cpu']
+
+
+# ---------------------------------------------------------------------------
+# Class choice
+# ---------------------------------------------------------------------------
+
+class TestPickClass:
+
+    def test_a_gpu_task_lands_in_the_gpu_class(self, policy):
+        classes = _classes(_mem('a.cpu', cls='cpu'),
+                           _mem('b.gpu', cls='gpu', gpus=4,
+                                software=['pytorch']))
+        assert policy.pick_class({'gpus': 1, 'software': ['pytorch']},
+                                 classes)[0] == 'gpu'
+
+    def test_a_cpu_task_that_also_fits_a_gpu_member_lands_in_fed_cpu(self,
+                                                                    policy):
+        # THE rule: the GPU member has the software and enough cores, so it
+        # is genuinely eligible — but a CPU task must not burn a GPU
+        # allocation while a CPU one is available.
+        cpu = _mem('a.cpu', cls='cpu', cpus=8,  software=['pytorch'])
+        gpu = _mem('b.gpu', cls='gpu', cpus=64, gpus=8,
+                   software=['pytorch'], node_hours=100.0)
+        classes = _classes(cpu, gpu)
+        req     = {'cores': 4, 'software': ['pytorch']}
+        # both classes really do have an eligible member ...
+        assert policy.eligible(req, [gpu])
+        # ... and the cheapest one wins anyway
+        assert policy.pick_class(req, classes)[0] == 'cpu'
+
+    def test_the_gpu_class_is_used_when_no_cpu_member_fits(self, policy):
+        cpu = _mem('a.cpu', cls='cpu', cpus=2, software=[])
+        gpu = _mem('b.gpu', cls='gpu', cpus=64, gpus=8,
+                   software=['pytorch'])
+        classes = _classes(cpu, gpu)
+        assert policy.pick_class({'software': ['pytorch']}, classes)[0] == \
+            'gpu'
+
+    def test_the_score_is_the_best_member_of_the_chosen_class(self, policy):
+        busy = _mem('a.cpu', cls='cpu', cpus=8, running=4)
+        idle = _mem('b.cpu', cls='cpu', cpus=8, running=0)
+        cls, score = policy.pick_class({}, _classes(busy, idle))
+        assert cls == 'cpu'
+        assert score == pytest.approx(policy.score({}, idle))
+
+    def test_a_class_with_no_eligible_member_is_skipped(self, policy):
+        classes = _classes(_mem('a.cpu', cls='cpu', liveness=LIVENESS_LOST),
+                           _mem('b.gpu', cls='gpu', gpus=1))
+        assert policy.pick_class({}, classes)[0] == 'gpu'
+
+    def test_nothing_eligible_is_none(self, policy):
+        classes = _classes(_mem('a.cpu', cls='cpu', liveness=LIVENESS_LOST))
+        assert policy.pick_class({}, classes) is None
+        assert policy.pick_class({}, {}) is None
+
+    def test_equally_cheap_classes_break_on_the_class_name(self, policy):
+        # two classes whose cheapest members are identically shaped: the
+        # answer must still be the same on every call
+        classes = _classes(_mem('a.zed', cls='zed', cpus=8),
+                           _mem('b.alp', cls='alp', cpus=8))
+        assert policy.pick_class({}, classes)[0] == 'alp'
 
 
 # ---------------------------------------------------------------------------
@@ -170,30 +305,30 @@ class TestScoring:
 
 class TestExplain:
 
-    def test_reports_one_reason_per_rejected_resource(self, policy):
-        rs = [_res('a', gpus=0),
-              _res('b', node_hours=1.0, used=1.0, gpus=4),
-              _res('c', gpus=4, liveness=LIVENESS_LOST)]
-        reasons = policy.explain({'gpus': 2, 'node_hours': 0.5}, rs)
-        assert set(reasons) == {'a', 'b', 'c'}
-        assert 'gpus' in reasons['a']
-        assert 'node_hours' in reasons['b']
-        assert 'liveness' in reasons['c']
+    def test_reasons_are_keyed_by_member_id(self, policy):
+        members = [_mem('a.cpu', cls='cpu', gpus=0),
+                   _mem('b.gpu', cls='gpu', gpus=1, node_hours=1.0,
+                        used=1.0)]
+        reasons = policy.explain({'gpus': 2, 'node_hours': 0.5}, members)
+        assert set(reasons) == {'a.cpu', 'b.gpu'}
+        assert reasons['a.cpu'] == 'gpus 0 < 2'
+        assert 'gpus 1 < 2' == reasons['b.gpu']
 
-    def test_omits_resources_that_would_have_been_picked(self, policy):
-        ok  = _res('ok',  gpus=4)
-        bad = _res('bad', gpus=0)
-        reasons = policy.explain({'gpus': 1}, [ok, bad])
-        assert set(reasons) == {'bad'}
+    def test_omits_members_that_would_have_been_picked(self, policy):
+        good = _mem('a.cpu', cls='cpu', cpus=16)
+        bad  = _mem('b.cpu', cls='cpu', cpus=1)
+        reasons = policy.explain({'cores': 8}, [good, bad])
+        assert set(reasons) == {'b.cpu'}
 
-    def test_agrees_with_pick(self, policy):
-        rs = [_res('a', cores=1), _res('b', cores=1)]
-        assert policy.pick({'cores': 99}, rs) is None
-        assert set(policy.explain({'cores': 99}, rs)) == {'a', 'b'}
+    def test_it_agrees_with_pick_class(self, policy):
+        members = [_mem('a.cpu', cls='cpu', cpus=1),
+                   _mem('b.gpu', cls='gpu', cpus=1, gpus=1)]
+        req = {'cores': 64}
+        assert policy.pick_class(req, _classes(*members)) is None
+        assert set(policy.explain(req, members)) == {'a.cpu', 'b.gpu'}
 
-    def test_empty_federation(self, policy):
-        assert policy.pick({}, []) is None
-        assert policy.explain({}, []) == {}
+    def test_an_empty_federation_explains_nothing(self, policy):
+        assert policy.explain({'cores': 1}, []) == {}
 
 
 # ---------------------------------------------------------------------------
@@ -201,51 +336,53 @@ class TestExplain:
 # ---------------------------------------------------------------------------
 
 class _CustomPolicy(FederationPolicy):
-    def pick(self, requirements, resources):
-        recs = sorted(resources, key=lambda r: r.name, reverse=True)
-        return (recs[0], 42.0) if recs else None
-
-
-class _NotAPolicy:
-    pass
+    def __init__(self, cfg=None):
+        super().__init__(cfg)
+        self.seen = cfg
 
 
 class TestMakePolicy:
 
     def test_default_is_budget_load(self):
         assert isinstance(make_policy(), BudgetLoadPolicy)
-        assert isinstance(make_policy(None), BudgetLoadPolicy)
         assert isinstance(make_policy(DEFAULT_POLICY), BudgetLoadPolicy)
 
     def test_loads_a_module_class_spec(self):
         p = make_policy(f'{__name__}:_CustomPolicy')
         assert isinstance(p, _CustomPolicy)
-        assert p.pick({}, [_res('a'), _res('z')])[0].name == 'z'
 
     def test_config_reaches_the_policy(self):
-        p = make_policy(None, {'knob': 7})
-        assert p._cfg == {'knob': 7}
+        p = make_policy(f'{__name__}:_CustomPolicy', {'k': 'v'})
+        assert p.seen == {'k': 'v'}
 
     def test_spec_without_a_colon_is_rejected(self):
         with pytest.raises(FederationPolicyError, match='module:Class'):
-            make_policy('BudgetLoadPolicy')
+            make_policy('nocolon')
 
     def test_unknown_module_is_rejected(self):
         with pytest.raises(FederationPolicyError, match='cannot resolve'):
-            make_policy('no.such.module:Thing')
+            make_policy('no.such.module:Policy')
 
     def test_unknown_attribute_is_rejected(self):
         with pytest.raises(FederationPolicyError, match='cannot resolve'):
-            make_policy('radical.orbit.federation_policy:Nope')
+            make_policy(f'{__name__}:NoSuchClass')
 
     def test_non_policy_class_is_rejected(self):
-        with pytest.raises(FederationPolicyError, match='subclass'):
-            make_policy(f'{__name__}:_NotAPolicy')
+        with pytest.raises(FederationPolicyError, match='not a '
+                                                       'FederationPolicy'):
+            make_policy(f'{__name__}:_Size')
 
 
 class TestBaseIsInert:
 
-    def test_base_picks_nothing(self):
-        p = FederationPolicy()
-        assert p.pick({}, [_res('a')]) is None
-        assert p.explain({}, [_res('a')]) == {}
+    def test_the_base_chooses_nothing(self):
+        base = FederationPolicy()
+        assert base.pick_class({}, {'cpu': [_mem('a.cpu', cls='cpu')]}) is None
+        assert base.eligible({}, [_mem('a.cpu', cls='cpu')]) == []
+        assert base.explain({}, [_mem('a.cpu', cls='cpu')]) == {}
+
+    def test_the_old_pick_explain_pair_is_gone(self):
+        # replaced, not kept beside the new API: two parallel entry points
+        # would guarantee they drift
+        assert not hasattr(FederationPolicy, 'pick')
+        assert not hasattr(BudgetLoadPolicy, 'pick')
