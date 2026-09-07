@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import math
 import os
 import shutil
 import threading
@@ -158,12 +159,19 @@ def _is_number(value: Any) -> bool:
 
 
 def parse_requirements(raw: Any) -> dict:
-    '''Validate a raw ``requirements`` block and return it normalised.
+    '''Validate a raw ``requirements`` block, returning a validated shallow copy.
 
     Absent or ``null`` yields ``{}`` — the "no declaration" marker that
     forwards byte-identically to pre-requirements behaviour.  This is the
     pool-independent *shape* layer only; the pool-dependent *fit* and
     *backend* gates live in :func:`check_requirements_against_pool`.
+
+    One value is **derived** rather than merely checked: when ``ranks`` is
+    given without ``cores``, the copy gets ``cores = max(1, ranks)``.
+    ``{"ranks": 4}`` alone means "four processes", and refusing it against
+    a ``cores`` default of 1 would be a trap.  An *explicit* ``cores``
+    below ``ranks`` is still a 400 — that is a contradiction, not an
+    omission.  The derived value is what gets persisted and forwarded.
 
     Raises :class:`RequirementsError` carrying the exact 400 detail string.
     '''
@@ -189,7 +197,10 @@ def parse_requirements(raw: Any) -> dict:
             f"requirements: 'gpus' must be a non-negative integer, "
             f"got {req['gpus']!r}")
 
+    # math.isfinite() also rejects NaN and +/-inf: both survive JSON via
+    # Python's non-standard literals, and NaN would pass a bare `>= 0`.
     if 'mem_gb' in req and not (_is_number(req['mem_gb'])
+                                and math.isfinite(req['mem_gb'])
                                 and req['mem_gb'] >= 0):
         raise RequirementsError(
             f"requirements: 'mem_gb' must be a non-negative number, "
@@ -213,9 +224,17 @@ def parse_requirements(raw: Any) -> dict:
                 "requirements: 'labels' must be a mapping of string to "
                 "string|number")
 
-    cores = req.get('cores', _REQ_DEFAULTS['cores'])
     gpus  = req.get('gpus',  _REQ_DEFAULTS['gpus'])
     ranks = req.get('ranks', _REQ_DEFAULTS['ranks'])
+
+    # 'ranks' without 'cores' means "N processes" -- derive the core count
+    # instead of refusing it against the cores default of 1.  Only an
+    # OMITTED cores is filled in, and only when the derived value differs
+    # from the default, so a block declaring neither stays untouched.  An
+    # explicit cores below ranks is a contradiction, and still a 400.
+    cores = req.get('cores', max(_REQ_DEFAULTS['cores'], ranks))
+    if 'cores' not in req and cores != _REQ_DEFAULTS['cores']:
+        req['cores'] = cores
 
     # ``cores >= ranks`` keeps ``cores_per_rank = cores // ranks`` from ever
     # being 0; ``gpus % ranks == 0`` keeps ``gpus_per_rank`` an exact integer
@@ -2114,8 +2133,9 @@ class PluginTaskDispatcher(Plugin):
                 if derived:
                     fwd['task_backend_specific_kwargs'] = {
                         **derived,
-                        **task.task_dict.get(
-                            'task_backend_specific_kwargs', {}),
+                        # `or {}` -- the key may be present and null
+                        **(task.task_dict.get(
+                            'task_backend_specific_kwargs') or {}),
                     }
             else:
                 fwd = {

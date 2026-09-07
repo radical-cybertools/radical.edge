@@ -10,8 +10,23 @@ overridden.
 ``CORES`` / ``GPUS`` / ``MEM`` carry the per-task resource requirements
 through to ``radical-orbit-run``.  Unlike ``--priority`` (emitted always,
 including ``--priority=0``), their flags are emitted **only** when a value
-was actually resolved — so a makeflow that does not use them produces
-byte-identical output to before.
+was actually resolved, so a makeflow that declares none of them rewrites
+exactly as it did before these directives existed.
+
+**Deliberate behaviour change for ``CORES`` and ``GPUS``.**  Those two are
+*Makeflow-native* per-rule resource variables, and this preprocessor now
+**captures and consumes** them instead of passing them through: a file
+that already set ``CORES`` for Makeflow's own scheduler will see that
+value routed to the dispatcher and the assignment line removed from the
+output.  That is the intent — one declaration should mean one thing — but
+it means such a file's prepped output is no longer byte-identical, and
+Makeflow no longer sees its own ``CORES``/``GPUS``.  Rename the variable
+in the input if you need Makeflow to keep seeing it.
+
+Makeflow's own ``MEMORY`` variable is deliberately **not** captured and
+still passes through untouched: it carries Makeflow's MB semantics, while
+our ``MEM`` directive is explicitly in GB — silently reinterpreting one as
+the other would be worse than requiring the extra line.
 
 Usage:
     radical-orbit-makeflow-prep INPUT.makeflow \\

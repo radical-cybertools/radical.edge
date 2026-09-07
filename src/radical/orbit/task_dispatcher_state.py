@@ -126,8 +126,11 @@ class TaskRecord:
     exit_code    : int | None  = None
     arrival_ts   : float       = 0.0            # tie-break for queue ordering
     error        : str | None  = None
-    # Per-task resource shape as submitted (validated at submit; see
-    # ``plugin_task_dispatcher.validate_requirements``).  ``{}`` means "no
+    # Per-task resource shape as submitted, validated at submit by
+    # ``plugin_task_dispatcher.parse_requirements`` (shape -- which may
+    # also derive an omitted ``cores`` from ``ranks``) and
+    # ``check_requirements_against_pool`` (fit + backend gate).
+    # ``{}`` means "no
     # declaration" and forwards byte-identically to pre-requirements
     # behaviour.  An older ``state.json`` without the key loads as ``{}``
     # because ``record_from_dict`` drops unknown keys and this field

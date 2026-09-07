@@ -218,6 +218,14 @@ class TestRequirementsFromArgs:
         with pytest.raises(SystemExit):
             self._args('--label', 'novalue')
 
+    def test_empty_label_key_exits(self):
+        with pytest.raises(SystemExit):
+            self._args('--label', '=v')
+
+    def test_empty_label_value_is_allowed(self):
+        args = self._args('--label', 'k=')
+        assert _requirements_from_args(args) == {'labels': {'k': ''}}
+
 
 class TestTaskIdIgnoresRequirements:
     """Resources are placement, not identity: re-running the same rule with

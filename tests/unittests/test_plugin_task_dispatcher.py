@@ -690,6 +690,37 @@ class TestEndpointMode:
         fwd = rh_mock.submit_tasks.call_args.args[0][0]
         assert fwd['task_backend_specific_kwargs'] == {'cwd': '/tmp'}
 
+    @pytest.mark.parametrize('requirements,expect_log', [
+        ({'cores': 4}, True),
+        ({},           False),
+        (None,         False),
+    ])
+    def test_endpoint_mode_advisory_log(self, tmp_path, caplog,
+                                        requirements, expect_log):
+        # exactly one advisory line per submit, and only when the caller
+        # actually declared something
+        _, plugin = _make_plugin(tmp_path)
+        client = TestClient(plugin._app)
+        sid = _register(client, plugin, body={'sid': 'A',
+                                              'lifetime': 'persistent'})
+        self._seed_topology(plugin, {'ep': ['rhapsody']})
+        rh_mock = MagicMock()
+        rh_mock.submit_tasks = MagicMock(return_value=[])
+        body = {'endpoint': 'ep', 'task_id': 't.1',
+                'cmd': ['/bin/true'], 'cwd': '/tmp'}
+        if requirements is not None:
+            body['requirements'] = requirements
+        with caplog.at_level('INFO', logger='radical.orbit'), \
+             patch.object(plugin, '_get_rhapsody_client',
+                          new=AsyncMock(return_value=rh_mock)):
+            r = client.post(f'{plugin.namespace}/submit/{sid}', json=body)
+        assert r.status_code == 200, r.text
+        lines = [rec.getMessage() for rec in caplog.records
+                 if 'requirements are advisory' in rec.getMessage()]
+        assert len(lines) == (1 if expect_log else 0)
+        if expect_log:
+            assert 't.1' in lines[0]
+
     def test_terminal_event_clears_endpoint_mode(self, tmp_path):
         _, plugin = _make_plugin(tmp_path)
         plugin._endpoint_mode_tasks['t.1'] = 'ep'
@@ -929,6 +960,16 @@ class TestBackendKwargs:
         # dragon_v3 reads `ranks` ONLY under type == 'mpi'
         assert backend_kwargs({'cores': 4, 'ranks': 4}, 'dragon_v3') == {}
 
+    def test_dragon_v3_mpi_alone_emits_only_the_type(self):
+        # ranks == 1 is the backend's own default and is omitted; 'type'
+        # is not a default, so mpi alone still selects the MPI path
+        assert backend_kwargs({'mpi': True}, 'dragon_v3') == {'type': 'mpi'}
+
+    def test_radical_pilot_single_rank_still_carries_cores(self):
+        # ranks == 1 is omitted, but cores_per_rank == 4 is not a default
+        assert backend_kwargs({'cores': 4, 'ranks': 1}, 'radical_pilot') \
+            == {'cores_per_rank': 4}
+
 
 class TestRequirementsValidation:
     """Exact 400 detail strings — a typo must not vanish silently."""
@@ -1010,6 +1051,57 @@ class TestRequirementsValidation:
                              {'labels': {'a': 'b', 'n': 2, 'f': 1.5}})
         assert r.status_code == 200, r.text
 
+    @pytest.mark.parametrize('bad', [float('nan'), float('inf'),
+                                     float('-inf')])
+    def test_mem_gb_rejects_non_finite(self, tmp_path, bad):
+        # NaN would sail past a bare `>= 0`; inf is meaningless as a size
+        from radical.orbit.plugin_task_dispatcher import (
+            parse_requirements, RequirementsError)
+        with pytest.raises(RequirementsError) as e:
+            parse_requirements({'mem_gb': bad})
+        assert str(e.value).startswith(
+            "requirements: 'mem_gb' must be a non-negative number")
+
+    # -- cores derived from ranks --------------------------------------
+
+    def test_ranks_alone_derives_cores(self, tmp_path):
+        # {'ranks': 4} means "four processes" -- it must NOT 400 against
+        # the cores default of 1
+        plugin, client, sid = self._session(tmp_path)
+        ps = _pool(plugin, sid, 'cpu')
+        with patch.object(ps.policy, 'pick_dispatch', return_value=None):
+            r = self._submit(client, plugin, sid, {'ranks': 4})
+        assert r.status_code == 200, r.text
+        # the derived value is what gets persisted and forwarded
+        assert r.json()['requirements'] == {'ranks': 4, 'cores': 4}
+        assert ps.tasks['t.1'].requirements == {'ranks': 4, 'cores': 4}
+
+    def test_derived_cores_still_face_the_fit_check(self, tmp_path):
+        plugin, client, sid = self._session(tmp_path)
+        r = self._submit(client, plugin, sid, {'ranks': 8})
+        assert r.status_code == 400
+        assert r.json()['detail'] == (
+            "requirements: 8 cores exceed every pilot_size "
+            "(largest: 's', 4 cpus/node)")
+
+    def test_explicit_cores_below_ranks_is_still_400(self, tmp_path):
+        # an omission is derived; a contradiction is refused
+        plugin, client, sid = self._session(tmp_path)
+        r = self._submit(client, plugin, sid, {'cores': 2, 'ranks': 4})
+        assert r.status_code == 400
+        assert r.json()['detail'] == (
+            "requirements: 'cores' (2) must be >= 'ranks' (4)")
+
+    def test_no_gratuitous_cores_key(self, tmp_path):
+        # ranks == 1 derives cores == 1, which is the default: don't stamp
+        # a key the caller never sent onto the record
+        plugin, client, sid = self._session(tmp_path)
+        ps = _pool(plugin, sid, 'cpu')
+        with patch.object(ps.policy, 'pick_dispatch', return_value=None):
+            r = self._submit(client, plugin, sid, {'gpus': 0, 'ranks': 1})
+        assert r.status_code == 200, r.text
+        assert r.json()['requirements'] == {'gpus': 0, 'ranks': 1}
+
     # -- fit -----------------------------------------------------------
 
     def test_cores_exceed_every_pilot_size(self, tmp_path):
@@ -1048,6 +1140,21 @@ class TestRequirementsValidation:
         assert r.json()['detail'] == (
             "requirements: 16 cores exceed every pilot_size "
             "(largest: 'big', 8 cpus/node)")
+
+    def test_largest_is_per_dimension_not_the_biggest_size(self, tmp_path):
+        # 'big' is the largest by cpus but has NO gpus; a gpu overflow must
+        # name 's', the largest along the failing dimension
+        pools = [_pool_dict(pilot_sizes={
+            's'  : {'nodes': 1, 'cpus_per_node': 4, 'gpus_per_node': 4,
+                    'rhapsody_backend': 'dragon_v2'},
+            'big': {'nodes': 1, 'cpus_per_node': 8, 'gpus_per_node': 0,
+                    'rhapsody_backend': 'concurrent'}})]
+        plugin, client, sid = self._session(tmp_path, pools=pools)
+        r = self._submit(client, plugin, sid, {'cores': 8, 'gpus': 8})
+        assert r.status_code == 400
+        assert r.json()['detail'] == (
+            "requirements: 8 gpus exceed every pilot_size "
+            "(largest: 's', 4 gpus/node)")
 
     def test_mem_gb_has_no_fit_check(self, tmp_path):
         # PilotSize carries no memory field, so mem_gb is never a fit 400

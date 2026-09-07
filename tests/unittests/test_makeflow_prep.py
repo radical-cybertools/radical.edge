@@ -413,6 +413,23 @@ class TestRunId:
 
 class TestResourceDirectives:
 
+    def test_cores_and_gpus_are_captured_not_passed_through(self):
+        # deliberate: CORES/GPUS are Makeflow-native per-rule variables and
+        # this preprocessor now consumes them, so Makeflow no longer sees
+        # its own copy (documented in the module docstring)
+        out = _run('POOL = "p"\nCORES = 4\nGPUS = 1\no: i\n\tcmd\n')
+        assert 'CORES' not in out
+        assert 'GPUS'  not in out
+        assert '--cores=4' in out
+        assert '--gpus=1'  in out
+
+    def test_makeflow_memory_still_passes_through(self):
+        # MEMORY is Makeflow's own (MB) variable; our MEM directive is
+        # explicit GB, so MEMORY is deliberately left alone
+        out = _run('POOL = "p"\nMEMORY = 2048\no: i\n\tcmd\n')
+        assert 'MEMORY = 2048' in out
+        assert '--mem=' not in out
+
     def test_defaults_emit_no_flags(self):
         # unlike --priority (always emitted, including 0), the resource
         # flags appear only when a value was resolved -- so every existing
