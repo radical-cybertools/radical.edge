@@ -229,20 +229,30 @@ legacy pool), so replay never has to guess.
   ```python
   multi_member = bool(d.get('multi_member', 'members' in d))
   ```
-  A declaration is a class pool iff `multi_member` is true. When it is
-  false, any `members` key in the input is **ignored** (defence in depth
-  against an old or hand-edited state file) and the legacy path runs
-  unchanged.
-- Required fields: `('name',)` plus **either** `members` (non-empty list or
-  dict, when `multi_member`) **or** the existing
+  i.e. **a declaration carrying `members` is a class pool**, unless it also
+  says `multi_member: false` — an explicit flag always wins, and then the
+  `members` key is **ignored** (defence in depth for an old or hand-edited
+  state file) and the legacy path runs unchanged. A caller therefore never
+  has to send the flag; it exists so a persisted *legacy* pool that somehow
+  acquired a `members` key still replays as a legacy pool.
+- Required fields: `('name',)` plus **either** `members` (when
+  `multi_member`) **or** the existing
   `('queue', 'default_size', 'pilot_sizes')`. Nothing else in the existing
   required-field logic moves — a legacy declaration takes the identical path
   it does today.
 - `members` may be a list of objects (each carrying `member_id`) or a
   `{member_id: object}` map; both normalise to an insertion-ordered dict.
-  An empty `members` with `multi_member: true` → `PoolConfigError` (a
-  member-less class pool is only ever produced by `DELETE …` with `force: true`,
-  and that path does not go through the parser).
+- **Signature: `_parse_pool(d, source, *, allow_empty_members=False)`**
+  (and `parse_pools(raw, source, *, allow_empty_members=False)` threading it
+  through). An empty `members` with `multi_member: true` is a
+  `PoolConfigError` on the **declaration** path — `register_session` must
+  never accept a pool that can run nothing — but is **accepted on the replay
+  path**: `_pool_config_from_dict` (`plugin_task_dispatcher.py:642-646`)
+  passes `allow_empty_members=True`, because `DELETE …` with `force: true`
+  legitimately produces a member-less class pool, persists it, and that state
+  file must replay rather than be skipped as unparseable
+  (`_replay_state:633-640` swallows the error and drops the pool, taking its
+  pilot and task history with it).
 - New `_parse_member(d, source)` mirrors `_parse_pool`'s validation style:
   `member_id` matched against `MEMBER_RE = ^[a-z0-9][a-z0-9_.-]*$`, **with
   `IMPLICIT_MEMBER` (`'_'`) explicitly exempt** — it never appears in a
@@ -254,8 +264,18 @@ legacy pool), so replay never has to guess.
   keeps `PoolConfig`'s `max_pilots >= 1` rule, there is no "quiesced"
   member; `attributes` a dict whose values are str / number / list-of-str,
   `budget` `{}` or `{'node_hours': positive number}`, `shared_fs` a bool.
-- `pool_class`: optional string matching `^[a-z0-9_.-]*$`. A name that does
-  not match is a `PoolConfigError` — **not** silently lowercased or coerced.
+- `pool_class`: optional string matching `^[a-z0-9_.-]*$` — the pattern
+  admits the empty string, and `''` is the legal value for an *unclassified*
+  pool (every legacy pool). A non-empty name that does not match is a
+  `PoolConfigError` — **not** silently lowercased or coerced.
+- **`strategy_config` for a class pool**: the federation keeps sending
+  `_STRATEGY_CONFIG = {'min_dwell_sec': 5, 'max_in_flight_submissions': 1}`
+  (`plugin_federation.py:132`). Under §5's per-member accounting that means
+  *per member*: 5 s dwell each, one in-flight submission each — plus the
+  pool-wide ceiling of R5, so a 5-member pool never has more than
+  `max(max_in_flight_submissions, ...)` submissions in flight at once. That
+  is the intended behaviour (a new member should not wait behind a sibling's
+  dwell window) and it is what the demo's warm-up budget assumes.
 - After members parse, project the primary member onto the legacy fields.
   Duplicate `member_id` → `PoolConfigError`.
 - The policy trial-instantiation (`:208-221`) is unchanged and still runs last.
@@ -272,6 +292,7 @@ class PilotRecord:
     ...                                        # unchanged fields :77-94
     member_id     : str  = ''                  # '' → the implicit member
     attributes    : dict = field(default_factory=dict)  # snapshot at submit time
+    endpoint_name : str  = ''                  # snapshot: who runs the psij job
     # -- size snapshot, taken at submit alongside size_key ------------------
     nodes         : int  = 0
     cpus_per_node : int  = 0
@@ -283,7 +304,23 @@ class TaskRecord:
     requirements : dict = field(default_factory=dict)   # [120]
     member_id    : str | None = None           # set at dispatch, with pilot_id
     requeues     : int = 0                     # times a pilot loss re-queued it
+    spooled      : list[str] = field(default_factory=list)  # dispatcher-held inputs
+    cwd_assigned : bool = False                # cwd came from the dispatcher
 ```
+
+**`endpoint_name` on the pilot** is the same kind of snapshot as
+`attributes` and the size, and for the same reason: a pilot outlives its
+member. `_do_pilot_cancel` and `_reconcile_pilot` (`:1606-1648`) need an
+endpoint to reach psij *after* `DELETE …/members` has dropped the member
+(§7 removes it before the cancels), so they must read it off the pilot.
+
+**`spooled` is not `inputs`.** `TaskRecord.inputs` (`:134`) keeps its
+existing, client-declared meaning (the names a client says the task
+consumes; nothing in the dispatcher acts on it). `spooled` is the list of
+files the dispatcher actually holds under
+`<state_dir>/inputs/<task_id>/` (§4.3), and the placement step at dispatch
+iterates **`spooled` only**. Conflating them would make a plain `inputs`
+declaration look like a staging promise the dispatcher never made.
 
 `record_from_dict` (`:201-208`) drops unknown keys and fills defaults, so
 **old `state.json` files load unchanged**: a legacy pilot gets
@@ -345,9 +382,20 @@ so federation and dispatcher reasons read alike):
 - `mem_gb`: compared against `attributes['mem_gb_per_node']` when declared;
   ignored when not (a missing attribute never rejects a *numeric* requirement
   of 0 or less, and rejects a positive one only when the key exists).
-- `labels`: every `k: v` in `req.labels` must satisfy
-  `attributes[k] == v` or `v in attributes[k]` (list-valued attribute), else
+- `labels`: a `{str: str|int|float}` map (**the same value types in 120, 121
+  and 08** — no bools, no lists, no nesting; the 120 implementer has the
+  same rule). Every `k: v` must satisfy `attributes[k] == v` or
+  `v in attributes[k]` (list-valued attribute), else
   `"label k=v not matched"`. An undeclared label key rejects.
+- `mpi` (bool, 120's key): when true the pilot's `rhapsody_backend` must not
+  be `dragon_v1`, which slot-queues rather than places ranks
+  (120 §PR1.5's table). Reason: `"backend dragon_v1 cannot run an mpi task"`.
+  Pool-level gate in §4.4.
+- **Every other key is ignored**, `ranks` and any key 121 does not know
+  included. 120's parser is the gate that rejects unknown keys with a `400`;
+  a *matcher* that also rejected them would double-own the whitelist and
+  break the moment 120 adds one. Test it: `satisfies({'ranks': 4}, …)` is
+  `None`.
 - A requirement value ≤ 0 or an empty list is always satisfied.
 
 `satisfies` is used with a *member*'s attributes+default size (scale-up
@@ -410,16 +458,23 @@ argument (`broker_plugin_host.py:103-109`). A `?cancel_tasks=true` would be
 part of the *path* and would simply not match the route. So:
 
 ```json
-{"cancel_tasks": false, "force": false}
+{"cancel_tasks": false, "force": false, "fail_unsatisfiable": true}
 ```
 
-An empty body is `{}` (both false). Returns `200 {"pool": name,
+An empty body is `{}` (the defaults above). Returns `200 {"pool": name,
 "member_id": mid, "pilots_cancelled": n, "tasks_requeued": n,
 "tasks_failed": n}`.
 
 - `404` unknown session / pool / member; `409` when it is the pool's last
   member and `force` is not true (a member-less pool can never run anything;
   the federation deletes the whole pool instead).
+- **`fail_unsatisfiable` (default `true`)** governs the sweep in §7 step 4.
+  `true` is the operator's "this member is gone for good" — a task only that
+  member could run fails now, with a reason, instead of sitting QUEUED.
+  `false` is "this member may come back": the tasks stay QUEUED and become
+  dispatchable again when the member re-attaches. The federation passes
+  `false` on its liveness path (an endpoint blip) and leaves the default on
+  an explicit `leave` (plan 08 §4, §6).
 - Drain semantics — §7.
 
 **Base-class touch (required, 5 lines).** `plugin_base.py` gains
@@ -441,23 +496,48 @@ through either way.
 "inputs_b64": {"md.json": "<base64>", "config.yaml": "<base64>"}
 ```
 
-Keys are validated with the existing `_check_filename` (`:1245-1255`); the
-whole block is capped (default 8 MiB total, `_MAX_INPUTS_BYTES`, `413`
-beyond it). It is **spooled**, not written to a task cwd: the dispatcher
-writes each file to `<pool state_dir>/inputs/<task_id>/<name>` — broker-local
-by construction, alongside the pool's own `state.json` — and records the
-names in `TaskRecord.inputs` (which already exists, `:134`). The spool is
-deleted when the task reaches a terminal state and on pool teardown.
+Keys are validated with the existing `_check_filename` (`:1245-1255`).
+Values are base64; a value that does not decode is a `400 "invalid base64:
+<e>"`, exactly as `_route_stage_in` already answers (`:1288-1293`).
+
+**Caps, measured on decoded bytes:**
+
+- `_MAX_INPUT_BYTES = 2 * 1024 * 1024` per file. Derived from
+  `protocol.FRAME_CAP` (4 MiB, `protocol.py:54`): the encoded form is 4/3 of
+  the decoded one and shares the frame with the rest of the submit body, so
+  the ceiling is `FRAME_CAP * 3 // 4 − 64 KiB` ≈ 2.9 MiB; 2 MiB is that,
+  rounded down to a number an operator can remember.
+- `_MAX_INPUTS_BYTES = 8 * 1024 * 1024` for the block.
+- Either exceeded → `413`, naming the file and the limit.
+
+It is **spooled**, not written to a task cwd: the dispatcher writes each file
+to `<pool state_dir>/inputs/<task_id>/<name>` — broker-local by
+construction, alongside the pool's own `state.json` — and records the names
+in `TaskRecord.spooled` (§3.3; **not** `inputs`, which keeps its
+client-declared meaning). A resubmit of a FAILED/CANCELED task
+(`:998-1013`) overwrites the spool.
 
 At dispatch, in `_do_rhapsody_submit` (`:1760-1831`), **before**
-`rh.submit_tasks`:
+`rh.submit_tasks`, iterating `task.spooled`:
 
 - member has `shared_fs: true` → copy each spooled file into the task's
-  assigned cwd (which the dispatcher created);
-- member has `shared_fs: false` → `staging.put` each file to the pilot's own
-  `staging` plugin at `<cwd>/<name>` (`plugin_staging.py:377`, over the
-  existing caller-backed child client, `_make_child_client:794-807`); the
-  same call is what creates the directory remotely (§8).
+  assigned cwd (which the dispatcher created, §8);
+- member has `shared_fs: false` → `put(src=<spool path>,
+  tgt=<cwd>/<name>, overwrite=True)` on the pilot's own `staging` plugin,
+  through a new `_get_staging_client(child_endpoint)` that mirrors
+  `_get_rhapsody_client` (`:837-863`) — same caller-backed
+  `_make_child_client` (`:794-807`), same lazy `register_session`, same
+  `(dst, 'staging', None)` cache key, returning `None` when the child is
+  unreachable. That `put` is also what creates the directory remotely (§8).
+
+**Spool lifetime.** One method, `ps.drop_spool(task_id)` (rmtree of
+`<state_dir>/inputs/<task_id>`, idempotent), called from every terminal
+path — `_handle_task_terminal` (`:1883-1933`), `_mark_task_failed`
+(`:2040-2050`) and `_cancel_task` (`:2052-2082`) — plus
+`rmtree(state_dir / 'inputs')` in `PoolState.close()` (`:214-216`, today a
+no-op). The spool must survive a *re-queue* (the task will be dispatched
+again, possibly to another member), so it is keyed on the task, not the
+pilot, and only a terminal state releases it.
 
 A failure here fails the task with `'could not place inputs on the pilot: …'`
 (`_mark_task_failed`, `:2040-2050`) instead of running it with missing files.
@@ -472,27 +552,43 @@ for the legacy shared-FS flow (§8).
 120 rejects with `400` a task whose `cores`/`gpus` exceed **every**
 `PilotSize` in the pool, comparing per node. With members, "every
 `PilotSize` in the pool" becomes "every `PilotSize` of every declared
-member", and the message names the offending member and size, e.g.
-`"task needs 2 gpus; the largest pilot_size offering GPUs is
-'bridges.gpu/default' with 8 gpu/node"` (or `"no member offers GPUs"`).
+member". **Keep 120's message format**, qualifying the size name with its
+member:
 
-121 adds one rule in the same place: reject with `400` when no member can
-satisfy the task's `software` / `labels`, message
-`"no member satisfies the task requirements: software missing: lammps"`.
-Rationale: a task that no *declared* member could ever run is a client
-error, and queueing it forever is the worse answer. The runtime sweep in §7
-covers only the case where the member that *could* have run it left after
-the submit.
+```
+requirements: 2 gpus exceed every pilot_size (largest: 'bridges.gpu/default', 1 gpu/node)
+```
+
+(120's own test asserts the unqualified form; it needs the qualified name
+once 121 lands — flagged to that author, it is a one-line fixture change.)
+
+121 adds two rules in the same place:
+
+- reject with `400` when no member can satisfy the task's `software` /
+  `labels`, message
+  `"no member satisfies the task requirements: software missing: lammps"`.
+  A task that no *declared* member could ever run is a client error, and
+  queueing it forever is the worse answer. The runtime sweep in §7 covers
+  only the case where the capable member left *after* the submit.
+- **mpi gate (D6):** reject with `400` iff **every** size of **every** member
+  declares `rhapsody_backend: dragon_v1`, message
+  `"an mpi task cannot run on this pool: every member's backend is
+  dragon_v1"`. When some members can, the task is accepted and
+  `pick_dispatch` simply never offers it a `dragon_v1` pilot (§3.3's `mpi`
+  rule). Member-level, not pool-level, precisely because a class pool now
+  mixes backends.
 
 **Both pool-mode entry points.** The exec-style `_route_submit`
 (`:960-1036`) **and** the rhapsody dialect `_route_submit_rh` (`:1097-1170`)
 must run this validation: 120 promotes a `requirements` key off each
 rhapsody task dict, so a rhapsody-dialect task can be just as unplaceable.
-(30) 120's author has been told to forward `software`/`labels`; 121 names
+120's author has been told to forward `software`/`labels`; 121 names
 `_route_submit_rh` explicitly so neither plan assumes the other covered it.
 
-Endpoint mode has no pool and therefore no validation — unchanged
-(120 §PR1.1, `plugin_task_dispatcher.py:1038-1096`).
+**Endpoint mode is unchanged**: it has no pool, so it keeps 120's *shape*
+`400`s (a malformed `requirements` object) and gets **no** fit check and no
+member validation — there is nothing to fit against
+(`plugin_task_dispatcher.py:1038-1096`, 120 §PR1.1).
 
 ### 4.5 Client (`TaskDispatcherClient`)
 
@@ -502,7 +598,13 @@ Endpoint mode has no pool and therefore no validation — unchanged
 - Two new verbs mirroring the routes:
   `add_member(pool: str, member: dict) -> dict` and
   `remove_member(pool: str, member_id: str, *, cancel_tasks=False,
-  force=False) -> dict`.
+  force=False, fail_unsatisfiable=True) -> dict`.
+- **`inputs_b64` is pool-mode, exec-style only.** Sent with `endpoint=`
+  (endpoint mode, `:983-985`) or on a rhapsody-dialect task
+  (`_route_submit_rh`) it is a `400 "inputs_b64 is only supported for
+  pool-mode exec tasks"` — endpoint mode has no scratch the dispatcher owns
+  (`:1264-1268` already refuses staging there), and a rhapsody task's cwd is
+  opaque to the dispatcher (§8 rule 2).
 
 ### 4.6 What did *not* need a route
 
@@ -679,7 +781,12 @@ demo scale (tens) — acceptable; documented.
 - `_activate_pilot` (`:1421-1432`) uses the pilot's size snapshot, falling
   back to `ps.size_of(pilot)` and repairing the record (§3.3).
 - `_do_pilot_cancel` / `_reconcile_pilot` (`:1606-1648`) resolve the psij
-  client from `member.endpoint_name`.
+  client from **`pilot.endpoint_name`** (the snapshot, §3.3), falling back to
+  `ps.member(pilot.member_id).endpoint_name` and then
+  `ps.config.endpoint_name` for a pre-121 record with an empty snapshot.
+  They must **not** look the member up first: §7 removes the member before
+  awaiting the cancels, so a member lookup would return `None` exactly when
+  the cancel matters most.
 
 ---
 
@@ -695,27 +802,41 @@ cancels are `await`ed (psij round-trips); a housekeeping tick landing in that
 window would see the member still declared, still below its `min_pilots`
 floor, and submit a *replacement* pilot for the member being removed. So:
 
-1. Drop the member from `config.members` and `ps.persist()` **first**. There
-   is no `draining` flag: once the member is gone the policy cannot choose
-   it, which is the same guarantee with no extra state. (`_do_pilot_cancel`
-   and `_reconcile_pilot` resolve the endpoint from the *pilot*, not the
-   member — see §6 — so cancelling a removed member's pilots still works;
-   this is why `PilotRecord` carries its own snapshot.)
+1. **Synchronously, before the first `await`:** set
+   `accepting_new_tasks = False` on every live pilot of the member
+   (`PilotRecord:94`; `free_capacity()` returns 0 for a paused pilot,
+   `task_dispatcher_state.py:118-122`), then drop the member from
+   `config.members` and `ps.persist()`. Dropping the member stops the
+   *policy* from growing it; pausing its pilots stops a `_drain_pending`
+   from any other path — a task arriving on the event loop while the cancels
+   are in flight — from dispatching onto a pilot that is about to die. There
+   is no `draining` flag on the member: it is gone, which is the same
+   guarantee with less state. (`_do_pilot_cancel` and `_reconcile_pilot`
+   resolve the endpoint from the *pilot* snapshot, not the member — §6 — so
+   cancelling a removed member's pilots still works.)
 2. For each live pilot with that `member_id`: `await _do_pilot_cancel(...)`
    → `_mark_pilot_failed` → `_finalize_pilot` (`:1664-1703`) cancels the psij
    job and **re-queues** its non-terminal tasks (verified `:1688-1697`).
-3. `_finalize_pilot` gains the re-queue counter: `t.requeues += 1`; when
+3. `_finalize_pilot` gains three things on the re-queue branch
+   (`:1688-1697`): `t.requeues += 1`; **`t.member_id = None`** (it is set at
+   dispatch beside `pilot_id`, §8, and must be cleared with it or a
+   re-queued task reports a placement it no longer has); and, when
    `t.requeues > ps.policy.max_requeues` (base-class property, default 1,
-   §5) the task is failed with `error = 'requeued too often (pilot lost)'`
-   instead of re-queued. This is the "re-queued once" rule from the decision,
-   and it also protects the pre-existing pilot-loss path.
-4. **Unsatisfiable sweep** (the runtime counterpart of §4.4's submit-time
-   `400` — this one catches tasks whose only capable member just left).
-   For every QUEUED task, if no *remaining* member can ever serve it
-   (`satisfies(req, m.attributes, default size)` fails for all `m`), fail it
-   with `error = 'no member satisfies task requirements: <reason>'`
+   §5), the task is failed with
+   `error = 'requeued too often (pilot lost)'` instead of re-queued. This is
+   the "re-queued once" rule from the decision, and it also protects the
+   pre-existing pilot-loss path. The task's **spool survives** (§4.3) — it
+   is about to be dispatched somewhere else.
+4. **Unsatisfiable sweep**, when `fail_unsatisfiable` is true (the default,
+   §4.2) — the runtime counterpart of §4.4's submit-time `400`, catching
+   tasks whose only capable member just left. For every QUEUED task, if no
+   *remaining* member can ever serve it (`satisfies(req, m.attributes,
+   default size)` fails for all `m`), fail it with
+   `error = 'no member satisfies task requirements: <reason>'`
    (`_mark_task_failed`, `:2040-2050`) — otherwise a task whose only
-   `software` provider just left would sit QUEUED forever.
+   `software` provider just left would sit QUEUED forever. With
+   `fail_unsatisfiable: false` those tasks stay QUEUED and wait for the
+   member to come back (the federation's liveness path, plan 08 §6).
    `cancel_tasks: true` fails *every* task that was re-queued off this
    member's pilots, satisfiable or not.
 5. **`_drain_pending(ps)` — explicitly, at the end** (BLOCKING fix).
@@ -755,9 +876,11 @@ def _scratch_for(self, cfg):
 
 `PoolState.scratch_base` is thereafter the pool's **broker-side** tree (the
 input spool of §4.3 lives under the state dir, and shared-FS task cwds live
-here). `member.scratch_base` is a *remote* path with exactly two readers:
-`_build_pilot_env` (§6) and the cwd assignment below. Nothing ever `mkdir`s
-it on the broker host.
+here). `member.scratch_base` is a path *on the member's host* with exactly
+two readers: `_build_pilot_env` (§6) and the cwd assignment below. The
+broker `mkdir`s a task cwd **only when the placed member declares
+`shared_fs: true`** — never for a `shared_fs: false` member, whose
+`scratch_base` names a directory on another machine.
 
 **Rules:**
 
@@ -767,11 +890,16 @@ it on the broker host.
 2. **No `cwd`** — now permitted for `multi_member` pools (reorder the
    validation at `:977-980` so the pool is resolved before the `cwd` check;
    `TaskDispatcherClient.submit_task` takes `cwd: str | None = None`, §4.5).
-   The record is created with `cwd=''`; the dispatcher assigns
+   The record is created with `cwd=''` and `cwd_assigned=True` (§3.3); the
+   dispatcher assigns
    `cwd = <member.scratch_base or PoolState.scratch_base>/<task_id>` **at
    dispatch** in `_claim` (`:1751-1758`), together with
    `task.member_id = pilot.member_id`, then persists (the drain already
-   persists once, `:1743`) and notifies `task_status`. Verified
+   persists once, `:1743`) and notifies `task_status`. On a **re-dispatch**
+   after a pilot loss `_claim` re-assigns the cwd iff `cwd_assigned` — a
+   task moving from a shared to a non-shared member (or between two members
+   with different scratch roots) must not carry the old member's path — and
+   leaves a client-supplied cwd (`cwd_assigned == False`) alone. Verified
    consumer-side: the campaign runner re-reads `task_dict['cwd']` on every
    poll (`atomic_wm/campaign/runner.py:551-552`), so a late cwd is already
    handled.
@@ -780,14 +908,18 @@ it on the broker host.
    forwarded verbatim (`:1786-1787`) and never rewritten. They keep
    requiring a cwd from the client, and the 400 message says so. (Their
    `requirements` *are* validated, §4.4.)
-3. **Directory creation.** `shared_fs: true` → the dispatcher creates it
-   (`PoolState.task_scratch_dir`, `:203-207`). `shared_fs: false` → the
-   dispatcher must **not** create it locally; the `staging.put` of the
-   task's inputs (§4.3) creates it on the pilot. A task with no inputs on a
-   non-shared member gets one explicit `staging.put` of a zero-byte
-   `.orbit-cwd` marker to the same effect — cheaper than adding a `mkdir`
-   route to the staging plugin, which has only `put`/`get`/`list`
-   (`plugin_staging.py:377-379`).
+3. **Directory creation.** `shared_fs: true` → the dispatcher creates the
+   assigned cwd itself, in `_claim`, with
+   `Path(task.cwd).mkdir(parents=True, exist_ok=True)`. Note this is *not*
+   `PoolState.task_scratch_dir` (`:203-207`), which hard-codes
+   `scratch_base / task_id`: the assigned cwd may sit under a member's
+   `scratch_base` instead, so the mkdir is on the resolved path.
+   `shared_fs: false` → the dispatcher creates **nothing** locally; the
+   `staging.put` of the task's inputs (§4.3) creates the directory on the
+   pilot. A task with no inputs on a non-shared member gets one explicit
+   `put` of a zero-byte `.orbit-cwd` marker to the same effect — cheaper
+   than adding a `mkdir` route to the staging plugin, which has only
+   `put`/`get`/`list` (`plugin_staging.py:377-379`).
 4. **Dispatcher `stage_in` / `stage_out`** (`:1257-1338`). Note
    `_route_stage_in` never looks up a `TaskRecord` today — it stages into
    `pool_state.task_scratch_dir(task_id)` for *any* id, and
@@ -815,6 +947,10 @@ does not build a generic pull-through proxy; see §14 risk R3.
 
 ## 9. Verbose pool summary and accounting
 
+**This section is frozen contract**: plan 08's `_refresh_usage` and the
+Explorer both read the member dict verbatim, and 08 is being written against
+it. Adding a key later is fine; renaming or removing one is not.
+
 `_summarize_pool` (`:2107-2147`) keeps every existing key (the flat
 `pilot_sizes`, `queue`, `account`, `endpoint_name`, `min/max_pilots` stay as
 the primary-member projection — `federation.js` and `task_dispatcher.js` keep
@@ -838,8 +974,11 @@ working) and gains:
 ```
 
 - Non-verbose summaries gain `pool_class`, `multi_member`,
-  `members: [<ids>]` and `max_pilots_total` (`Σ member.max_pilots` — the
-  Explorer header needs it and `GET pools` must stay cheap).
+  **`member_ids: [<id>, …]`** (a list of strings — named apart from the
+  verbose `members`, which is a list of *objects*, so no consumer has to
+  discover the type by inspection) and `max_pilots_total`
+  (`Σ member.max_pilots` — the Explorer header needs it and `GET pools` must
+  stay cheap).
 - Pool-level `pilot_history` stays and every entry now carries `member_id`,
   `attributes` and its size snapshot — an existing consumer that ignores
   members still gets the correct pool total, **including pilots whose member
@@ -911,8 +1050,8 @@ working) and gains:
   member's size table, reusing the existing `sizeRows` renderer and
   `formatWalltime` (`:182-188`).
 - Single-member pools render exactly as today (branch on `p.multi_member`).
-- `GET pools` is non-verbose, so the members table needs the ids + summary
-  fields listed in §9; the per-member `node_hours_used` requires the verbose
+- `GET pools` is non-verbose, so the members table needs `member_ids` + the
+  summary fields listed in §9; the per-member `node_hours_used` requires the verbose
   route — fetch `pool/{sid}/{name}` lazily on expansion.
 - Explorer caches plugin JS until a miss: **restart the broker after editing**
   (`00-overview.md:163-166`).
@@ -923,7 +1062,7 @@ working) and gains:
 
 | File | Change |
 |---|---|
-| `docs/task_dispatcher_strategy.md` | §"The ABC" (`:55-75`) and §"Invocation contract" (`:76-90`) are already stale vs. the code — rewrite them against the real `DispatchPolicy` and the v2 `submit_pilot(member_id, size_key)`; document the pick-skip semantics and the new knobs `member_preference`, `max_requeues` in §"conservative" (`:114-156`) |
+| `docs/task_dispatcher_strategy.md` | §"The ABC" (`:55-75`) and §"Invocation contract" (`:76-90`) are already stale vs. the code — rewrite them against the real `DispatchPolicy` and the v2 `submit_pilot(size_key, *, member_id)`; document the pick-skip semantics and the new knobs `member_preference`, `max_requeues` in §"conservative" (`:114-156`) |
 | `docs/rest_api.md` | the two member routes; `submit`'s optional `cwd` and its `inputs_b64` block (with the size cap and the `413`); the new `stage_in`/`stage_out` 409s |
 | `plans/task_dispatcher_design.md` | §3.1 "Pool" (`:125-147`), §3.4 cardinality (`:191-215`), §8.1 pool config (`:526-559`), §9 persistent state (`:586-632`): pool = class, pool 1─N member 1─N pilot; correct the "no add-pool route" claim |
 | `docs/plugin_federation.md` | §"Dispatcher changes this plugin required" (`:313-331`) — add the member routes; the rest is plan 08's business |
@@ -940,15 +1079,20 @@ Unit, per module (all under `tests/unittests/`, existing files):
   accepted; member with the `'default'` queue sentinel → error; member
   `max_pilots = 0` → error; legacy declaration → exactly one implicit member
   + `multi_member is False`; a legacy declaration that *also* carries a
-  `members` key ignores it; `multi_member: true` with an empty `members` →
-  error; projection equals the primary member; **`parse(cfg.to_dict())`
+  `members` key ignores it; an explicit `multi_member: false` beside a
+  `members` key still parses legacy; `multi_member: true` with an empty
+  `members` → error **from `register_session`** but **accepted with
+  `allow_empty_members=True`** (the replay path); projection equals the
+  primary member; **`parse(cfg.to_dict())`
   round-trips for a legacy pool AND for a class pool** (the replay path);
   `to_dict()` of a legacy pool has no `members` key; `PoolConfig(...)` built
   directly (no parser) has its implicit member; `default_pool_config()` has
   it too; a non-matching `pool_class` is rejected, not coerced.
 - `test_task_dispatcher_state.py`: `PilotRecord` round-trip with
-  `member_id`/`attributes`/size snapshot; old dict without them loads with
-  defaults; `TaskRecord.requeues`/`requirements`/`member_id` round-trip;
+  `member_id`/`attributes`/`endpoint_name`/size snapshot; old dict without
+  them loads with defaults;
+  `TaskRecord.requeues`/`requirements`/`member_id`/`spooled`/`cwd_assigned`
+  round-trip;
   `node_hours()` moved-in tests — from the snapshot, from a legacy
   `size_key` + `pilot_sizes`, and **a mixed-node-count history where the two
   give different totals** (keep the existing federation tests green through
@@ -956,7 +1100,8 @@ Unit, per module (all under `tests/unittests/`, existing files):
 - **new** `test_task_dispatcher_match.py`: every rule in §3.3 — software
   subset, cores/gpus vs size, `mem_gb` present/absent, labels equal and
   list-membership, `≤0` requirement always satisfied, undeclared label
-  rejects, reason strings.
+  rejects, `mpi` vs a `dragon_v1` backend, **keys outside the table
+  (`ranks`, an unknown one) are ignored, not rejected**, reason strings.
 - `test_task_dispatcher_strategy_conservative.py`: extend the fake
   `PoolStateHandle` (`:49-68`) with members; **all existing single-member
   tests must pass with only the fake `submit_pilot` signature updated**;
@@ -981,9 +1126,14 @@ Unit, per module (all under `tests/unittests/`, existing files):
   `cwd` optional for a class pool and assigned at dispatch; a rhapsody-dialect
   task still requires a cwd; `stage_in` with **no record** behaves exactly as
   today, `stage_in`/`stage_out` 409 for an unplaced task and for a non-shared
-  member; `inputs_b64` spools, is copied into a shared-FS cwd and
-  `staging.put`-ed to a non-shared member (fake staging client), and a
-  failure there fails the task; a class pool's `PoolState.scratch_base` is
+  member; `inputs_b64` spools into `<state_dir>/inputs/<task_id>/` and lands
+  in `TaskRecord.spooled` (not `inputs`), is copied into a shared-FS cwd and
+  `put`-ed to a non-shared member (fake staging client), a failure there
+  fails the task, a bad base64 is a `400`, an oversize file a `413`, and it
+  is a `400` in endpoint mode and on a rhapsody-dialect task; the spool is
+  dropped on every terminal path but **survives a re-queue**; a re-dispatched
+  task re-assigns its cwd iff `cwd_assigned`; an mpi task is `400`-ed only
+  when every member is `dragon_v1`; a class pool's `PoolState.scratch_base` is
   under `<scratch_root>/<pool>` even when the primary member's
   `scratch_base` is `/gpfs/...`; the verbose summary's `members` block,
   per-member and pool-total `node_hours_used`, `max_pilots_total` in the
@@ -993,7 +1143,8 @@ Unit, per module (all under `tests/unittests/`, existing files):
   one implicit member with its live pilot intact; a legacy pool
   **persist → replay → persist** cycle is stable (finding 1's regression);
   a class pool replays from the directory it was found in after its primary
-  member changed.
+  member changed; an **emptied** class pool (last member removed with
+  `force`) replays instead of being skipped as unparseable.
 
 Co-hosted harness (`test_task_dispatcher_broker.py`, fake psij `:71-97` and
 fake pilot `:59-70`, `make_runtime` `:158-185`) — the acceptance tests.
@@ -1001,7 +1152,10 @@ fake pilot `:59-70`, `make_runtime` `:158-185`) — the acceptance tests.
 `_FakePilot` (`:59-70`) only answers a `ping`, and nothing in the file ever
 takes a task through `_do_rhapsody_submit`. Each test must therefore
 (i) add a fake `rhapsody` plugin exposing `register_session` and
-`submit_tasks` (msgpack bodies, mirroring `_FakePsij` at `:71-97`), and
+`submit_tasks` (msgpack bodies, mirroring `_FakePsij` at `:71-97`) plus a
+`staging` plugin on the same fake pilot — the real one is in the default
+plugin set (`plugin_host_base.py:23`), so either host it for real or fake
+`put`/`get`/`list`; test 5 asserts against it — and
 (ii) start a `make_runtime` endpoint under the exact
 `child_endpoint_name` the dispatcher recorded — read it out of
 `ps.pilots[pid].child_endpoint_name` after the fake psij accepted the
@@ -1039,26 +1193,28 @@ tests/unittests/ -q` (1258+ today) and `ve3/bin/flake8 src/ bin/` clean.
 |---|---|---|---|
 | A | `PoolMember`, `PoolConfig` fields + `__post_init__` + `to_dict`, parser, projection, round-trip tests | — | 4 h |
 | B | `task_dispatcher_match.py` + tests; `node_hours` move + snapshot-first sizing + re-export | — | 3 h |
-| C | `PilotRecord`/`TaskRecord` fields incl. the size snapshot, `PoolState` member helpers + broker-local scratch, `_materialise_pool(state_dir=…)`, replay | A | 4 h |
+| C | `PilotRecord`/`TaskRecord` fields incl. the size + endpoint snapshot and `spooled`/`cwd_assigned`, `PoolState` member helpers + broker-local scratch, `_materialise_pool(state_dir=…)`, replay | A | 4 h |
 | D | Member routes + `add_route_delete` + client verbs + notifications | A, C | 3 h |
 | E | Pilot path: `_submit_pilot`, `_do_pilot_submit`, naming, env, job spec, cancel/reconcile | C | 3 h |
 | F | `ConservativePolicy` v2 + policy contract (`max_requeues`) + docs §12 row 1 | A, B, C | 4 h |
-| G | cwd-at-dispatch, `inputs_b64` spool + placement, staging 409s | C, E | 5 h |
+| G | cwd-at-dispatch + `cwd_assigned`, `inputs_b64` spool + caps + `_get_staging_client` + placement + `drop_spool`, staging 409s | C, E | 6 h |
 | H | Verbose summary + per-member and pool-total accounting | C | 2 h |
 | I | Explorer `task_dispatcher.js` | H | 2 h |
-| J | Harness: fake rhapsody plugin + child-endpoint runtime, tests 1-5 | D, E, F, G | 6 h |
+| J | Harness: fake rhapsody + staging plugins, child-endpoint runtime, tests 1-5 | D, E, F, G | 6 h |
 | K | Docs (§12 rows 2-5) | all | 2 h |
 
-≈ **38 h**. Three parallel tracks after A+C land: (F) policy, (D+E+G)
+≈ **39 h**. Three parallel tracks after A+C land: (F) policy, (D+E+G)
 plumbing, (H+I) surfacing.
 
 **Sequencing with 120 and 08** — see plan 08 §14; in short: 120 lands
 `TaskRecord.requirements`, its validator (incl. the two extra keys of §1.1)
 and the rhapsody mapping first — or 121 lands the field under the same name
-and 120 rebases; 121's schema (§3) and route contract (§4) are frozen once
-review findings 1, 2, 4, 5, 6 and 9 are folded in (they now are) so plan 08
-can be built against a fake dispatcher API; integration last.
-Neither plan implements reservation or pinning this round (§1.1).
+and 120 rebases. **§3 (schema), §4 (routes) and §9 (the verbose member dict)
+are frozen** — review rounds 1 and 2 are folded in — so plan 08 can be built
+against a fake dispatcher API; integration last. Adding a key to any of the
+three is fine; renaming or removing one needs a plan revision and a word
+with whoever is writing 08. Neither plan implements reservation or pinning
+this round (§1.1).
 
 ### Risks
 
@@ -1092,9 +1248,18 @@ Neither plan implements reservation or pinning this round (§1.1).
 - **R5 — per-member dwell weakens the global submission throttle.** N members
   can each submit within one dwell window, so a 5-member pool can put 5
   pilots in flight where the old pool put 1. Mitigation: keep
-  `max_in_flight_submissions` *also* as a pool-level ceiling
-  (`sum ≤ max(members, max_in_flight_submissions)`) — cheap, and it preserves
-  the "conservative" promise.
+  `max_in_flight_submissions` *also* as a pool-level ceiling, spelled out
+  because the round-1 wording was ambiguous:
+
+  ```
+  pool_ceiling = max(max_in_flight_submissions, len(members))
+  ```
+
+  Every member may always have **one** submission in flight (otherwise a
+  class pool would warm up more slowly than the single-member pools it
+  replaces), and a pool with fewer members than the knob still gets the
+  knob. With the federation's `max_in_flight_submissions: 1` and 3 members
+  the ceiling is 3; with one member it is 1 — exactly today's behaviour.
 - **R6 — `member_id` in the child endpoint name.** Endpoint names must stay
   unique and charset-safe; `MEMBER_RE` enforces it, but a very long
   member id plus a long pool name makes an unwieldy name. Cap the combined
