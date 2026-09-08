@@ -7,6 +7,7 @@ over a dispatcher ``pilot_history``, and the join-time validators.
 
 import json
 import os
+import time
 
 from pathlib import Path
 
@@ -15,7 +16,7 @@ import pytest
 from radical.orbit.federation_state import (
     FederationState, FederationStateError, MemberRecord, ResourceRecord,
     ResourceUsage, SubmitLedgerEntry,
-    LIVENESS_LOST, MODE_LOGIN,
+    LIVENESS_LOST, LIVENESS_SUSPECT, MODE_ALLOCATION, MODE_LOGIN,
     allowed_bases, member_from_dict, node_hours_from_history,
     record_from_dict, ledger_from_dict, resource_attributes,
     validate_attributes, validate_budget,
@@ -464,6 +465,114 @@ class TestMemberRecord:
         assert _member(budget={}).budget_node_hours() == 0.0
 
 
+class TestDerivedState:
+    """``state()``: the word a human is shown, beside the raw liveness."""
+
+    def _usage(self, **kw):
+        return ResourceUsage(**kw)
+
+    def test_a_member_holding_a_pilot_is_ok(self):
+        m = _member(usage=self._usage(pilots_active=1))
+        assert m.state() == 'ok'
+
+    def test_a_member_with_no_pilot_and_no_failure_is_idle(self):
+        """The join-to-first-pilot window, and a login shape at rest.  It
+        must never read `failing` merely because no pilot is up yet."""
+        assert _member().state() == 'idle'
+
+    def test_a_paused_member_is_failing(self):
+        m = _member(usage=self._usage(paused_until=time.time() + 60,
+                                      pilot_error='psij error: quota'))
+        assert m.state() == 'failing'
+
+    def test_a_repeatedly_failing_member_is_failing(self):
+        m = _member(usage=self._usage(pilot_failures=3,
+                                      pilot_error='psij error: quota'))
+        assert m.state() == 'failing'
+
+    def test_one_recorded_failure_is_neither_idle_nor_failing(self):
+        m = _member(usage=self._usage(pilot_failures=1,
+                                      pilot_error='psij error: quota'))
+        assert m.state() == 'ok'
+
+    def test_a_stale_refresh_says_so(self):
+        assert _member(usage=self._usage(stale=True)).state() == 'stale'
+
+    def test_liveness_passes_through_untouched(self):
+        assert _member(liveness=LIVENESS_LOST).state()    == 'lost'
+        assert _member(liveness=LIVENESS_SUSPECT).state() == 'suspect'
+
+    def test_a_resource_shows_the_worst_of_its_shapes(self):
+        rec = _rec(name='beta')
+        rec.members['cpu'] = _member(member='cpu',
+                                     usage=self._usage(pilots_active=1))
+        rec.members['gpu'] = _member(
+            member='gpu', usage=self._usage(pilot_failures=4,
+                                            pilot_error='psij error: quota'))
+        assert rec.state() == 'failing'
+
+    def test_one_resting_shape_does_not_make_the_machine_idle(self):
+        rec = _rec(name='beta')
+        rec.members['cpu'] = _member(member='cpu',
+                                     usage=self._usage(pilots_active=1))
+        rec.members['gpu'] = _member(member='gpu')          # idle
+        assert rec.state() == 'ok'
+
+    def test_a_resource_is_idle_only_when_every_shape_is(self):
+        rec = _rec(name='beta')
+        rec.members['cpu'] = _member(member='cpu')
+        rec.members['gpu'] = _member(member='gpu')
+        assert rec.state() == 'idle'
+
+    def test_an_unreachable_resource_reports_that(self):
+        rec = _rec(name='beta', liveness=LIVENESS_LOST)
+        rec.members['cpu'] = _member(member='cpu',
+                                     usage=self._usage(pilots_active=1))
+        assert rec.state() == 'lost'
+
+
+class TestRemainingSec:
+    """The countdown: recomputed on every read, never stored."""
+
+    def test_an_allocation_answers_from_its_end_time(self):
+        m = _member(end_time=time.time() + 600)
+        assert m.remaining_sec() == pytest.approx(600, abs=5)
+
+    def test_an_ended_allocation_has_nothing_left_rather_than_a_debt(self):
+        m = _member(end_time=time.time() - 600)
+        assert m.remaining_sec() == 0.0
+
+    def test_it_counts_down_between_two_reads(self):
+        m = _member(end_time=time.time() + 600)
+        first = m.remaining_sec()
+        time.sleep(0.01)
+        assert m.remaining_sec() < first
+
+    def test_a_submit_member_answers_from_its_pilots(self):
+        """The dispatcher's number: the max over its live pilots."""
+        m = _member(usage=ResourceUsage(remaining_sec=1234.0))
+        assert m.remaining_sec() == 1234.0
+
+    def test_a_member_with_no_pilot_and_no_allocation_says_nothing(self):
+        assert _member().remaining_sec() is None
+
+    def test_the_wire_carries_it_beside_the_unchanged_names(self):
+        wire = _member(end_time=time.time() + 60, pilot='endpoint',
+                       endpoint='ep_alloc').to_wire()
+        # added, never renamed (Orbit plan 122)
+        assert wire['member']    == 'gpu'
+        assert wire['pool_name'] == 'fed-gpu'
+        assert wire['pilot']     == 'endpoint'
+        assert wire['endpoint']  == 'ep_alloc'
+        assert wire['end_time']  == pytest.approx(time.time() + 60, abs=5)
+        assert wire['remaining_sec'] == pytest.approx(60, abs=5)
+
+    def test_the_new_fields_round_trip_through_the_wire(self):
+        m = _member(pilot='endpoint', endpoint='ep_alloc',
+                    end_time=1757000000.0)
+        assert member_from_dict(m.to_wire()) == m
+
+
 class TestSingleMemberDerivation:
     """A state.json written before class pools must still load."""
 
@@ -514,6 +623,18 @@ class TestSingleMemberDerivation:
                         'rhapsody_backend': 'concurrent'}}
         m2 = record_from_dict(cpu).members['default']
         assert (m2.cls, m2.pool_name) == ('cpu', 'fed-cpu')
+
+    def test_a_pre08_login_record_still_submits_its_pilots(self):
+        m = record_from_dict(dict(self._PRE08)).members['default']
+        assert (m.pilot, m.endpoint) == ('submit', 'ep0')
+
+    def test_a_pre08_allocation_record_becomes_an_adopted_endpoint(self):
+        """Upgraded in place: its endpoint is inside the allocation, which
+        is exactly what the second, submitted pilot stood in for."""
+        raw = dict(self._PRE08)
+        raw['mode'] = MODE_ALLOCATION
+        m = record_from_dict(raw).members['default']
+        assert (m.pilot, m.endpoint) == ('endpoint', 'ep0')
 
     def test_the_derived_member_inherits_budget_software_attributes(self):
         m = record_from_dict(dict(self._PRE08)).members['default']
@@ -570,7 +691,9 @@ class TestSingleMemberDerivation:
         st.resources['beta'] = rec
         st.save()
         back = FederationState(p).load().resources['beta']
-        assert back.members['gpu'] == _member()
+        # everything survives verbatim -- except that a member written
+        # before members carried their own endpoint is given the record's
+        assert back.members['gpu'] == _member(endpoint='ep0')
 
 
 class TestResourceAttributes:

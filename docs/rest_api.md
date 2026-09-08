@@ -178,15 +178,21 @@ without requiring a session.
     {"allocation": null}
 
     # Endpoint running inside a SLURM job allocation:
-    {"allocation": {"n_nodes": 4, "runtime": 3600}}
+    {"allocation": {"n_nodes": 4, "runtime": 3600,
+                    "end_time": 1757000000.0}}
 
     # Endpoint running inside a SLURM job with unlimited walltime:
-    {"allocation": {"n_nodes": 4, "runtime": null}}
+    {"allocation": {"n_nodes": 4, "runtime": null, "end_time": null}}
 
 `n_nodes` is the number of nodes in the allocation; `runtime` is the
-walltime limit in seconds (`null` for UNLIMITED). A 500 response is
-returned if `SLURM_JOB_ID` is set but allocation details cannot be
-determined (missing env vars, `squeue` failure or timeout).
+walltime *limit* in seconds (`null` for UNLIMITED); `end_time` is the epoch
+at which the allocation actually ends, computed **on the endpoint** from the
+scheduler's remaining-time field (`squeue %L`; PBS `Walltime.Remaining`, else
+`stime` plus the limit) and `null` when the scheduler reports neither.  A
+consumer on another host cannot derive `end_time` from `runtime`, which is
+why it is answered here.  A 500 response is returned if `SLURM_JOB_ID` is set
+but allocation details cannot be determined (missing env vars, `squeue`
+failure or timeout).
 
 ## Sysinfo Plugin
 

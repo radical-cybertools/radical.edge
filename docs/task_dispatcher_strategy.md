@@ -183,6 +183,13 @@ Favors efficient utilization over low latency.
   are matched against the pilot's *shape*, never against its occupancy, so
   a 4-GPU pilot will happily accept a fifth 1-GPU task.  Resource-aware
   reservation is deferred.
+- A pilot with less than ``min_remaining_sec`` (default 120) of walltime
+  left is neither dispatched to **nor counted as free capacity**: a task
+  started there would be killed with the allocation, and counting the idle
+  slot would suppress the scale-up that has to replace it.  A record with
+  no deadline at all (``0.0``, which ``_submit_pilot`` never writes) is not
+  filtered — an unknown deadline is not a near one.  A pilot that outlives
+  a mis-estimated deadline stays ACTIVE until its endpoint disappears.
 
 **Per member.**  Every piece of bookkeeping — dwell, in-flight
 submissions, the pilot ceiling, the failure backoff, the budget — is per
@@ -245,9 +252,11 @@ Config knobs:
 | ``failure_backoff_sec``   | ``60.0``        | how long a member backs off |
 | ``member_preference``     | ``budget``      | which member to grow: alt ``least_loaded`` |
 | ``max_requeues``          | ``1``           | pilot losses a task survives before it fails |
+| ``min_remaining_sec``     | ``120.0``       | walltime a pilot must have left to be dispatched to, or to count as capacity |
 
 (``min_pilots`` / ``max_pilots`` are pool fields, not strategy knobs — see
-``PoolConfig``.)
+``PoolConfig``.  A member declared ``pilot: endpoint`` has both forced to
+1: its endpoint *is* the pilot, so there is exactly one of it.)
 
 ### ``aggressive_scale_to_backlog``
 

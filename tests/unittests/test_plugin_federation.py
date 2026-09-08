@@ -1052,6 +1052,10 @@ class TestResources:
         rec = client.get(
             f'{plugin.namespace}/resource/default/local_b').json()
         assert rec['members'][0]['state'] == 'ok'
+        # ... and neither is the resource row: its *other* shape (gpu, which
+        # this summary says nothing about) is merely `idle`, and one shape
+        # resting beside a working one does not make the machine idle
+        assert rec['members'][1]['state'] == 'idle'
         assert rec['state'] == 'ok'
 
     def test_two_failures_are_not_yet_failing(self, tmp_path):
@@ -2600,25 +2604,177 @@ class TestAllocationSizing:
         m = self._join_with_alloc(tmp_path, None)
         assert (m.nodes, m.walltime_sec) == (1, 3600)
 
-    def test_slurm_job_end_time_clamps_the_walltime(self, tmp_path,
-                                                    monkeypatch):
-        monkeypatch.setenv('SLURM_JOB_END_TIME', str(time.time() + 900))
-        m = self._join_with_alloc(tmp_path, {'n_nodes': 1, 'runtime': 7200})
+    def test_the_allocations_end_time_beats_its_time_limit(self, tmp_path):
+        """`runtime` is the limit; joining an hour in, what is left is what
+        the pilot may have.  The endpoint computed it inside the
+        allocation -- the broker's own environment describes another job."""
+        end = time.time() + 900
+        m   = self._join_with_alloc(tmp_path, {'n_nodes': 1, 'runtime': 7200,
+                                               'end_time': end})
         assert 800 < m.walltime_sec <= 900
+        # ... and the absolute instant is kept, because the member is
+        # re-declared with this walltime on every re-attach
+        assert m.end_time == end
+        assert m.pilot    == 'endpoint'
 
-    def test_an_expired_end_time_is_ignored(self, tmp_path, monkeypatch):
-        monkeypatch.setenv('SLURM_JOB_END_TIME', str(time.time() - 10))
-        m = self._join_with_alloc(tmp_path, {'n_nodes': 1, 'runtime': 7200})
-        assert m.walltime_sec == 7200
+    def test_an_expired_allocation_is_a_400(self, tmp_path):
+        """No one-second pilots: an allocation that is over is not a
+        resource."""
+        routes = {('GET', '/queue_info/job_allocation'):
+                  (200, {'allocation': {'n_nodes': 1, 'runtime': 7200,
+                                        'end_time': time.time() - 10}})}
+        client, plugin, _ = _joinable(tmp_path, caller=_FakeCaller(routes))
+        r = _join(client, plugin, _alloc_body())
+        assert r.status_code == 400
+        assert 'no time left' in r.json()['detail']
+        assert plugin._state.resources == {}
 
-    def test_a_garbage_end_time_is_ignored(self, tmp_path, monkeypatch):
-        monkeypatch.setenv('SLURM_JOB_END_TIME', 'soon')
-        m = self._join_with_alloc(tmp_path, {'n_nodes': 1, 'runtime': 600})
+    def test_a_garbage_end_time_falls_back_to_the_limit(self, tmp_path):
+        m = self._join_with_alloc(tmp_path, {'n_nodes': 1, 'runtime': 600,
+                                             'end_time': 'soon'})
         assert m.walltime_sec == 600
+        assert m.end_time is None
+
+    def test_without_an_end_time_nothing_changes(self, tmp_path):
+        m = self._join_with_alloc(tmp_path, {'n_nodes': 1, 'runtime': 600})
+        assert (m.walltime_sec, m.end_time) == (600, None)
+
+    def test_the_endpoint_is_the_pilot_of_an_allocation(self, tmp_path):
+        m = self._join_with_alloc(tmp_path, {'n_nodes': 1, 'runtime': 600})
+        assert (m.pilot, m.endpoint) == ('endpoint', 'ep0')
 
     def test_allocation_budget_follows_the_derived_size(self, tmp_path):
         m = self._join_with_alloc(tmp_path, {'n_nodes': 4, 'runtime': 1800})
         assert m.budget == {'node_hours': 2.0}
+
+
+# ---------------------------------------------------------------------------
+# The member payload: add, never rename (Orbit plan 122 §payload)
+# ---------------------------------------------------------------------------
+
+class TestPilotPayload:
+
+    def _read(self, client, plugin, name='local_b'):
+        return client.get(f'{plugin.namespace}/resource/default/{name}').json()
+
+    def test_the_names_every_consumer_reads_are_untouched(self, tmp_path):
+        """`federation.js`, ATOMIC's campaign UI and `smoke.py` read
+        `member` and `pool_name`; the new fields ride beside them."""
+        client, plugin, _ = _joinable(tmp_path)
+        _join(client, plugin, _members_body())
+        m = self._read(client, plugin)['members'][0]
+        for key in ('member', 'member_id', 'pool_name', 'class', 'queue',
+                    'walltime_sec', 'attributes', 'usage', 'liveness',
+                    'state'):
+            assert key in m, key
+        assert m['member']    == 'cpu'
+        assert m['pool_name'] == 'fed-cpu'
+        assert m['attributes']['mem_gb_per_node'] == 256
+        # ... and the additions
+        assert m['endpoint'] == 'ep1'
+        assert m['pilot']    == 'submit'
+        assert m['end_time'] is None
+        assert m['remaining_sec'] is None
+
+    def test_an_allocation_row_is_its_endpoint_with_a_countdown(self,
+                                                               tmp_path):
+        end    = time.time() + 900
+        routes = {('GET', '/queue_info/job_allocation'):
+                  (200, {'allocation': {'n_nodes': 1, 'runtime': 7200,
+                                        'end_time': end}})}
+        client, plugin, _ = _joinable(tmp_path, caller=_FakeCaller(routes))
+        _join(client, plugin, _alloc_body())
+        m = self._read(client, plugin, 'alpha')['members'][0]
+        assert m['pilot']    == 'endpoint'
+        assert m['endpoint'] == 'ep0'
+        assert m['end_time'] == end
+        assert m['remaining_sec'] == pytest.approx(900, abs=5)
+        # the endpoint is the pilot, so there is exactly one of it
+        assert (m['min_pilots'], m['max_pilots']) == (1, 1)
+
+    def test_the_countdown_ticks_between_two_reads(self, tmp_path):
+        routes = {('GET', '/queue_info/job_allocation'):
+                  (200, {'allocation': {'n_nodes': 1,
+                                        'end_time': time.time() + 900}})}
+        client, plugin, _ = _joinable(tmp_path, caller=_FakeCaller(routes))
+        _join(client, plugin, _alloc_body())
+        first = self._read(client, plugin, 'alpha')['members'][0]
+        time.sleep(0.01)
+        again = self._read(client, plugin, 'alpha')['members'][0]
+        assert again['remaining_sec'] < first['remaining_sec']
+
+    def test_a_submit_shape_reports_the_dispatchers_number(self, tmp_path):
+        """No allocation of its own: the runway is the most walltime any of
+        its live pilots has, which only the dispatcher knows."""
+        client, plugin, fake = _joinable(tmp_path)
+        _join(client, plugin, _members_body())
+        fake.details['fed-cpu'] = _pool_summary([
+            {'member_id': 'local_b.cpu', 'pilots_active': 1,
+             'remaining_sec': 1234.0}])
+        plugin._state.resources['local_b'].usage.updated_at = 0.0
+        plugin._detail_cache.clear()
+
+        m = self._read(client, plugin)['members'][0]
+        assert m['remaining_sec'] == 1234.0
+        assert m['state'] == 'ok'
+
+    def test_a_shape_without_a_pilot_is_idle(self, tmp_path):
+        client, plugin, fake = _joinable(tmp_path)
+        _join(client, plugin, _members_body())
+        fake.details['fed-cpu'] = _pool_summary([
+            {'member_id': 'local_b.cpu', 'pilots_active': 0}])
+        plugin._state.resources['local_b'].usage.updated_at = 0.0
+        plugin._detail_cache.clear()
+
+        m = self._read(client, plugin)['members'][0]
+        assert m['state'] == 'idle'
+        assert m['usage']['pilot_error'] is None
+        assert m['remaining_sec'] is None
+
+    def test_the_declaration_reaches_the_dispatcher(self, tmp_path):
+        end    = time.time() + 900
+        routes = {('GET', '/queue_info/job_allocation'):
+                  (200, {'allocation': {'n_nodes': 1, 'end_time': end}})}
+        client, plugin, fake = _joinable(tmp_path,
+                                         caller=_FakeCaller(routes))
+        _join(client, plugin, _alloc_body())
+        decl = _member_decl(fake, 'fed-cpu', 'alpha.default')
+        assert decl['pilot']    == 'endpoint'
+        assert decl['end_time'] == end
+        # and it survives the parser the real dispatcher runs it through
+        member = parse_member(decl, 'test', 'fed-cpu')
+        assert member.pilot    == 'endpoint'
+        assert member.end_time == end
+        assert (member.min_pilots, member.max_pilots) == (1, 1)
+
+
+class TestDeclaredPilotMode:
+    """A login-mode member may say its endpoint is the pilot too."""
+
+    def _body(self, **member_kw):
+        member = {'member': 'cpu', 'queue': 'RM', 'account': 'abc123',
+                  'nodes': 1, 'cpus_per_node': 128, 'walltime_sec': 3600,
+                  'max_pilots': 2, 'budget': {'node_hours': 20}}
+        member.update(member_kw)
+        return _members_body(members=[member])
+
+    def test_pilot_endpoint_is_accepted_and_forwarded(self, tmp_path):
+        client, plugin, fake = _joinable(tmp_path)
+        r = _join(client, plugin, self._body(pilot='endpoint'))
+        assert r.status_code == 200, r.text
+        member = plugin._state.resources['local_b'].members['cpu']
+        assert (member.pilot, member.endpoint) == ('endpoint', 'ep1')
+        assert member.end_time is None       # only an allocation knows it
+        decl = _member_decl(fake, 'fed-cpu', 'local_b.cpu')
+        assert decl['pilot'] == 'endpoint'
+        # the dispatcher's parser forces the floor that drives adoption
+        assert parse_member(decl, 'test', 'fed-cpu').min_pilots == 1
+
+    def test_an_unknown_pilot_mode_is_a_400(self, tmp_path):
+        client, plugin, _ = _joinable(tmp_path)
+        r = _join(client, plugin, self._body(pilot='adopt'))
+        assert r.status_code == 400
+        assert 'pilot' in r.json()['detail']
 
 
 # ---------------------------------------------------------------------------

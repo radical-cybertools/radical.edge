@@ -413,6 +413,77 @@ class TestPickDispatch:
 
 
 # ---------------------------------------------------------------------------
+# min_remaining_sec — a pilot about to lose its allocation (plan 122)
+# ---------------------------------------------------------------------------
+
+class TestMinRemaining:
+
+    def test_a_pilot_near_its_deadline_is_not_dispatched_to(self):
+        h = _Harness(_pool())
+        h.add_task()
+        h.add_pilot(capacity=4, walltime_deadline=h.time + 60)
+        s = _policy(h, {'min_remaining_sec': 120.0})
+        assert s.pick_dispatch(h) is None
+
+    def test_a_pilot_with_runway_still_takes_the_task(self):
+        h = _Harness(_pool())
+        h.add_task()
+        h.add_pilot(capacity=4, walltime_deadline=h.time + 600)
+        s = _policy(h, {'min_remaining_sec': 120.0})
+        assert s.pick_dispatch(h) is not None
+
+    def test_the_last_pilot_is_skipped_for_a_sibling_with_time(self):
+        h = _Harness(_pool())
+        h.add_task()
+        h.add_pilot(pid='p.dying', capacity=4,
+                    walltime_deadline=h.time + 30)
+        h.add_pilot(pid='p.fresh', capacity=4,
+                    walltime_deadline=h.time + 3600)
+        s = _policy(h, {'min_remaining_sec': 120.0})
+        _, pilot = s.pick_dispatch(h)
+        assert pilot.pid == 'p.fresh'
+
+    def test_near_deadline_capacity_does_not_suppress_growth(self):
+        """The whole point: an idle pilot about to expire must not read as
+        capacity, or nothing would replace it."""
+        h = _Harness(_pool())
+        for _ in range(2):
+            h.add_task()
+        h.add_pilot(capacity=4, in_flight=0,
+                    walltime_deadline=h.time + 60)
+        s = _policy(h, {'min_dwell_sec': 0.0, 'min_remaining_sec': 120.0})
+        s.on_tick(h, h.submit_pilot)
+        assert h.submitted == [None]
+
+    def test_the_same_capacity_absorbs_the_backlog_with_runway(self):
+        h = _Harness(_pool())
+        for _ in range(2):
+            h.add_task()
+        h.add_pilot(capacity=4, in_flight=0,
+                    walltime_deadline=h.time + 3600)
+        s = _policy(h, {'min_dwell_sec': 0.0, 'min_remaining_sec': 120.0})
+        s.on_tick(h, h.submit_pilot)
+        assert h.submitted == []
+
+    def test_a_record_without_a_deadline_is_not_filtered(self):
+        """``0.0`` is 'nobody said', not 'the epoch': a pilot record with no
+        deadline must not stop a fleet from dispatching."""
+        h = _Harness(_pool())
+        h.add_task()
+        h.add_pilot(capacity=4, walltime_deadline=0.0)
+        s = _policy(h, {'min_remaining_sec': 120.0})
+        assert s.pick_dispatch(h) is not None
+
+    def test_the_default_is_two_minutes(self):
+        h = _Harness(_pool())
+        h.add_task()
+        h.add_pilot(capacity=4, walltime_deadline=h.time + 119)
+        assert _policy(h, {}).pick_dispatch(h) is None
+        h.pilots[-1].walltime_deadline = h.time + 121
+        assert _policy(h, {}).pick_dispatch(h) is not None
+
+
+# ---------------------------------------------------------------------------
 # Failure-backoff guard
 # ---------------------------------------------------------------------------
 

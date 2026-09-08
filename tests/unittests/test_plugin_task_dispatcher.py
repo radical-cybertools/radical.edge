@@ -465,12 +465,17 @@ class TestTopologyBinding:
     def _plugin_with_pilot(self, tmp_path, pid='p.1',
                            child='endpoint0_p.1', state=PILOT_PENDING,
                            walltime=1e12):
+        """A pool holding one *submitted* pilot -- a psij job whose child
+        endpoint is expected under *child*.  ``psij_job_id`` is what
+        distinguishes it from an adopted endpoint (plan 122), which ends
+        DONE rather than FAILED when its child goes away."""
         _, plugin = _make_plugin(tmp_path)
         plugin._materialise_pool('A', _make_pool_cfg())
         ps = _pool(plugin, 'A', 'cpu')
         ps.pilots[pid] = PilotRecord(
             pid=pid, pool='cpu', owning_sid='A', size_key='s',
             rhapsody_backend='concurrent', state=state, submitted_at=100.0,
+            psij_job_id='j.1',
             child_endpoint_name=child, walltime_deadline=walltime)
         return plugin, ps
 
@@ -1749,11 +1754,16 @@ class TestMemberRemoval:
         assert list(_pool(plugin, sid, 'fed').config.members) == ['m_x']
 
     def _pilot_with_task(self, plugin, sid, mid, req=None):
+        """One ACTIVE *submitted* pilot of member *mid*, running one task.
+
+        ``psij_job_id`` marks it a batch job rather than an adopted
+        endpoint: cancelling one is a failure, releasing the other is not
+        (plan 122)."""
         ps = _pool(plugin, sid, 'fed')
         pilot = PilotRecord(
             pid=f'p.{mid}', pool='fed', owning_sid=sid, size_key='d',
             rhapsody_backend='concurrent', state=PILOT_ACTIVE,
-            member_id=mid, endpoint_name=f'ep_{mid}',
+            member_id=mid, endpoint_name=f'ep_{mid}', psij_job_id=f'j.{mid}',
             attributes={'software': [mid[-1]]},
             nodes=1, cpus_per_node=4,
             child_endpoint_name=f'fed_{mid}_p.{mid}',
@@ -2720,6 +2730,257 @@ class TestAddMemberFingerprint:
                         json=_member('m_x',
                                      attributes={'software': ['a', 'c']}))
         assert r.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# An endpoint inside an allocation IS the pilot (plan 122)
+# ---------------------------------------------------------------------------
+
+_ALLOC_EP = 'alloc_ep'
+
+
+def _adopted_member(mid='m_a', **overrides):
+    """A member whose endpoint runs inside its allocation."""
+    return _member(mid, endpoint_name=_ALLOC_EP, pilot='endpoint',
+                   **overrides)
+
+
+class TestEndpointAdoption:
+
+    def _session(self, tmp_path, connected=True, **mkw):
+        plugin, client, sid = _class_session(
+            tmp_path, members=[_adopted_member(**mkw)])
+        plugin._dispatch_notify = lambda t, d: None
+        if connected:
+            plugin._connected_endpoints = {_ALLOC_EP: {'rhapsody'}}
+        return plugin, client, sid, _pool(plugin, sid, 'fed')
+
+    def _adopt(self, plugin, ps):
+        """Adopt, with the psij path patched so a call to it would show."""
+        submit = AsyncMock(return_value=None)
+        with patch.object(plugin, '_do_pilot_submit', new=submit):
+            pid = plugin._submit_pilot(ps, None, member_id='m_a')
+        assert submit.await_count == 0, 'a psij job was submitted'
+        return pid, ps.pilots[pid]
+
+    def test_a_connected_endpoint_is_active_at_once(self, tmp_path):
+        plugin, _, _, ps = self._session(tmp_path)
+        pid, rec = self._adopt(plugin, ps)
+        assert rec.state               == PILOT_ACTIVE
+        assert rec.child_endpoint_name == _ALLOC_EP
+        assert rec.endpoint_name       == _ALLOC_EP
+        assert rec.psij_job_id         is None
+        # capacity comes from the size snapshot, exactly as for a submitted
+        # pilot -- adoption rides _activate_pilot, it does not bypass it
+        assert rec.capacity  == 4
+        assert rec.active_at is not None
+        assert ps.live_pilots_for('m_a') == [rec]
+
+    def test_the_declaration_forces_one_pilot(self, tmp_path):
+        _, _, _, ps = self._session(tmp_path, min_pilots=0, max_pilots=4)
+        member = ps.config.members['m_a']
+        assert (member.min_pilots, member.max_pilots) == (1, 1)
+
+    def test_an_absent_endpoint_waits_for_the_topology(self, tmp_path):
+        plugin, _, _, ps = self._session(tmp_path, connected=False)
+        _, rec = self._adopt(plugin, ps)
+        assert rec.state == PILOT_PENDING
+
+        asyncio.run(plugin.on_topology_change(_child_topo(_ALLOC_EP)))
+        assert rec.state    == PILOT_ACTIVE
+        assert rec.capacity == 4
+
+    def test_a_pending_adoption_times_out_with_the_reason(self, tmp_path):
+        """Left PENDING it would sit forever, counting against the
+        strategy's in-flight guards -- there is no psij job to ask about."""
+        from radical.orbit.plugin_task_dispatcher import _HANDSHAKE_TIMEOUT_SEC
+        plugin, _, _, ps = self._session(tmp_path, connected=False)
+        _, rec = self._adopt(plugin, ps)
+        rec.submitted_at -= _HANDSHAKE_TIMEOUT_SEC + 1
+
+        asyncio.run(plugin._reconcile_overdue_pilots(time.time()))
+        assert rec.state == PILOT_FAILED
+        assert rec.error == f'endpoint {_ALLOC_EP} not connected'
+
+    def test_a_pending_adoption_is_left_alone_before_the_timeout(self,
+                                                                tmp_path):
+        plugin, _, _, ps = self._session(tmp_path, connected=False)
+        _, rec = self._adopt(plugin, ps)
+        asyncio.run(plugin._reconcile_overdue_pilots(time.time()))
+        assert rec.state == PILOT_PENDING
+
+    def test_a_second_adoption_is_a_no_op(self, tmp_path):
+        """There is one endpoint to adopt; a second record would bind a
+        second pilot to the same child endpoint name."""
+        plugin, _, _, ps = self._session(tmp_path)
+        pid, _ = self._adopt(plugin, ps)
+        again, _ = self._adopt(plugin, ps)
+        assert again == pid
+        assert list(ps.pilots) == [pid]
+
+    def test_the_deadline_is_capped_by_the_allocation_end(self, tmp_path):
+        """The member is re-declared with its join-time walltime on every
+        re-attach, so only the absolute end keeps a re-adoption honest."""
+        end = time.time() + 60
+        plugin, _, _, ps = self._session(tmp_path, end_time=end)
+        _, rec = self._adopt(plugin, ps)
+        assert rec.walltime_deadline == pytest.approx(end, abs=1)
+
+    def test_without_an_end_time_the_walltime_stands(self, tmp_path):
+        plugin, _, _, ps = self._session(tmp_path)
+        _, rec = self._adopt(plugin, ps)
+        assert rec.walltime_deadline == pytest.approx(
+            time.time() + 3600, abs=5)
+
+    def test_a_suspect_endpoint_pauses_the_adopted_pilot(self, tmp_path):
+        plugin, _, _, ps = self._session(tmp_path)
+        _, rec = self._adopt(plugin, ps)
+        asyncio.run(plugin.on_topology_change(
+            _child_topo(_ALLOC_EP, 'suspect')))
+        assert rec.state               == PILOT_ACTIVE   # not demoted
+        assert rec.accepting_new_tasks is False
+        asyncio.run(plugin.on_topology_change(_child_topo(_ALLOC_EP)))
+        assert rec.accepting_new_tasks is True
+
+    def test_a_lost_endpoint_is_done_never_failed(self, tmp_path):
+        """An allocation ending is not a pilot failure, whatever the
+        deadline says -- and it must not feed the failure counter."""
+        plugin, _, sid, ps = self._session(tmp_path)
+        _, rec = self._adopt(plugin, ps)
+        ps.tasks['t.1'] = TaskRecord(
+            task_id='t.1', pool='fed', owning_sid=sid, cmd=['/bin/echo'],
+            cwd='/tmp', state=TASK_RUNNING, pilot_id=rec.pid,
+            member_id='m_a')
+
+        asyncio.run(plugin.on_topology_change(
+            _child_topo(_ALLOC_EP, 'lost')))
+        assert rec.state         == PILOT_DONE
+        assert rec.error         is None
+        assert ps.tasks['t.1'].state    == TASK_QUEUED
+        assert ps.tasks['t.1'].pilot_id is None
+        assert ps.policy.member_health('m_a')[
+            'consecutive_pilot_failures'] == 0
+
+    def test_a_re_added_member_is_adopted_again(self, tmp_path):
+        """Lost, dropped by the federation, re-added: a fresh adoption with
+        a deadline capped by the allocation's own end."""
+        plugin, client, sid, ps = self._session(tmp_path)
+        first_pid, first = self._adopt(plugin, ps)
+        asyncio.run(plugin.on_topology_change(
+            _child_topo(_ALLOC_EP, 'lost')))
+        assert first.state == PILOT_DONE
+
+        # the endpoint comes back -- which is what makes the federation
+        # re-add the member in the first place
+        asyncio.run(plugin.on_topology_change(_child_topo(_ALLOC_EP)))
+        end = time.time() + 90
+        r = client.request(
+            'DELETE', f'{plugin.namespace}/pool/{sid}/fed/members/m_a',
+            json={'force': True})
+        assert r.status_code == 200, r.text
+        r = client.post(f'{plugin.namespace}/pool/{sid}/fed/members',
+                        json=_adopted_member(end_time=end))
+        assert r.status_code == 200, r.text
+
+        pid, rec = self._adopt(plugin, ps)
+        assert pid != first_pid
+        assert rec.state == PILOT_ACTIVE
+        assert rec.walltime_deadline == pytest.approx(end, abs=1)
+
+    def test_removing_the_member_releases_the_endpoint(self, tmp_path):
+        """The other exit: a leave, not a lost endpoint.  Same verdict, so
+        the two hooks can fire in either order."""
+        plugin, client, sid, ps = self._session(tmp_path)
+        _, rec = self._adopt(plugin, ps)
+        r = client.request(
+            'DELETE', f'{plugin.namespace}/pool/{sid}/fed/members/m_a',
+            json={'force': True})
+        assert r.status_code == 200, r.text
+        assert r.json()['pilots_cancelled'] == 1
+        assert rec.state == PILOT_DONE
+        assert rec.error is None
+
+    def test_the_summary_reports_the_pilot_mode_and_the_runway(self,
+                                                              tmp_path):
+        end = time.time() + 600
+        plugin, client, sid, ps = self._session(tmp_path, end_time=end)
+        self._adopt(plugin, ps)
+        r = client.get(f'{plugin.namespace}/pool/{sid}/fed')
+        assert r.status_code == 200, r.text
+        member = r.json()['members'][0]
+        assert member['pilot']    == 'endpoint'
+        assert member['end_time'] == pytest.approx(end, abs=1)
+        assert member['remaining_sec'] == pytest.approx(600, abs=5)
+
+    def test_the_summary_reports_no_runway_without_a_pilot(self, tmp_path):
+        plugin, client, sid, _ = self._session(tmp_path)
+        r = client.get(f'{plugin.namespace}/pool/{sid}/fed')
+        assert r.json()['members'][0]['remaining_sec'] is None
+
+    def test_a_submit_member_reports_the_longest_lived_pilot(self, tmp_path):
+        """`remaining_sec` is the max over a member's live pilots -- the
+        number the federation shows for a login-mode shape."""
+        plugin, client, sid = _class_session(
+            tmp_path, members=[_member('m_x')])
+        ps  = _pool(plugin, sid, 'fed')
+        now = time.time()
+        for pid, left in (('p.1', 300), ('p.2', 900)):
+            ps.pilots[pid] = PilotRecord(
+                pid=pid, pool='fed', owning_sid=sid, size_key='d',
+                rhapsody_backend='concurrent', state=PILOT_ACTIVE,
+                psij_job_id='j.' + pid, member_id='m_x', nodes=1,
+                cpus_per_node=4, submitted_at=now, active_at=now,
+                child_endpoint_name=f'fed_m_x_{pid}',
+                walltime_deadline=now + left)
+        r = client.get(f'{plugin.namespace}/pool/{sid}/fed')
+        member = r.json()['members'][0]
+        assert member['pilot']    == 'submit'
+        assert member['end_time'] is None
+        assert member['remaining_sec'] == pytest.approx(900, abs=5)
+
+    def test_the_floor_adopts_a_declared_endpoint_member_on_tick(self,
+                                                                tmp_path):
+        """min_pilots is forced to 1, so the floor step does the adopting --
+        no task has to arrive first."""
+        plugin, _, _, ps = self._session(tmp_path)
+        submit = AsyncMock(return_value=None)
+        with patch.object(plugin, '_do_pilot_submit', new=submit):
+            ps.policy.on_tick(ps, plugin._make_submit_pilot(ps))
+            # a second tick must not adopt the same endpoint twice
+            ps.policy.on_tick(ps, plugin._make_submit_pilot(ps))
+        assert submit.await_count == 0
+        assert len(ps.pilots) == 1
+        rec = next(iter(ps.pilots.values()))
+        assert (rec.state, rec.child_endpoint_name) == \
+            (PILOT_ACTIVE, _ALLOC_EP)
+
+    def test_an_adopted_active_pilot_survives_a_reload(self, tmp_path):
+        """Replay keeps it ACTIVE with its absolute deadline, and
+        `live_pilots_for` counts it -- so the floor does not double-adopt."""
+        end = time.time() + 1800
+        plugin, _, sid, ps = self._session(tmp_path, end_time=end)
+        pid, rec = self._adopt(plugin, ps)
+        active_at = rec.active_at
+        ps.persist()
+
+        _, plugin2 = _make_plugin(tmp_path)
+        ps2 = _pool(plugin2, sid, 'fed')
+        back = ps2.pilots[pid]
+        assert back.state             == PILOT_ACTIVE
+        assert back.active_at         == active_at
+        assert back.psij_job_id       is None
+        assert back.walltime_deadline == pytest.approx(end, abs=1)
+        assert ps2.live_pilots_for('m_a') == [back]
+        assert ps2.config.members['m_a'].pilot    == 'endpoint'
+        assert ps2.config.members['m_a'].end_time == pytest.approx(end, abs=1)
+
+        plugin2._dispatch_notify = lambda t, d: None
+        plugin2._connected_endpoints = {_ALLOC_EP: {'rhapsody'}}
+        submit = AsyncMock(return_value=None)
+        with patch.object(plugin2, '_do_pilot_submit', new=submit):
+            ps2.policy.on_tick(ps2, plugin2._make_submit_pilot(ps2))
+        assert list(ps2.pilots) == [pid]
+        assert submit.await_count == 0
 
 
 class TestLegacyPilotMemberId:

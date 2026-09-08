@@ -66,10 +66,17 @@ def _pool(plugin, name='cpu'):
 
 def _active_pilot(plugin, *, pid='p.1', child='endpoint0_p.1',
                   walltime_deadline=0.0):
+    """One ACTIVE, *submitted* pilot: a psij job plus its child endpoint.
+
+    ``psij_job_id`` is what makes it submitted rather than an adopted
+    endpoint (plan 122), and the two end differently when their child goes
+    away: a batch job lost before its walltime is FAILED, an adopted
+    endpoint is DONE.
+    """
     ps = _pool(plugin)
     pilot = PilotRecord(
         pid=pid, pool='cpu', owning_sid=_SID, size_key='s',
-        rhapsody_backend='concurrent', state=PILOT_ACTIVE,
+        rhapsody_backend='concurrent', state=PILOT_ACTIVE, psij_job_id='j.1',
         submitted_at=100.0, active_at=110.0, capacity=4, in_flight=1,
         child_endpoint_name=child, walltime_deadline=walltime_deadline)
     ps.pilots[pid] = pilot

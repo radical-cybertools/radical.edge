@@ -108,6 +108,15 @@ Member fields: `member` (required), `queue` (required, not the literal
 `budget` (required — with members, the budget lives here). Unknown keys are
 **rejected**, per member, with the member named in the message.
 
+`pilot` is `submit` (the default) or `endpoint`. **`endpoint` means the
+endpoint that joined already runs inside a compute allocation and *is* the
+pilot**: the dispatcher adopts it instead of asking psij for a second
+process on it, and both `min_pilots` and `max_pilots` are forced to 1,
+because there is exactly one of it. An `allocation`-mode resource's single
+member is always `endpoint`; a `login`-mode member may declare it too.
+`end_time` is **not** declarable — only the allocation knows when it ends,
+and only `allocation` mode reads that from the endpoint.
+
 `attributes` is a free-form `{str: str | number | list[str]}` map — `site`
 and `mem_gb_per_node` are conventions, not schema — and it is what a task's
 `labels` requirement is matched against. `software` is folded into
@@ -116,7 +125,19 @@ federation vocabulary.
 
 Server-filled on the returned record: `joined_at`, `dispatcher_sid`
 (always `fed`), `pool_name`, `usage`, `liveness`, `state`, and per member
-`member_id`, `class`, `pool_name`, `usage`, `liveness`, `state`.
+`member_id`, `class`, `pool_name`, `endpoint`, `end_time`, `remaining_sec`,
+`usage`, `liveness`, `state`.
+
+`remaining_sec` is a **countdown**, recomputed on every read and never
+stored: `end_time − now` for a member that has an allocation of its own,
+otherwise the most walltime any of its live pilots still has (the
+dispatcher's number — a pilot's deadline is dispatcher state), and `null`
+when it holds none. It is never negative.
+
+Wire names are **added, never renamed**: `member`, `pool_name`,
+`walltime_sec`, `attributes.mem_gb_per_node` and `usage.*` mean exactly what
+they did, because `federation.js`, ATOMIC's `atomic_campaign.js` and
+`smoke.py` read them.
 
 **The resource-level view is an aggregate.** `capabilities.cores` = Σ
 `nodes × cpus_per_node`, `capabilities.gpus` = Σ `nodes × gpus_per_node`,
@@ -148,23 +169,45 @@ half-completed join.
 **`allocation`** — the endpoint runs *inside* a compute allocation, and the
 whole allocation **is** the resource. The pool is built with
 `queue: "allocation"`, `account: null`, `min_pilots: 1`, `max_pilots: 1`,
-and one pilot size taken from the endpoint's own `queue_info/job_allocation`
-when it has one, else `nodes=1, walltime_sec=3600`.
+`pilot: "endpoint"`, and one pilot size taken from the endpoint's own
+`queue_info/job_allocation` when it has one, else `nodes=1,
+walltime_sec=3600`.
+
+**The endpoint that joined is the pilot.** It already runs inside the
+allocation, so the dispatcher adopts it: no second endpoint is submitted
+through its `psij` plugin, no second registration, no second liveness to
+track, and no host-specific detail (cert paths, tool prefixes, a `psij` in
+the plugin set) has to be re-derived for a process nobody needs. What the
+dispatcher does instead is create the pilot record `PENDING` with that
+endpoint as its own child and activate it the moment the topology carries
+it — the same path a submitted pilot's child takes.
 
 Sizing, in order of preference:
 
 | pilot size | from |
 |----|----|
 | `nodes` | `n_nodes` of the allocation, else 1 |
-| `walltime_sec` | `runtime` of the allocation, clamped by `SLURM_JOB_END_TIME` when visible (see Known limitations), else 3600 |
+| `walltime_sec` | `end_time − now` of the allocation, else its `runtime` (the *limit*), else 3600 |
 | `cpus_per_node` | the allocation's `cpus_per_node`, else `max(1, capabilities.cores // nodes)` |
 | `gpus_per_node` | the allocation's `gpus_per_node`, else `capabilities.gpus // nodes` |
+
+`end_time` is an epoch the **endpoint** computes inside its own allocation
+(`queue_info/job_allocation`: `squeue %L` on Slurm, `Walltime.Remaining` —
+else `stime` + the walltime limit — on PBS), because `runtime` is the job's
+*time limit* and a resource joined an hour in would otherwise give its pilot
+a walltime longer than the allocation itself. An allocation that has **no
+time left** is a **400** rather than a one-second pilot: `walltime_sec` must
+be at least 1, and a pilot that cannot outlive its own submission is not a
+resource. `end_time` is also stored on the member, absolute, and caps every
+pilot deadline the dispatcher sets for it — a member is re-declared with its
+join-time `walltime_sec` on every re-attach, so a re-adopted endpoint would
+otherwise be given a deadline past the allocation's end.
 
 Note the division: a declared `cores` / `gpus` is a **total for the
 resource**, while `cpus_per_node` is exactly what its name says. The
 allocation's own per-node figures are authoritative when it reports them.
 
-Because `min_pilots` is 1, **the pilot starts at join** — before any task
+Because `min_pilots` is 1, **the pilot is live at join** — before any task
 exists — so the resource is warm by the time work arrives. An undeclared
 budget defaults to `nodes × walltime_sec / 3600`: the allocation itself.
 Declaring `members` in allocation mode is a **400**: the allocation *is* the
@@ -260,6 +303,12 @@ resource row shows the worst of its members: the first error there is one,
 the highest count, the furthest pause. All three clear as soon as the
 member produces a healthy pilot again.
 
+The same block carries `remaining_sec` — the most walltime any of that
+member's live pilots still has — which is where a submit-mode shape's
+countdown comes from. A member with an allocation of its own answers from
+its `end_time` instead, so its countdown is right even before its pilot
+exists.
+
 ### Liveness and state
 
 A resource and every one of its members inherit the endpoint's topology
@@ -268,14 +317,28 @@ The default policy routes to `ok` members only — a `suspect` endpoint may be
 seconds from `lost`, and a task sent there would sit behind a member nobody
 is serving.
 
-Alongside `liveness` every record carries a derived **`state`**: the same
-word, except `failing` for a member that is reachable (`ok`) but holds no
-pilot while `paused_until` is in the future or `pilot_failures >= 3`, and
-`failing` for a resource with at least one such member. `liveness` is
-deliberately left alone — it means "can we reach the endpoint", the routing
-policy is written against it, and a site whose quota is full is not gone.
-`state` is what a human is shown; a client that knows only `liveness` sees
-exactly what it always did.
+Alongside `liveness` every record carries a derived **`state`**, which is
+what a human is shown. Per member, in precedence order:
+
+| state | means |
+|----|----|
+| `lost` / `suspect` | the endpoint's own liveness, passed through untouched |
+| `failing` | reachable (`ok`), holding no pilot, and either `paused_until` is in the future or `pilot_failures >= 3` |
+| `stale` | the last usage refresh could not reach the dispatcher, so the numbers shown are the previous ones |
+| `idle` | reachable, holding no pilot, **and no recorded failure** — the join-to-first-pilot window, an adopted endpoint waiting for its first tick, or a login shape with an empty queue |
+| `ok` | holding at least one pilot |
+
+A member is `failing` only on a **recorded** failure; it must never flash red
+merely because no pilot is ACTIVE yet. A resource shows the **worst** of its
+members' states (`lost` > `failing` > `suspect` > `stale` > `ok` > `idle`):
+one shape that cannot start a pilot is enough for the row to say so, while
+one shape resting beside a working one does not make the machine idle — a
+resource reads `idle` only when every shape of it does.
+
+`liveness` is deliberately left alone — it means "can we reach the
+endpoint", the routing policy is written against it, and a site whose quota
+is full is not gone. A client that knows only `liveness` sees exactly what it
+always did.
 
 Attachment is tracked **per member**, so a resource whose two members live
 behind one endpoint has each tracked separately (and one can fail to attach
@@ -596,10 +659,27 @@ pilot sizes, budget and attributes; `POST pool/{sid}/{name}/members` and
 `cwd` and `member_id` are assigned at dispatch; `inputs_b64` on a submit is
 spooled by the dispatcher and placed on whichever member runs the task; and
 the verbose pool summary gains a per-member block with `node_hours_used`,
-`node_hours_remaining` and `pilots_active`. Requirement matching lives in one
+`node_hours_remaining` and `pilots_active` — plus, since 122, the member's
+`pilot` and `end_time` and the derived `remaining_sec`. Requirement matching lives in one
 shared, stateless function (`task_dispatcher_match.satisfies`) so the
 federation and the dispatcher answer the same question with the same rules;
 `federation_policy.satisfies` is that function, re-exported.
+
+**Endpoint adoption** (plan 122) is the other one: a member declared
+`pilot: endpoint` gets no psij job at all. `_submit_pilot` creates its record
+`PENDING` with `child_endpoint_name = endpoint_name` and activates it through
+the ordinary `_reconcile_pilots_for` → `_activate_pilot` path — immediately
+when that endpoint is already connected, otherwise on the next topology
+delivery, and **failed after the handshake timeout** (`endpoint … not
+connected`) if it never appears, because a record stuck PENDING counts
+against the strategy's in-flight guards forever. Such a pilot is marked
+**DONE, never FAILED**, at both places it can end — the topology `lost`
+branch and `del_member` → `_do_pilot_cancel` — since a leave or an allocation
+ending is not a failure and must not feed the member's failure counter. The
+member's `end_time` caps the pilot's `walltime_deadline`, and the strategy's
+`min_remaining_sec` (default 120 s) keeps a pilot inside two minutes of that
+deadline from taking new tasks or counting as free capacity. There is no new
+liveness mechanism anywhere in this: one endpoint, one topology signal.
 
 Three earlier ones this plugin also required:
 
@@ -638,18 +718,27 @@ Default scratch trees live at `<state root>/scratch/<name>`.
 
 ## Explorer UI
 
-`data/plugins/federation.js` renders one table of joined resources — name,
-endpoint, mode, site, cores/gpus/mem, software, node-hours used and
-remaining, active pilots, task counts, liveness — each followed by one
-indented row per member: its short name, `class/pool`, queue, site, pilot
-size (`1x128c+4g`), software, its own node-hours, pilots and tasks, and its
-state. A record without `members` renders exactly as it did before, one
-row and no sub-rows. The last column shows the derived `state`, so a
-`failing` member gets a red badge and one monospace line underneath with
-its `pilot_error` (truncated, full text in the tooltip) and, when the
-dispatcher has paused submissions, until when. It polls `resources/default` every 3 s. The gateway
-caches plugin JS until a miss, so **restart the broker after editing the
-module**.
+`data/plugins/federation.js` renders one table with **two column sets**: a
+resource row — name, site, software, the `fed-<class>` badges its shapes land
+in, then run/done/failed from the record's own usage and the worst state of
+its shapes — and, indented under it, one **pilot row** per shape: mode
+(`alloc`/`login`), nodes, cpn, gpn, mpn, runtime, left, run, done, failed,
+state. Hours are two decimals, and `left` is `-` when nothing is known
+(no live pilot, or a pre-122 broker). Node-hours used/remaining moved into
+the row's tooltip.
+
+A pilot row is named after the endpoint that runs it: `ep_odo` in allocation
+mode, where the endpoint *is* the pilot, and `ep_perlmutter/gpu` in login
+mode, where the endpoint submits one pilot per shape. The word "member" is
+the wire field, not a label. A record without `members` renders its resource
+row and no sub-rows.
+
+The state column shows the derived `state` (`ok` / `idle` / `stale` /
+`suspect` / `lost` / `failing`), so a `failing` row gets a red badge and one
+monospace line underneath with its `pilot_error` (truncated, full text in the
+tooltip) and, when the dispatcher has paused submissions, until when. It
+polls `resources/default` every 3 s. The gateway caches plugin JS until a
+miss, so **restart the broker after editing the module**.
 
 ## Known limitations
 
@@ -688,18 +777,31 @@ module**.
 - **A budget is per member, per join.** Leaving and re-joining a resource
   resets its node-hour accounting, because usage is derived from the pilot
   history the dispatcher keeps for that member id.
-- **`job_allocation.runtime` is the job's time *limit*, not the time it has
-  left** (SLURM `squeue %l`, PBS `Resource_List.walltime`); no
-  remaining-time field exists anywhere in the endpoint API. An
-  allocation-mode resource joined *late* into its allocation would
-  therefore give its pilot a walltime longer than the allocation itself,
-  and the dispatcher would wait on a deadline the batch system will never
-  honour. Best-effort correction: when `SLURM_JOB_END_TIME` (epoch seconds)
-  is set, the smaller of the limit and the time actually left is used.
-  That variable lives in the **allocation's** environment, so it helps
-  exactly when the broker runs inside the allocation too — the co-located
-  case — and is simply absent otherwise. There is no PBS equivalent, and
-  nothing reads the *endpoint's* environment across the wire.
+- **An allocation's remaining time is only as good as the scheduler's
+  answer.** `job_allocation.end_time` needs `squeue %L` (Slurm) or
+  `Walltime.Remaining` / `stime` (PBS); an endpoint whose scheduler reports
+  neither falls back to `runtime`, the job's *time limit*, and a resource
+  joined late into its allocation then has a pilot deadline later than the
+  allocation's own end. The pilot is reclaimed when its endpoint disappears
+  either way — the deadline only decides DONE-vs-FAILED for a *submitted*
+  pilot, and an adopted one is always DONE — so the cost is a `left` column
+  that reads optimistically.
+- **Multi-node use of an adopted allocation is out of scope.** The adopted
+  endpoint runs rhapsody on the allocation's head node with the `concurrent`
+  backend; nothing spreads tasks across the other nodes of that allocation,
+  and nothing reserves or pins a device.
+- **An operator note on upgrading to 122.** A member's declaration
+  fingerprint is `asdict(member)`, so it now includes `pilot` and
+  `end_time`, and a member's declaration is immutable (see above). A broker
+  restarted onto a **pre-122 dispatcher state dir** therefore replays a pool
+  whose stored member still says `submit` while the federation re-POSTs it
+  as `endpoint`: that re-attach answers **409**, and the member stays
+  detached and reported `lost` for as long as the stale declaration is on
+  disk. **Restart the broker with an empty dispatcher state dir** (the
+  demo's `broker.sh` does that anyway); the federation's own `state.json`
+  needs no migration, since its members are rebuilt from the join and a
+  pre-08 record's derived member is given `pilot: endpoint` when its mode is
+  `allocation`.
 - **Sanity ceilings, not policy.** A declared login-mode pool is capped at
   1024 pilots, 100 000 nodes, 4096 cpus/node, 256 gpus/node and 30 days of
   walltime. These only catch a typo before it reaches a batch system; they

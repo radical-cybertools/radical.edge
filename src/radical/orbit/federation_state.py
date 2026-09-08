@@ -75,6 +75,32 @@ LIVENESS_LOST    = 'lost'
 # against it, and a member whose site is merely full must not read as gone.
 STATE_FAILING = 'failing'
 
+# Two more derived words, alongside ``failing``.  ``stale``: the last usage
+# refresh could not reach the dispatcher, so the numbers shown are the
+# previous ones.  ``idle``: reachable, nothing held against it, and simply
+# holding no pilot right now -- the join-to-first-pilot window, and the
+# resting state of a login-mode shape with an empty queue.  Neither is a
+# problem, and neither is ``ok`` either.
+STATE_STALE = 'stale'
+STATE_IDLE  = 'idle'
+
+# Worst-first ranking of the derived state words, used to fold a resource's
+# member states into the one word its row shows.  ``idle`` sits **below**
+# ``ok``: a machine with one shape working and one resting is working, so a
+# resource reads ``idle`` only when *every* shape of it is.  Anything
+# unknown ranks lowest of all, so a word this version does not know can
+# never hide one it does.
+STATE_RANK = {LIVENESS_LOST: 5, STATE_FAILING: 4, LIVENESS_SUSPECT: 3,
+              STATE_STALE: 2, LIVENESS_OK: 1, STATE_IDLE: 0}
+
+# How a member's pilots come into being (Orbit plan 122), mirroring the
+# dispatcher's ``PoolMember.pilot``.  ``endpoint``: the joined endpoint runs
+# inside its allocation and *is* the pilot.  ``submit``: pilots are batch
+# jobs the dispatcher asks that endpoint to submit.
+PILOT_SUBMIT   = 'submit'
+PILOT_ENDPOINT = 'endpoint'
+PILOT_MODES    = (PILOT_SUBMIT, PILOT_ENDPOINT)
+
 # How many consecutive pilot failures make a member read as ``failing``.
 # Mirrors the conservative policy's ``max_consecutive_failures`` default —
 # the point at which that policy stops submitting — but the federation
@@ -140,6 +166,11 @@ class ResourceUsage:
     pilot_error         : str | None   = None
     pilot_failures      : int           = 0
     paused_until        : float | None  = None
+    # Walltime the member's longest-lived pilot still has, in seconds --
+    # the dispatcher's number, since only it knows a pilot's deadline.
+    # ``None`` when it holds none (see :meth:`MemberRecord.remaining_sec`,
+    # which prefers the allocation's own end where there is one).
+    remaining_sec       : float | None  = None
 
 
 @dataclass
@@ -185,11 +216,22 @@ class MemberRecord:
     ``cls`` is spelled ``class`` on the wire (``class`` is a Python
     keyword); :meth:`to_wire` renames it and :func:`member_from_dict`
     accepts either spelling.
+
+    ``pilot`` says where this member's pilots come from.  An
+    ``allocation``-mode resource's one member is ``endpoint``: the endpoint
+    that joined already runs inside the allocation, and the dispatcher
+    adopts it rather than starting a second process on it (Orbit plan 122).
+    ``end_time`` is when that allocation ends, as an absolute epoch — a
+    member is re-declared with its join-time ``walltime_sec`` on every
+    re-attach, so only an absolute instant survives a re-adoption.
     '''
     member          : str
     member_id       : str = ''            # '<resource>.<member>', server-filled
     cls             : str = ''            # 'cpu' | 'gpu' | … ; wire key "class"
     pool_name       : str = ''            # 'fed-<class>', server-filled
+    endpoint        : str = ''            # the endpoint serving it, server-filled
+    pilot           : str = PILOT_SUBMIT  # 'submit' | 'endpoint'
+    end_time        : float | None = None  # allocation end, absolute epoch
     queue           : str = ''
     account         : str | None = None
     nodes           : int = 1
@@ -246,8 +288,24 @@ class MemberRecord:
         attrs['software'] = list(self.software or [])
         return attrs
 
+    def remaining_sec(self) -> float | None:
+        '''Return the seconds of runway this member has left, or ``None``.
+
+        Recomputed on every read, never stored: it is a countdown.
+
+        The allocation's own ``end_time`` answers it where there is one —
+        that is the instant the endpoint disappears, whatever the pilot
+        record says.  Otherwise it is the dispatcher's number: the most
+        walltime any of this member's live pilots still has, which is
+        ``None`` when it holds none.  Never negative: an allocation past its
+        end has no time left, it does not owe any.
+        '''
+        if self.end_time:
+            return max(0.0, float(self.end_time) - time.time())
+        return self.usage.remaining_sec
+
     def state(self) -> str:
-        '''Return the derived state word: ``liveness``, or ``failing``.
+        '''Return the derived state word: ``liveness``, or one of three.
 
         A member is ``failing`` when its endpoint is reachable (so liveness
         says ``ok``) but it is holding no pilot and the dispatcher has
@@ -255,6 +313,14 @@ class MemberRecord:
         :data:`FAILING_PILOT_FAILURES` of its pilots die in a row.  That is
         the case the demo hit: a member reported ``ok`` with 0 pilots for
         half an hour while every submit failed on a disk quota.
+
+        It is ``stale`` when the last usage refresh could not reach the
+        dispatcher — the numbers shown are the previous ones and the row
+        should say so — and ``idle`` when it is simply holding no pilot with
+        **no recorded failure**: the join-to-first-pilot window, an adopted
+        endpoint waiting for its first tick, or a login-mode shape with an
+        empty queue.  None of those is ``failing``, and a member must never
+        flash red merely because no pilot is ACTIVE yet.
 
         Anything other than ``ok`` is passed through untouched — a lost
         endpoint is lost, and the fact that its last pilot also failed is
@@ -269,6 +335,10 @@ class MemberRecord:
             return STATE_FAILING
         if (usage.pilot_failures or 0) >= FAILING_PILOT_FAILURES:
             return STATE_FAILING
+        if usage.stale:
+            return STATE_STALE
+        if not usage.pilot_error:
+            return STATE_IDLE
         return self.liveness
 
     def to_wire(self) -> dict:
@@ -277,10 +347,14 @@ class MemberRecord:
         ``state`` rides alongside ``liveness`` rather than replacing it:
         ``liveness`` is what the topology says and what the routing policy
         is written against, ``state`` is what a human should be shown.
+        ``remaining_sec`` is derived here for the same reason it is not
+        stored — it is a countdown, and a stored one is wrong by the age of
+        the file.
         '''
         out = asdict(self)
-        out['class'] = out.pop('cls')
-        out['state'] = self.state()
+        out['class']         = out.pop('cls')
+        out['state']         = self.state()
+        out['remaining_sec'] = self.remaining_sec()
         return out
 
 
@@ -408,17 +482,22 @@ class ResourceRecord:
     def state(self) -> str:
         '''Return the derived state word for the resource row.
 
-        ``failing`` as soon as **one** member is failing while the resource
-        itself looks reachable: the resource row is what a reader scans
-        first, and a machine on which half the shapes cannot start a pilot
-        is not ``ok``.  The member rows say which one.
+        The **worst** of its members' states (:data:`STATE_RANK`: ``lost`` >
+        ``failing`` > ``suspect`` > ``stale`` > ``ok`` > ``idle``), because
+        the resource row is what a reader scans first and a machine on which
+        one shape cannot start a pilot is not ``ok``.  The member rows say
+        which one.  ``idle`` ranks below ``ok`` deliberately: one shape
+        resting beside a working one does not make the machine idle, so the
+        row says ``idle`` only when every shape does.  A resource whose own
+        liveness is not ``ok`` reports that: it is not reachable, and what
+        its shapes would do is moot.
         '''
         if self.liveness != LIVENESS_OK:
             return self.liveness
-        for member in self.member_list():
-            if member.state() == STATE_FAILING:
-                return STATE_FAILING
-        return self.liveness
+        states = [m.state() for m in self.member_list()]
+        if not states:
+            return self.liveness
+        return max(states, key=lambda s: STATE_RANK.get(s, -1))
 
     def to_wire(self) -> dict:
         '''Return the client-facing view: everything except ``pool_config``.
@@ -477,6 +556,12 @@ def _derive_member(rec: ResourceRecord) -> MemberRecord:
     member = MemberRecord(
         member           = DEFAULT_MEMBER,
         member_id        = f'{rec.name}.{DEFAULT_MEMBER}',
+        endpoint         = rec.endpoint,
+        # A pre-122 allocation record is upgraded in place: its endpoint is
+        # inside the allocation, so it is the pilot -- the very thing the
+        # second, submitted one was standing in for.
+        pilot            = (PILOT_ENDPOINT if rec.mode == MODE_ALLOCATION
+                            else PILOT_SUBMIT),
         queue            = str(decl.get('queue') or pool.get('queue') or ''),
         account          = decl.get('account', pool.get('account')),
         nodes            = int(size.get('nodes') or 1),
@@ -529,6 +614,10 @@ def record_from_dict(data: dict) -> ResourceRecord:
             if not isinstance(entry, dict):
                 continue
             m = member_from_dict(entry)
+            # A record written before members carried their own endpoint
+            # gets the resource's -- which is the one they were always
+            # served by, since a resource has exactly one.
+            m.endpoint = m.endpoint or rec.endpoint
             rec.members[m.member] = m
     else:
         m = _derive_member(rec)

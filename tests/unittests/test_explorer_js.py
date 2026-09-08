@@ -337,21 +337,32 @@ def render_resources(tmp_path_factory):
     return _render
 
 
-def _fed_member(name="default", state="ok", usage=None):
-    return {"member": name, "member_id": "perlmutter." + name,
-            "class": "cpu", "pool_name": "fed-cpu", "queue": "regular",
-            "nodes": 1, "cpus_per_node": 128, "gpus_per_node": 0,
-            "software": [], "attributes": {"site": "NERSC"},
-            "budget": {}, "liveness": "ok", "state": state,
-            "usage": usage or {}}
+def _fed_member(name="default", state="ok", usage=None, **overrides):
+    m = {"member": name, "member_id": "perlmutter." + name,
+         "class": "cpu", "pool_name": "fed-cpu", "queue": "regular",
+         "endpoint": "ep_perlmutter", "pilot": "submit",
+         "nodes": 1, "cpus_per_node": 128, "gpus_per_node": 0,
+         "walltime_sec": 3600, "end_time": None, "remaining_sec": None,
+         "software": [], "attributes": {"site": "NERSC"},
+         "budget": {}, "liveness": "ok", "state": state,
+         "usage": usage or {}}
+    m.update(overrides)
+    return m
 
 
-def _fed_resource(members, state="ok"):
-    return {"name": "perlmutter", "endpoint": "ep_perlmutter",
-            "mode": "login", "site": "NERSC",
-            "capabilities": {"cores": 128, "gpus": 0, "software": []},
-            "budget": {}, "usage": {}, "liveness": "ok", "state": state,
-            "members": members}
+def _fed_resource(members, state="ok", **overrides):
+    r = {"name": "perlmutter", "endpoint": "ep_perlmutter",
+         "mode": "login", "site": "NERSC",
+         "capabilities": {"cores": 128, "gpus": 0, "software": []},
+         "budget": {}, "usage": {}, "liveness": "ok", "state": state,
+         "members": members}
+    r.update(overrides)
+    return r
+
+
+def _fed_rows(html):
+    """The rendered `<tr>` blocks, in order: resource row, then its pilots."""
+    return re.findall(r'<tr\b.*?</tr>', html, re.S)
 
 
 def test_fed_healthy_member_renders_its_state_and_no_error_row(
@@ -414,3 +425,97 @@ def test_fed_record_without_state_still_shows_its_liveness(render_resources):
 
     assert "fed-live-ok" in html
     assert "fed-live-failing" not in html
+
+
+# ── federation.js: the pilot-row layout (Orbit 122 / ATOMIC 09) ────────────
+
+def test_fed_table_has_the_two_column_sets(render_resources):
+    html = render_resources([_fed_resource([_fed_member()])])
+    for col in ("resource / pilot", "mode", "nodes", "cpn", "gpn", "mpn",
+                "runtime", "left", "run", "done", "failed", "state"):
+        assert "<th>%s</th>" % col in html
+    # the word the layout replaced is gone from the header
+    assert "<th>member</th>" not in html
+
+
+def test_fed_a_login_pilot_row_is_endpoint_slash_shape(render_resources):
+    """In login mode the endpoint submits one pilot per shape, so the row
+    has to name both."""
+    html = render_resources([_fed_resource([_fed_member(name="gpu")])])
+    rows = _fed_rows(html)
+    assert "ep_perlmutter/gpu" in rows[2]
+    assert ">login<" in rows[2]
+
+
+def test_fed_an_allocation_pilot_row_is_the_endpoint_itself(render_resources):
+    """In allocation mode the endpoint *is* the pilot: no shape suffix."""
+    member = _fed_member(name="default", pilot="endpoint", endpoint="ep_odo")
+    html = render_resources([_fed_resource([member], mode="allocation",
+                                           endpoint="ep_odo", site="OLCF")])
+    rows = _fed_rows(html)
+    assert "└ ep_odo" in rows[2]
+    assert "ep_odo/default" not in html
+    assert ">alloc<" in rows[2]
+
+
+def test_fed_runtime_and_left_are_hours_with_two_decimals(render_resources):
+    member = _fed_member(walltime_sec=5400, remaining_sec=4140,
+                         attributes={"site": "OLCF",
+                                     "mem_gb_per_node": 256})
+    rows = _fed_rows(render_resources([_fed_resource([member])]))
+    assert ">1.50<" in rows[2]          # 5400 s
+    assert ">1.15<" in rows[2]          # 4140 s
+    assert ">256<" in rows[2]           # mem per node, as declared
+
+
+def test_fed_an_unknown_runway_is_a_dash(render_resources):
+    """`remaining_sec: null` is 'nobody said', not 'nothing left'."""
+    rows = _fed_rows(render_resources([_fed_resource([_fed_member()])]))
+    assert ">-<" in rows[2]
+
+
+def test_fed_mem_per_node_falls_back_to_the_record(render_resources):
+    member = _fed_member(attributes={"site": "NERSC"})
+    rec    = _fed_resource([member])
+    rec["capabilities"] = dict(rec["capabilities"], mem_gb=512)
+    rows   = _fed_rows(render_resources([rec]))
+    assert ">512<" in rows[2]
+
+
+def test_fed_an_idle_shape_gets_its_own_style(render_resources):
+    html = render_resources([_fed_resource([_fed_member(state="idle")])])
+    assert "fed-live-idle" in html
+    assert ">idle<" in html
+    assert "fed-error" not in html
+
+
+def test_fed_resource_row_carries_the_classes_and_its_own_counts(
+        render_resources):
+    """The record's counts include tasks no shape holds yet, so the row must
+    not be a sum over the pilot rows."""
+    members = [_fed_member(name="cpu", pool_name="fed-cpu",
+                           usage={"tasks_running": 1, "tasks_done": 1}),
+               _fed_member(name="gpu", pool_name="fed-gpu",
+                           usage={"tasks_running": 0, "tasks_done": 2})]
+    rec = _fed_resource(members, usage={"tasks_running": 4, "tasks_done": 3,
+                                        "tasks_failed": 1})
+    rows = _fed_rows(render_resources([rec]))
+    assert "fed-cpu" in rows[1] and "fed-gpu" in rows[1]
+    assert ">4<" in rows[1] and ">3<" in rows[1] and ">1<" in rows[1]
+    assert "OLCF" not in rows[1]
+
+
+def test_fed_node_hours_moved_into_the_row_tooltip(render_resources):
+    member = _fed_member(usage={"node_hours_used": 1.5,
+                                "node_hours_remaining": 0.5})
+    html = render_resources([_fed_resource([member])])
+    assert "node-hours: 1.50 used · 0.50 left" in html
+    # ... and out of the table body
+    assert "fed-bar" not in html
+
+
+def test_fed_a_stale_refresh_says_so_in_the_tooltip(render_resources):
+    member = _fed_member(state="stale", usage={"stale": True})
+    html = render_resources([_fed_resource([member], state="stale")])
+    assert "(stale)" in html
+    assert "fed-live-stale" in html

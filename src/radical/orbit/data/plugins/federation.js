@@ -1,23 +1,34 @@
 /**
  * Federation Plugin Module for ORBIT Explorer
  *
- * One table of joined resources, each followed by one indented row per
- * **member** — a member is one resource shape (a queue plus a pilot size),
- * and it lives in the capability-class pool `fed-<class>`.  The resource row
- * is the aggregate of its members.  Polls `GET resources/default` every 3 s
- * — the plugin refreshes usage on that call (server-side cache: 2 s), so the
- * page needs no other state.
+ * One table of joined resources, each followed by one indented **pilot row**
+ * per shape that resource offers.  Two independent column sets share the
+ * table: the resource row says what the machine is (site, software, the
+ * capability classes it lands in) and how much work it holds; the pilot rows
+ * say what one pilot of that shape looks like and how long it has left.
  *
- * A GPU in a member's size is what the operator **declared**, not a device
+ * The word "member" is the wire field, not a label: a reader sees the
+ * endpoint that runs the pilot — `ep_odo` in allocation mode, where the
+ * endpoint *is* the pilot, and `ep_perlmutter/gpu` in login mode, where the
+ * endpoint submits one pilot per shape.
+ *
+ * Polls `GET resources/default` every 3 s — the plugin refreshes usage on
+ * that call (server-side cache: 2 s), so the page needs no other state.
+ *
+ * A GPU in a pilot's size is what the operator **declared**, not a device
  * reserved for a task: pilot capacity is task-count based.
  *
- * A record without `members` (a broker that predates class pools) renders
- * exactly as it did before: one row, no sub-rows.
+ * A record without `members` (a broker that predates class pools) still
+ * renders its one resource row and no sub-rows.
  *
- * The state column shows the record's derived `state` (`ok` / `suspect` /
- * `lost` / `failing`), falling back to `liveness` for an older broker.  A
- * `failing` member — reachable, but its pilots die at submit — gets a red
- * badge and one monospace line underneath carrying what psij said.
+ * The state column shows the record's derived `state` (`ok` / `idle` /
+ * `stale` / `suspect` / `lost` / `failing`), falling back to `liveness` for
+ * an older broker; the resource row carries the worst of its pilot rows'.  A
+ * `failing` row — reachable, but its pilots die at submit — gets a red badge
+ * and one monospace line underneath carrying what psij said.
+ *
+ * Node-hours moved into the pilot row's tooltip: the table answers "how long
+ * has this got left", the tooltip answers "what has it spent".
  *
  * All federation routes ride the reserved `default` session, so this module
  * never registers one of its own.
@@ -87,6 +98,9 @@ export function css() {
     .fed-live-ok      { color: var(--success, #2e7d32); font-weight: 600; }
     .fed-live-suspect { color: var(--warning, #b26a00); font-weight: 600; }
     .fed-live-lost    { color: var(--danger,  #c62828); font-weight: 600; }
+    /* reachable and blameless, just holding no pilot right now */
+    .fed-live-idle    { color: var(--muted); font-weight: 600; }
+    .fed-live-stale   { color: var(--muted); font-style: italic; }
     /* reachable, but nothing it is asked to start survives */
     .fed-live-failing {
       display: inline-block;
@@ -107,23 +121,10 @@ export function css() {
       font-size: 0.72rem;
       color: var(--danger, #c62828);
     }
-    .fed-stale { color: var(--muted); font-style: italic; }
-    .fed-bar {
-      position: relative;
-      display: inline-block;
-      width: 90px;
-      height: 8px;
-      border-radius: 4px;
-      background: var(--bg2);
-      border: 1px solid var(--border, #ccc);
-      vertical-align: middle;
-      margin-right: 6px;
-      overflow: hidden;
-    }
-    .fed-bar > span { display: block; height: 100%; background: var(--accent, #4a90d9); }
     .fed-soft { color: var(--muted); font-size: 0.78rem; white-space: normal; }
-    .fed-member td { padding-left: 18px; color: var(--muted); }
-    .fed-member td:first-child { padding-left: 26px; }
+    .fed-num  { text-align: right; font-variant-numeric: tabular-nums; }
+    .fed-pilot td { padding-left: 18px; color: var(--muted); }
+    .fed-pilot td:first-child { padding-left: 26px; }
     .fed-empty {
       padding: 12px;
       color: var(--muted);
@@ -184,7 +185,7 @@ function renderTable(resources, api) {
   const rows = resources.map(r => {
     const members = Array.isArray(r.members) ? r.members : [];
     return renderResourceRow(r, members, api)
-         + members.map(m => renderMemberRow(r, m, api)
+         + members.map(m => renderPilotRow(r, m, api)
                           + renderPilotError(m, api)).join('');
   }).join('');
   return `
@@ -192,9 +193,10 @@ function renderTable(resources, api) {
       <table class="fed-table">
         <thead>
           <tr>
-            <th>resource</th><th>endpoint</th><th>mode</th><th>site</th>
-            <th>cores</th><th>gpus</th><th>mem GB</th><th>software</th>
-            <th>node-hours</th><th>pilots</th><th>tasks</th><th>liveness</th>
+            <th>resource / pilot</th><th>mode</th>
+            <th>nodes</th><th>cpn</th><th>gpn</th><th>mpn</th>
+            <th>runtime</th><th>left</th>
+            <th>run</th><th>done</th><th>failed</th><th>state</th>
           </tr>
         </thead>
         <tbody>${rows}</tbody>
@@ -202,58 +204,72 @@ function renderTable(resources, api) {
     </div>`;
 }
 
-/* The aggregate row.  Its arithmetic is unchanged: the record's
- * `capabilities` and `usage` are the sum over its members. */
+/* The resource row: what the machine is, which capability classes its
+ * pilots land in, and the work it holds.
+ *
+ * The task counts are the **record's own**, never a sum over the pilot
+ * rows: a task the dispatcher has not placed yet belongs to no shape and
+ * would vanish from that sum.  `state` is the derived word the server
+ * already folded (worst of the pilot rows); an older broker sends only
+ * `liveness`, which is exactly what this column used to show. */
 function renderResourceRow(r, members, api) {
   const caps  = r.capabilities || {};
   const usage = r.usage || {};
   const soft  = (caps.software || []).map(s => api.escHtml(s)).join(', ');
-  /* `state` is the derived word (liveness + `failing`); an older broker
-   * sends only `liveness`, which is exactly what it used to show. */
   const live  = r.state || r.liveness || 'lost';
+  const cls   = [...new Set(members.map(m => m.pool_name).filter(Boolean))]
+                .map(p => `<span class="fed-badge">${api.escHtml(p)}</span>`)
+                .join(' ');
 
   return `<tr>
     <td class="fed-name">${api.escHtml(r.name || '?')}</td>
-    <td><code style="font-size:.78rem">${api.escHtml(r.endpoint || '?')}</code></td>
-    <td><span class="fed-badge">${api.escHtml(r.mode || '?')}</span></td>
     <td>${api.escHtml(r.site || '—')}</td>
-    <td>${fmtNum(caps.cores)}</td>
-    <td>${fmtNum(caps.gpus)}</td>
-    <td>${fmtNum(caps.mem_gb)}</td>
-    <td class="fed-soft">${soft || '—'}</td>
-    <td>${renderHours(usage, api)}</td>
-    <td>${usage.pilots_active ?? 0} active</td>
-    <td>${renderTasks(usage)}</td>
+    <td class="fed-soft" colspan="4">${soft || '—'}</td>
+    <td colspan="2">${cls || '—'}</td>
+    <td class="fed-num">${usage.tasks_running ?? 0}</td>
+    <td class="fed-num">${usage.tasks_done ?? 0}</td>
+    <td class="fed-num">${usage.tasks_failed ?? 0}</td>
     <td class="fed-live-${api.escHtml(live)}">${api.escHtml(live)}</td>
   </tr>`;
 }
 
-/* One indented row per member: which class pool it joined, the pilot shape
- * it declares, and its own budget and work. */
-function renderMemberRow(r, m, api) {
+/* One indented row per pilot shape, named after the endpoint that runs it:
+ * in allocation mode the endpoint *is* the pilot, so the row is the
+ * endpoint; in login mode the endpoint submits one pilot per shape, so the
+ * row is `<endpoint>/<shape>`.
+ *
+ * `left` is what this shape has until its allocation ends — `-` when the
+ * broker cannot know (no live pilot, or a broker without `remaining_sec`).
+ * Node-hours ride in the row tooltip. */
+function renderPilotRow(r, m, api) {
   const usage = m.usage || {};
   const attrs = m.attributes || {};
-  const cls   = m['class'] || m.cls || '?';
-  const soft  = (m.software || []).map(s => api.escHtml(s)).join(', ');
+  const caps  = r.capabilities || {};
   const live  = m.state || m.liveness || r.liveness || 'lost';
+  const alloc = (r.mode || '') === 'allocation';
+  const ep    = m.endpoint || r.endpoint || '?';
+  const name  = alloc ? ep : `${ep}/${m.member || '?'}`;
+  const mpn   = attrs.mem_gb_per_node ?? caps.mem_gb;
 
-  return `<tr class="fed-member">
-    <td>└ ${api.escHtml(m.member || '?')}</td>
-    <td><span class="fed-badge">${api.escHtml(cls)}/${api.escHtml(m.pool_name || '?')}</span></td>
-    <td>${api.escHtml(m.queue || '—')}</td>
-    <td>${api.escHtml(attrs.site || r.site || '—')}</td>
-    <td colspan="3">${api.escHtml(sizeOf(m))}</td>
-    <td class="fed-soft">${soft || '—'}</td>
-    <td>${renderHours(usage, api)}</td>
-    <td>${usage.pilots_active ?? 0} active</td>
-    <td>${renderTasks(usage)}</td>
+  return `<tr class="fed-pilot" title="${api.escHtml(hoursTip(usage))}">
+    <td>└ ${api.escHtml(name)}</td>
+    <td><span class="fed-badge">${api.escHtml(alloc ? 'alloc' : 'login')}</span></td>
+    <td class="fed-num">${fmtNum(m.nodes)}</td>
+    <td class="fed-num">${fmtNum(m.cpus_per_node)}</td>
+    <td class="fed-num">${fmtNum(m.gpus_per_node)}</td>
+    <td class="fed-num">${fmtNum(mpn)}</td>
+    <td class="fed-num">${fmtHours(m.walltime_sec)}</td>
+    <td class="fed-num">${fmtHours(m.remaining_sec)}</td>
+    <td class="fed-num">${usage.tasks_running ?? 0}</td>
+    <td class="fed-num">${usage.tasks_done ?? 0}</td>
+    <td class="fed-num">${usage.tasks_failed ?? 0}</td>
     <td class="fed-live-${api.escHtml(live)}">${api.escHtml(live)}</td>
   </tr>`;
 }
 
-/* The row under a member whose pilots are dying: what the batch system or
- * psij actually said, plus how long submissions stay paused.  Nothing at
- * all for a member with no error — this is the line that was missing when
+/* The row under a pilot shape whose pilots are dying: what the batch system
+ * or psij actually said, plus how long submissions stay paused.  Nothing at
+ * all for a shape with no error — this is the line that was missing when
  * a site failed every submit for half an hour and the table said `ok`. */
 function renderPilotError(m, api) {
   const usage = m.usage || {};
@@ -272,30 +288,22 @@ function renderPilotError(m, api) {
   </tr>`;
 }
 
-/* `1x128c+4g` — one pilot of this member.  The GPU count is what the
- * operator declared, not a reservation. */
-function sizeOf(m) {
-  const nodes = m.nodes ?? 1;
-  const cpus  = m.cpus_per_node ?? 0;
-  const gpus  = m.gpus_per_node ?? 0;
-  return `${nodes}x${cpus}c` + (gpus ? `+${gpus}g` : '');
+/* The budget, as the row's tooltip: the table is a live view, node-hours
+ * are an accounting one. */
+function hoursTip(usage) {
+  const used = Number(usage.node_hours_used || 0);
+  const left = Number(usage.node_hours_remaining || 0);
+  return `node-hours: ${used.toFixed(2)} used · ${left.toFixed(2)} left`
+       + (usage.stale ? ' (stale)' : '');
 }
 
-function renderHours(usage, api) {
-  const used  = Number(usage.node_hours_used || 0);
-  const left  = Number(usage.node_hours_remaining || 0);
-  const total = used + left;
-  const pct   = total > 0 ? Math.min(100, (used / total) * 100) : 0;
-  return `<span class="fed-bar"><span style="width:${pct.toFixed(0)}%"></span></span>
-      ${used.toFixed(2)} used · ${left.toFixed(2)} left
-      ${usage.stale ? ' <span class="fed-stale">(stale)</span>' : ''}`;
-}
-
-function renderTasks(usage) {
-  return `${usage.tasks_running ?? 0} run · ${usage.tasks_done ?? 0} done${
-    usage.tasks_failed ? ` · ${usage.tasks_failed} failed` : ''}`;
+/* Seconds as hours with two decimals; `-` for anything unknown, which is
+ * what a null `remaining_sec` means: not "zero left", but "nobody said". */
+function fmtHours(sec) {
+  if (sec === undefined || sec === null) return '-';
+  return (Number(sec) / 3600).toFixed(2);
 }
 
 function fmtNum(v) {
-  return (v === undefined || v === null) ? '—' : String(v);
+  return (v === undefined || v === null) ? '-' : String(v);
 }

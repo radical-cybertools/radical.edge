@@ -113,7 +113,8 @@ from .federation_state      import (
     FederationState, FederationStateError, MemberRecord, ResourceRecord,
     SubmitLedgerEntry,
     DEFAULT_MEMBER, LIVENESS_OK, LIVENESS_SUSPECT, LIVENESS_LOST,
-    MODE_ALLOCATION, MODE_LOGIN, MODES,
+    MODE_ALLOCATION, MODE_LOGIN, MODES, PILOT_ENDPOINT, PILOT_MODES,
+    PILOT_SUBMIT,
     node_hours_from_history, resource_attributes, validate_attributes,
     validate_budget, validate_capabilities, validate_class,
     validate_member_name, validate_name, validate_pool_int,
@@ -179,6 +180,7 @@ _MEMBER_KEYS = frozenset((
     'member', 'queue', 'account', 'nodes', 'cpus_per_node', 'gpus_per_node',
     'walltime_sec', 'min_pilots', 'max_pilots', 'rhapsody_backend',
     'scratch_base', 'shared_fs', 'software', 'class', 'attributes', 'budget',
+    'pilot',
 ))
 
 # ``node_hours`` is the federation's own budget key.  The dispatcher's
@@ -764,11 +766,19 @@ class PluginFederation(Plugin):
         helper this and ``_derive_member`` share, so a synthesised member is
         built the same way whether it came from a join body or from a pre-08
         ``state.json``.
+
+        ``pilot`` and ``end_time`` come from the declaration too:
+        :meth:`_allocation_pool` puts ``endpoint`` there because the endpoint
+        that joined already runs inside the allocation and *is* the pilot,
+        while :meth:`_login_pool` leaves both alone.
         '''
         size = decl['pilot_sizes'][_SIZE_KEY]
         caps = rec.capabilities or {}
         member = MemberRecord(
             member           = DEFAULT_MEMBER,
+            endpoint         = rec.endpoint,
+            pilot            = decl.get('pilot') or PILOT_SUBMIT,
+            end_time         = decl.get('end_time'),
             queue            = decl['queue'],
             account          = decl['account'],
             nodes            = size['nodes'],
@@ -797,6 +807,12 @@ class PluginFederation(Plugin):
         ``default`` sentinel, an unknown key is refused rather than ignored,
         and a declared ``class`` must match ``^[a-z0-9][a-z0-9_-]*$`` — a
         name that does not is a 400, never a lower-cased guess.
+
+        A member may declare ``pilot: endpoint``, which says the resource's
+        endpoint already runs inside an allocation and is itself the pilot;
+        the dispatcher then adopts it and holds exactly one.  Its
+        ``end_time`` is not declarable — only the allocation knows when it
+        ends, and only ``allocation`` mode reads that from the endpoint.
         '''
         if not isinstance(decl, dict):
             raise FederationStateError(
@@ -851,8 +867,16 @@ class PluginFederation(Plugin):
         except FederationStateError as e:
             raise FederationStateError(f'{label}: {e}') from e
 
+        pilot = decl.get('pilot') or PILOT_SUBMIT
+        if pilot not in PILOT_MODES:
+            raise FederationStateError(
+                f"'{label}.pilot' must be one of {', '.join(PILOT_MODES)} "
+                f'(got {pilot!r})')
+
         member = MemberRecord(
             member           = name,
+            endpoint         = rec.endpoint,
+            pilot            = pilot,
             queue            = queue,
             account          = account,
             nodes            = validate_pool_int(
@@ -894,10 +918,18 @@ class PluginFederation(Plugin):
         ``software`` rides inside ``attributes`` because that is the
         dispatcher's vocabulary — it matches a task's declared needs against
         a member's attribute map and knows nothing about federations.
+
+        ``pilot`` and ``end_time`` travel too: the dispatcher adopts an
+        ``endpoint`` member's endpoint instead of submitting a job for it,
+        and caps that pilot's deadline at the allocation's end — which it
+        cannot derive, because a member is re-declared with its join-time
+        ``walltime_sec`` on every re-attach.
         '''
         return {
             'member_id'    : member.member_id,
             'endpoint_name': rec.endpoint,
+            'pilot'        : member.pilot,
+            'end_time'     : member.end_time,
             'queue'        : member.queue,
             'account'      : member.account,
             'pilot_sizes'  : {_SIZE_KEY: {
@@ -968,36 +1000,62 @@ class PluginFederation(Plugin):
         '''Return the pilot walltime for an allocation-mode resource.
 
         ``queue_info``'s ``runtime`` is the job's **time limit**, not the
-        time it has left (SLURM ``squeue %l``, PBS ``Resource_List.walltime``)
-        — there is no remaining-time field anywhere in the endpoint API.  A
-        pilot submitted late into an allocation would therefore be given a
-        walltime longer than the allocation itself, and the dispatcher would
-        wait for a deadline the batch system will never honour.
+        time it has left (SLURM ``squeue %l``, PBS ``Resource_List.walltime``).
+        A resource joined late into its allocation would therefore give its
+        pilot a walltime longer than the allocation itself, and the
+        dispatcher would wait on a deadline the batch system will never
+        honour.
 
-        Best-effort correction: when ``SLURM_JOB_END_TIME`` (epoch seconds)
-        is visible, use the smaller of the limit and the time actually left.
-        That variable lives in the *allocation's* environment, so it helps
-        exactly when the broker runs inside the allocation too — the
-        co-located case — and is simply absent otherwise.
+        So the allocation's own ``end_time`` wins where the endpoint reports
+        one — an absolute epoch computed **inside** the allocation
+        (``squeue %L`` / PBS ``Walltime.Remaining``), which is the only
+        place the answer exists: the broker's environment describes the
+        broker's job, not this one.  An allocation already over is a **400**
+        rather than a one-second pilot; ``PilotSize.walltime_sec`` must be
+        at least 1 and a pilot that cannot outlive its own submission is not
+        a resource.
+
+        Without an ``end_time`` the limit is all there is, exactly as before.
         '''
-        limit = int(alloc.get('runtime') or _DEFAULT_WALLTIME)
-        end   = os.environ.get('SLURM_JOB_END_TIME')
-        if end:
-            try:
-                remaining = int(float(end) - time.time())
-                if 0 < remaining < limit:
-                    limit = remaining
-            except (TypeError, ValueError):
-                pass
-        return max(1, limit)
+        end = PluginFederation._alloc_end_time(alloc)
+        if end is not None:
+            remaining = int(end - time.time())
+            if remaining <= 0:
+                raise FederationStateError(
+                    f'the allocation has no time left (ended {-remaining}s '
+                    'ago): join a live allocation, or use mode login')
+            return remaining
+        return max(1, int(alloc.get('runtime') or _DEFAULT_WALLTIME))
+
+    @staticmethod
+    def _alloc_end_time(alloc: dict) -> float | None:
+        '''Return the allocation's end as an epoch, or ``None``.
+
+        The single parse site for the endpoint's ``end_time``, so the
+        walltime and the member's stored deadline can never disagree about
+        whether there is one.  An unparseable value is *absent*, not fatal:
+        the time limit still describes the allocation well enough to run in.
+        '''
+        end = alloc.get('end_time')
+        if not end:
+            return None
+        try:
+            return float(end)
+        except (TypeError, ValueError):
+            log.warning('federation: ignoring unparseable allocation '
+                        'end_time %r', end)
+            return None
 
     @staticmethod
     def _allocation_pool(rec: ResourceRecord, alloc: dict) -> dict:
         '''Return the allocation-mode half of a pool declaration.
 
-        The pilot **is** the allocation: one pilot, started at join
-        (``min_pilots=1``), sized from what the endpoint reports about its
-        own job.
+        The pilot **is** the allocation, literally: the endpoint that joined
+        runs inside it, so the declaration says ``pilot: endpoint`` and the
+        dispatcher adopts that endpoint instead of submitting a second
+        process onto it.  One pilot, live at join (``min_pilots=1``), sized
+        from what the endpoint reports about its own job and deadlined by
+        that job's ``end_time``.
 
         Per-node counts come from the allocation first, because a declared
         ``cores`` / ``gpus`` is a *total* for the resource while
@@ -1022,6 +1080,8 @@ class PluginFederation(Plugin):
             'account'    : None,
             'min_pilots' : 1,
             'max_pilots' : 1,
+            'pilot'      : PILOT_ENDPOINT,
+            'end_time'   : PluginFederation._alloc_end_time(alloc),
             'pilot_sizes': {_SIZE_KEY: {
                 'nodes'           : nodes,
                 'cpus_per_node'   : max(1, int(cpus)),
@@ -1771,7 +1831,11 @@ class PluginFederation(Plugin):
         The pilot-failure fields (``pilot_error``, ``pilot_failures``,
         ``paused_until``) come from the same per-member block and are
         **cleared** when it reports none: a member that has just produced a
-        healthy pilot must not keep wearing the last failure.
+        healthy pilot must not keep wearing the last failure.  So does
+        ``remaining_sec``, the walltime its longest-lived pilot still has —
+        the deadline is dispatcher state, and a member with an ``end_time``
+        of its own answers from that instead (see
+        :meth:`MemberRecord.remaining_sec`).
         '''
         usage = member.usage
         if detail is None:
@@ -1796,6 +1860,7 @@ class PluginFederation(Plugin):
                 usage.pilot_failures = int(
                     summary.get('consecutive_pilot_failures') or 0)
                 usage.paused_until   = summary.get('paused_until') or None
+                usage.remaining_sec  = summary.get('remaining_sec')
             else:
                 history = [e for e in (detail.get('pilot_history') or [])
                            if isinstance(e, dict)
@@ -1812,6 +1877,7 @@ class PluginFederation(Plugin):
                 usage.pilot_error    = None
                 usage.pilot_failures = 0
                 usage.paused_until   = None
+                usage.remaining_sec  = None
 
             budget = member.budget_node_hours()
             if remaining is None:
