@@ -5,6 +5,7 @@ Covers: the record dataclasses and their wire/persist views, the durable
 over a dispatcher ``pilot_history``, and the join-time validators.
 """
 
+import json
 import os
 
 from pathlib import Path
@@ -20,7 +21,7 @@ from radical.orbit.federation_state import (
     validate_attributes, validate_budget,
     validate_capabilities, validate_class, validate_member_name,
     validate_name, validate_pool_int, validate_scratch_base,
-    validate_software,
+    validate_scratch_for_host, validate_software,
 )
 
 
@@ -119,6 +120,33 @@ class TestFederationState:
         # re-register the *identical* pool
         assert got.pool_config['queue'] == 'allocation'
         assert back.ledger['t.1'].state == 'DONE'
+
+    def test_round_trip_keeps_an_unshared_scratch(self, tmp_path: Path):
+        p  = tmp_path / 'state.json'
+        st = FederationState(p)
+        st.resources['alpha'] = _rec(
+            shared_fs=False, scratch_base='/pscratch/sd/m/x/demo',
+            members={'default': MemberRecord(
+                member='default', shared_fs=False,
+                scratch_base='/pscratch/sd/m/x/demo')})
+        st.save()
+        got = FederationState(p).load().resources['alpha']
+        assert got.shared_fs   is False
+        assert got.scratch_base == '/pscratch/sd/m/x/demo'
+        # ... and so does its member's
+        assert got.members['default'].shared_fs is False
+
+    def test_a_state_file_without_shared_fs_loads_as_shared(self,
+                                                            tmp_path: Path):
+        # every record written before the flag existed describes a resource
+        # on the broker's own filesystem
+        p = tmp_path / 'state.json'
+        p.write_text(json.dumps({'resources': {'alpha': {
+            'name': 'alpha', 'endpoint': 'ep0',
+            'scratch_base': '/tmp/fed/alpha'}}}))
+        got = FederationState(p).load().resources['alpha']
+        assert got.shared_fs is True
+        assert got.members['default'].shared_fs is True
 
     def test_save_creates_parent_dirs(self, tmp_path: Path):
         st = FederationState(tmp_path / 'a' / 'b' / 'state.json')
@@ -288,6 +316,27 @@ class TestValidators:
     def test_scratch_base_names_the_field_it_rejected(self):
         with pytest.raises(FederationStateError, match='task.cwd'):
             validate_scratch_base('/etc/x', field='task.cwd')
+
+    def test_a_shared_scratch_goes_through_the_containment_rule(self):
+        assert validate_scratch_for_host('/tmp/fed/x') == '/tmp/fed/x'
+        with pytest.raises(FederationStateError, match='must lie under'):
+            validate_scratch_for_host('/pscratch/sd/m/x', shared=True)
+
+    def test_an_unshared_scratch_is_kept_exactly_as_declared(self):
+        # the path lives on another host: neither expanded nor resolved here
+        for path in ('/pscratch/sd/m/x/atomic-demo', '~/atomic-demo',
+                     '/ccsopen/home/x/tmp/atomic-demo/odo'):
+            assert validate_scratch_for_host(path, shared=False) == path
+
+    def test_an_unshared_scratch_must_still_be_absolute(self):
+        for bad in ('relative/path', '', None, 3):
+            with pytest.raises(FederationStateError):
+                validate_scratch_for_host(bad, shared=False)
+
+    def test_an_unshared_scratch_names_the_field_it_rejected(self):
+        with pytest.raises(FederationStateError, match='member gpu'):
+            validate_scratch_for_host('rel', shared=False,
+                                      field='member gpu.scratch_base')
 
     def test_allowed_bases_are_realpaths(self):
         assert allowed_bases() == [os.path.realpath(os.path.expanduser('~')),

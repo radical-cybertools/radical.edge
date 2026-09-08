@@ -270,6 +270,11 @@ class ResourceRecord:
     capabilities: dict = field(default_factory=dict)
     budget      : dict = field(default_factory=dict)
     scratch_base: str | None = None
+    # does the BROKER host see ``scratch_base``?  False for a resource on
+    # another machine, whose scratch tree only its own pilots can reach --
+    # the broker then neither validates that path against its own roots nor
+    # writes into it (task inputs travel through the pilot's staging plugin).
+    shared_fs   : bool = True
     pool        : dict | None = None      # login mode: the pool declaration
 
     # -- server-filled ------------------------------------------------------
@@ -631,6 +636,33 @@ def validate_scratch_base(path: str, *, field: str = 'scratch_base') -> str:
     raise FederationStateError(
         f'{field} must lie under {" or ".join(allowed_bases())}: {path!r} '
         f'(resolves to {resolved})')
+
+
+def validate_scratch_for_host(path: Any, *, shared: bool = True,
+                              field: str = 'scratch_base') -> str:
+    '''Return *path* validated against the host that actually owns it.
+
+    The one rule both the record-level and the member-level scratch go
+    through, so the two cannot drift:
+
+    - ``shared`` — the broker sees and writes this tree, so it obeys the
+      broker-local containment rule (:func:`validate_scratch_base`);
+    - not ``shared`` — the path names a directory on the *resource's* host.
+      The broker can neither resolve nor reach it, so judging it against the
+      broker's own ``~`` and ``/tmp`` would reject every legitimate remote
+      path.  It only has to be absolute (or ``~``-prefixed, expanded later
+      on that host), and it is kept **exactly as declared** — no
+      ``expanduser``, no ``realpath``: both would answer for the wrong
+      machine.
+    '''
+    if shared:
+        return validate_scratch_base(path, field=field)
+    if not isinstance(path, str) or not path:
+        raise FederationStateError(f'{field} must be a non-empty string')
+    if not (path.startswith('/') or path.startswith('~')):
+        raise FederationStateError(
+            f'{field} must be an absolute path (or use ~): {path!r}')
+    return path
 
 
 def validate_pool_int(decl: dict, key: str, *, default: int | None = None,

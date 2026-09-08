@@ -622,7 +622,7 @@ may contain dots and a member name may not).
 
 | Method | Path | Description |
 |----|----|----|
-| `POST` | `join/{sid}` | Join a resource. Body: the client fields of a resource record (`name`, `endpoint`, `mode`, `capabilities`, `budget`, optional `site`/`kind`/`scratch_base`, plus either a `members` list or a flat login `pool` block). Returns the full record, with each member's `member_id`, `class` and `pool_name`. **400** invalid declaration — bad name/mode/capabilities, a `scratch_base` outside `~` or `/tmp`, a malformed or unknown-keyed `pool`/member field, a duplicate or dotted member name, a `class` that does not match `^[a-z0-9][a-z0-9_-]*$`, `members` in allocation mode, or an `endpoint` that is the broker itself; **404** endpoint not connected; **409** name in use; **503** no task dispatcher hosted. A join is all-or-nothing: a member that fails to be added rolls the earlier ones back. |
+| `POST` | `join/{sid}` | Join a resource. Body: the client fields of a resource record (`name`, `endpoint`, `mode`, `capabilities`, `budget`, optional `site`/`kind`/`scratch_base`/`shared_fs`, plus either a `members` list or a flat login `pool` block). `shared_fs` (bool, default `true`) says whether the broker host sees `scratch_base`; with `false` the path names a directory on the resource's own host, so it is kept as declared and only has to be absolute (or `~`-prefixed), and each member inherits the flag. Returns the full record, with each member's `member_id`, `class` and `pool_name`. **400** invalid declaration — bad name/mode/capabilities, a non-bool `shared_fs`, a `shared_fs` `scratch_base` outside `~` or `/tmp` (a relative one when not shared), a malformed or unknown-keyed `pool`/member field, a duplicate or dotted member name, a `class` that does not match `^[a-z0-9][a-z0-9_-]*$`, `members` in allocation mode, or an `endpoint` that is the broker itself; **404** endpoint not connected; **409** name in use; **503** no task dispatcher hosted. A join is all-or-nothing: a member that fails to be added rolls the earlier ones back. |
 | `POST` | `leave/{sid}/{name}` | Remove each member from its class pool and forget the resource. Optional body `{"cancel_tasks": false}`. Returns `{"resource", "ok", "members_removed", "tasks_requeued", "tasks_failed", "tasks_cancelled"}`, plus `"errors"` (and `ok: false`) when a member could not be removed. Without `cancel_tasks` the live tasks are **not** cancelled — they may keep running on a sibling member — and their ledger entries survive, re-pointed to `resource: null` |
 | `GET` | `resources/{sid}` | `{"resources": [record, …]}` with usage refreshed (cached 2 s), sorted by name |
 | `GET` | `resource/{sid}/{name}` | One resource record with usage refreshed |
@@ -640,6 +640,7 @@ A resource record:
                       "software": ["lammps", "pytorch"]},
      "budget": {"node_hours": 40.0},
      "scratch_base": "/tmp/orbit/perlmutter_a",
+     "shared_fs": true,                   // false: a path on the resource
      "pool": {...},                       // login mode without members only
      "members": [
        {"member": "gpu", "member_id": "perlmutter_a.gpu",

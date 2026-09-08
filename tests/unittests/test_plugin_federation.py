@@ -2807,3 +2807,123 @@ class TestMemberScratchContainment:
         client, plugin, _ = _joinable(tmp_path)
         rec = _join(client, plugin, body).json()
         assert rec['members'][0]['scratch_base'] == own
+
+
+# ---------------------------------------------------------------------------
+# A resource that does NOT share the broker's filesystem
+# ---------------------------------------------------------------------------
+
+# a scratch tree on the resource's own host: absolute, and deliberately
+# nowhere near the broker's ``~`` or ``/tmp``
+_REMOTE_SCRATCH = '/pscratch/sd/m/x/atomic-demo'
+
+
+class TestUnsharedScratch:
+    """``shared_fs: false`` — ``scratch_base`` names a path on the resource.
+
+    The containment rule exists because the *broker* writes a shared tree.
+    A resource on another machine names a directory only its own pilots can
+    reach, so the broker must neither judge that path against its own roots
+    nor create it locally.
+    """
+
+    def test_an_unshared_allocation_join_keeps_a_remote_scratch(self,
+                                                                tmp_path):
+        client, plugin, fake = _joinable(tmp_path)
+        r = _join(client, plugin, _alloc_body(shared_fs=False,
+                                              scratch_base=_REMOTE_SCRATCH))
+        assert r.status_code == 200, r.text
+        rec = r.json()
+        assert rec['shared_fs']    is False
+        assert rec['scratch_base'] == _REMOTE_SCRATCH
+
+        member = rec['members'][0]
+        assert member['shared_fs']    is False
+        assert member['scratch_base'] == _REMOTE_SCRATCH
+
+        # ... and that is exactly what the dispatcher was told
+        decl = _member_decl(fake, 'fed-cpu', 'alpha.default')
+        assert decl['shared_fs']    is False
+        assert decl['scratch_base'] == _REMOTE_SCRATCH
+
+        # ... and what a client reads back off the listing and the detail
+        listed = client.get(f'{plugin.namespace}/resources/default').json()
+        assert listed['resources'][0]['shared_fs'] is False
+        detail = client.get(f'{plugin.namespace}/resource/default/alpha')
+        assert detail.json()['shared_fs'] is False
+
+    def test_an_unshared_join_creates_no_broker_local_scratch(
+            self, tmp_path, monkeypatch):
+        made = []
+        real = Path.mkdir
+
+        def _mkdir(self, *args, **kw):
+            made.append(str(self))
+            return real(self, *args, **kw)
+
+        monkeypatch.setattr(Path, 'mkdir', _mkdir)
+        client, plugin, _ = _joinable(tmp_path)
+        r = _join(client, plugin, _alloc_body(shared_fs=False,
+                                              scratch_base=_REMOTE_SCRATCH))
+        assert r.status_code == 200, r.text
+        assert _REMOTE_SCRATCH not in made
+
+    def test_an_unshared_scratch_must_still_be_absolute(self, tmp_path):
+        client, plugin, fake = _joinable(tmp_path)
+        r = _join(client, plugin, _alloc_body(shared_fs=False,
+                                              scratch_base='demo/scratch'))
+        assert r.status_code == 400
+        assert 'absolute' in r.text
+        assert fake.calls == []
+
+    def test_a_shared_join_still_refuses_a_remote_path(self, tmp_path):
+        # unchanged for every client that says nothing about shared_fs
+        client, plugin, fake = _joinable(tmp_path)
+        r = _join(client, plugin, _alloc_body(scratch_base=_REMOTE_SCRATCH))
+        assert r.status_code == 400
+        assert 'must lie under' in r.text
+        assert fake.calls == []
+
+    def test_a_join_without_shared_fs_is_shared(self, tmp_path):
+        client, plugin, fake = _joinable(tmp_path)
+        rec = _join(client, plugin, _alloc_body()).json()
+        assert rec['shared_fs']               is True
+        assert rec['members'][0]['shared_fs'] is True
+        assert _member_decl(fake, 'fed-cpu',
+                            'alpha.default')['shared_fs'] is True
+
+    def test_shared_fs_must_be_a_bool(self, tmp_path):
+        client, plugin, fake = _joinable(tmp_path)
+        r = _join(client, plugin, _alloc_body(shared_fs='yes'))
+        assert r.status_code == 400
+        assert 'shared_fs' in r.text
+        assert fake.calls == []
+
+    def test_declared_members_inherit_the_resource_shared_fs(self, tmp_path):
+        client, plugin, fake = _joinable(tmp_path)
+        body = _members_body(shared_fs=False, scratch_base=_REMOTE_SCRATCH)
+        rec  = _join(client, plugin, body).json()
+        assert [m['shared_fs'] for m in rec['members']] == [False, False]
+        decl = _member_decl(fake, 'fed-cpu', 'local_b.cpu')
+        assert decl['shared_fs']    is False
+        assert decl['scratch_base'] == _REMOTE_SCRATCH
+
+    def test_a_member_may_name_its_own_remote_scratch(self, tmp_path):
+        client, plugin, _ = _joinable(tmp_path)
+        body = _members_body(shared_fs=False, scratch_base=_REMOTE_SCRATCH)
+        body['members'][1]['scratch_base'] = '~/other-scratch'
+        rec = _join(client, plugin, body).json()
+        # kept verbatim: '~' is expanded on the resource's host, not here
+        assert rec['members'][1]['scratch_base'] == '~/other-scratch'
+
+    def test_the_flag_survives_a_restart(self, tmp_path):
+        client, plugin, _ = _joinable(tmp_path)
+        assert _join(client, plugin,
+                     _alloc_body(shared_fs=False,
+                                 scratch_base=_REMOTE_SCRATCH)
+                     ).status_code == 200
+        _, restarted = _make_plugin(tmp_path, dispatcher=_FakeDispatcher())
+        rec = restarted._state.resources['alpha']
+        assert rec.shared_fs   is False
+        assert rec.scratch_base == _REMOTE_SCRATCH
+        assert rec.members['default'].shared_fs is False

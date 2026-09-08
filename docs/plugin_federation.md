@@ -96,7 +96,8 @@ Resource fields:
 | `site`, `kind` | free text, for display |
 | `capabilities` | the **aggregate view** of the members (see below); still accepted and still returned |
 | `budget` | `{"node_hours": <float>}` — the aggregate of the member budgets |
-| `scratch_base` | optional; defaults to `<state root>/scratch/<name>`. Must lie under `~` or `/tmp` (the same rule the `staging` plugin enforces). A member that declares none inherits it |
+| `scratch_base` | optional; defaults to `<state root>/scratch/<name>`. With `shared_fs` (the default) it must lie under `~` or `/tmp` — the rule the `staging` plugin enforces, since the broker writes that tree. With `shared_fs: false` it names a path on the **resource's** host and only has to be absolute (or `~`-prefixed, expanded there): the broker neither resolves nor creates it. A member that declares none inherits it |
+| `shared_fs` | optional bool, default `true`: does the broker host see `scratch_base`? `false` for a resource on another machine — task inputs then travel through the pilot's own `staging` plugin. A member that declares none inherits it |
 | `members` | login mode only — one entry per shape (see below) |
 | `pool` | login mode only, and only **without** `members` — the flat batch declaration. Sending both is a **400**: one of the two would be silently ignored |
 

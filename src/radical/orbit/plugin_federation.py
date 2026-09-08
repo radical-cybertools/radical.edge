@@ -117,7 +117,7 @@ from .federation_state      import (
     node_hours_from_history, resource_attributes, validate_attributes,
     validate_budget, validate_capabilities, validate_class,
     validate_member_name, validate_name, validate_pool_int,
-    validate_scratch_base, validate_software,
+    validate_scratch_for_host, validate_software,
 )
 
 log = logging.getLogger('radical.orbit')
@@ -779,7 +779,7 @@ class PluginFederation(Plugin):
             max_pilots       = decl['max_pilots'],
             rhapsody_backend = size['rhapsody_backend'],
             scratch_base     = rec.scratch_base,
-            shared_fs        = True,
+            shared_fs        = rec.shared_fs,
             software         = list(caps.get('software') or []),
             attributes       = resource_attributes(rec.site, rec.kind,
                                                    caps.get('mem_gb')),
@@ -829,14 +829,15 @@ class PluginFederation(Plugin):
             raise FederationStateError(
                 f"'{label}.rhapsody_backend' must be a non-empty string")
 
-        shared = decl.get('shared_fs', True)
+        # a member that says nothing shares whatever the resource shares
+        shared = decl.get('shared_fs', rec.shared_fs)
         if not isinstance(shared, bool):
             raise FederationStateError(f"'{label}.shared_fs' must be a bool")
 
         scratch = decl.get('scratch_base')
         if scratch:
-            scratch = validate_scratch_base(
-                scratch, field=f'{label}.scratch_base')
+            scratch = validate_scratch_for_host(
+                scratch, shared=shared, field=f'{label}.scratch_base')
         else:
             # a member that names no scratch inherits the resource's — the
             # common case, where every member shares one home tree
@@ -1137,9 +1138,13 @@ class PluginFederation(Plugin):
             budget = validate_budget(
                 body.get('budget'),
                 required=(mode == MODE_LOGIN and not declared_members))
+            # a resource on another machine names a scratch tree on ITS host
+            shared = body.get('shared_fs', True)
+            if not isinstance(shared, bool):
+                raise FederationStateError("'shared_fs' must be a bool")
             scratch = body.get('scratch_base')
-            scratch = (validate_scratch_base(scratch) if scratch
-                       else str(self._scratch_for(name)))
+            scratch = (validate_scratch_for_host(scratch, shared=shared)
+                       if scratch else str(self._scratch_for(name)))
         except FederationStateError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
 
@@ -1167,6 +1172,7 @@ class PluginFederation(Plugin):
             capabilities   = await self._discover_capabilities(endpoint, caps),
             budget         = budget,
             scratch_base   = scratch,
+            shared_fs      = shared,
             pool           = None if declared_members else body.get('pool'),
             joined_at      = time.time(),
             dispatcher_sid = FED_SESSION_SID,
@@ -1244,11 +1250,16 @@ class PluginFederation(Plugin):
                                 member.member_id, e)
             raise
 
-        try:
-            Path(rec.scratch_base).mkdir(parents=True, exist_ok=True)
-        except OSError as e:
-            log.warning('[%s] could not create scratch %s: %s',
-                        self.instance_name, rec.scratch_base, e)
+        # only a shared tree is the broker's to create: an unshared
+        # scratch_base names a directory on the resource's own host, which
+        # its pilot creates -- mkdir'ing that path here would make a stray
+        # broker-local directory, never the one the tasks will use.
+        if rec.shared_fs:
+            try:
+                Path(rec.scratch_base).mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                log.warning('[%s] could not create scratch %s: %s',
+                            self.instance_name, rec.scratch_base, e)
 
         self._state.resources[name] = rec
         self._attached.update(m.member_id for m in members)
