@@ -1,6 +1,6 @@
 # 122 — An endpoint inside an allocation *is* the pilot
 
-Status: revised after review round 1, 2026-09-08. Branch: `feature/atomic-federation`.
+Status: revised after review round 2, 2026-09-08 -- ready to implement. Branch: `feature/atomic-federation`.
 Depends on: 121 (class pools with members). Companion: ATOMIC `plans/09`.
 
 ## Problem
@@ -27,13 +27,21 @@ The endpoint that joined is the pilot. The dispatcher should adopt it.
 
 ### Member flag
 
-`PoolMember` gains `pilot: "endpoint" | "submit"` (default `submit`).
-`parse_member` accepts it, `_member_fingerprint` includes it (or the
-federation's idempotent re-POST 409s after the upgrade), `PoolConfig.to_dict`
-persists it for replay. The federation sets `pilot: endpoint` on the
-implicit member of an allocation-mode resource; a declared member may set
-it too. For such a member `max_pilots` is forced to 1 (`max_pilots_total`
-stays a plain sum).
+`PoolMember` gains `pilot: "endpoint" | "submit"` (default `submit`) and
+`end_time` (epoch or null). `parse_member` accepts both; `PoolConfig.to_dict`
+persists them for replay. `_member_fingerprint` is `asdict(member)`, so
+both are part of it automatically -- which means the first broker restart
+after the upgrade replays a pool whose member says `submit` while the
+federation re-POSTs `endpoint`: a one-time 409, after which
+`_replay_attachments` marks the member lost and re-adds it. Upgrade step:
+document "restart the broker with an empty dispatcher state dir" (the demo's
+broker.sh does that anyway), or tolerate a fingerprint that differs only in
+`pilot`/`end_time` by treating the POST as an update. The federation sets
+`pilot: endpoint` on the implicit member of an allocation-mode resource; a
+declared member may set it too. For such a member `min_pilots` and
+`max_pilots` are both forced to 1 (adoption is driven by the floor step;
+`min_pilots = 0` would never adopt until backlog; `max_pilots_total` stays
+a plain sum).
 
 ### Adopt through the existing topology path, not by hand
 
@@ -74,14 +82,18 @@ name:
 - *present again*: the federation re-adds the member; next tick,
   `min_pilots = 1` → a fresh adoption (new pilot id).
 
-No new subscription mechanism. One change: an adopted pilot that ends
-because its member is removed (leave) or its endpoint is gone is marked
-**DONE**, not FAILED, so it does not feed the member's failure counter or
-`pilot_error` — a leave is not a failure. Independently, `_last_pilot_error`
-must stop at the newest pilot that reached ACTIVE (or `pilot_error` is
-cleared while `pilots_active > 0`), otherwise a member shows a stale error
-under an `ok` row after a lost→present cycle. That fix belongs to the
-surfacing work landing now and is a prerequisite here.
+No new subscription mechanism. One rule, applied at both places where an
+adopted pilot can end: **an adopted pilot (record without a psij job id)
+that ends because its endpoint is gone or its member is removed is marked
+DONE, never FAILED**, regardless of the deadline -- a leave or an
+allocation ending is not a failure and must not feed the member's failure
+counter or `pilot_error`. The two entry points are the topology `lost`
+branch (`_reconcile_pilots_for`, which today chooses FAILED before the
+deadline) and `del_member` → `_do_pilot_cancel` (which today stamps
+FAILED 'cancel requested' for a record without a job id); the federation
+and dispatcher hooks run in plugin-host order, so either may fire first.
+`_last_pilot_error` stopping at the newest pilot that reached ACTIVE is
+already in (surfacing commit 9d69484).
 
 ### Deadline
 
@@ -98,15 +110,24 @@ endpoint disappears; that is current behaviour and acceptable.
 `_allocation_walltime` reads `SLURM_JOB_END_TIME` from the **broker's**
 environment; wrong for a remote allocation, and that variable needs Slurm
 ≥ 23.02 anyway. Instead `queue_info/job_allocation` reports `end_time`
-(epoch) from inside the allocation: Slurm adds `%e` to the `squeue` call
-already made in `SlurmBatchSystem.job_allocation`; PBS uses
-`Walltime.Remaining` from `qstat -f` when present, else `stime +
-Resource_List.walltime`. The federation sets the member's `walltime_sec =
-end_time - now` at join (400 if ≤ 0: no 1-second pilots;
+(epoch) computed inside the allocation as `now + time_left`: Slurm adds
+`%L` (time left, `D-HH:MM:SS`, parsed by the existing `_parse_slurm_time`)
+to the `squeue` call already made in `SlurmBatchSystem.job_allocation` --
+not `%e`, which prints local wall-clock text; PBS uses `Walltime.Remaining`
+(seconds) from `qstat -f` when present, else `stime + Resource_List.walltime`
+with `strptime` on the ctime text. The federation sets the member's
+`walltime_sec = end_time - now` at join (400 if ≤ 0: no 1-second pilots;
 `PilotSize.walltime_sec` must be ≥ 1) and exposes `remaining_sec`
 recomputed on every read. No `end_time` → `walltime_sec = runtime` as
-today, `remaining_sec = null`. For a submit-mode member `remaining_sec` is
-the max over its live pilots of `walltime_deadline - now` (pilot history
+today, `remaining_sec = null`.
+
+`end_time` is also stored on the member (`PoolMember.end_time`,
+`MemberRecord.end_time`, absolute epoch, fingerprint-stable), because a
+member is re-POSTed with the join-time `walltime_sec` on every re-attach
+and `_submit_pilot` would otherwise give a re-adopted pilot a deadline past
+the allocation's end. `_submit_pilot` uses `min(now + walltime_sec,
+end_time)` when `end_time` is set. For a submit-mode member `remaining_sec`
+is the max over its live pilots of `walltime_deadline - now` (pilot history
 carries `walltime_deadline`), null when it has none.
 
 ### Payload: add, never rename
@@ -119,10 +140,17 @@ resource level. New per member: `endpoint` (the member's endpoint name),
 `federation.js`, ATOMIC's `atomic_campaign.js`, `smoke.py` and their tests
 read `member`.
 
-State per member: `lost`, `failing`, `stale`, `idle` (ok, `pilots_active ==
-0`, no failure; submit-mode only — an adopted member with a live endpoint
-and no ACTIVE pilot is `failing`), `ok`. Resource state: the worst of its
-members' (lost > failing > stale > idle > ok); task counts summed.
+State per member (`MemberRecord.state()`, already the derivation point
+since 9d69484): `lost`, `failing`, `stale`, `idle` (ok, `pilots_active ==
+0`, no recorded failure), `ok`. An adopted member is `failing` only on a
+recorded failure (`pilot_error` set), never merely because no pilot is
+ACTIVE yet -- the join→first-tick window and `_activate_pilot`'s
+zero-capacity return would otherwise flash `failing`. `MemberRecord` gains
+`pilot`, `endpoint` and `end_time` (touch `member_from_dict`,
+`_derive_member`, `_implicit_member`, `_declared_member`, `_member_decl`,
+`to_wire`). Resource state: the worst of its members' (lost > failing >
+stale > idle > ok); the resource row keeps the record's own task counts
+(they include unplaced tasks; member counts are placed only).
 `federation.js` gets CSS for `idle` (ATOMIC's `statusCell` maps unknown
 values to "unknown", so the alias must land on both sides together).
 
@@ -154,12 +182,15 @@ head node); reservation/pinning (still deferred, see 120 notes).
   delivery; still absent after `_HANDSHAKE_TIMEOUT_SEC` → FAILED with the
   reason;
 - second `_submit_pilot` is a no-op; `max_pilots` forced to 1;
-- suspect → paused; lost → requeue + DONE-or-FAILED per deadline; member
-  re-add → new adoption;
+- suspect → paused; lost → requeue + DONE (adopted: never FAILED); member
+  re-add → new adoption with a deadline capped by `end_time`;
 - leave → pilot DONE, no failure counted, `pilot_error` null;
+- declared member with `pilot: endpoint` → adopted at the first tick
+  (`min_pilots` forced to 1);
 - `min_remaining_sec`: no placement and no capacity credit near the end;
-- `job_allocation.end_time` on Slurm (`%e` parsing, fixture) and PBS
-  (`Walltime.Remaining` and the fallback); join 400 when ≤ 0;
+- `job_allocation.end_time` on Slurm (`%L` parsing, fixture incl.
+  `UNLIMITED`) and PBS (`Walltime.Remaining` and the fallback); join 400
+  when ≤ 0; `end_time` round-trips through `parse_member`/`to_dict`;
   `remaining_sec` decreases between two reads; submit-mode max-over-pilots;
 - payload: new fields present, old names unchanged (assert `member` and
   `pool_name` still there), `idle` derivation, resource worst-of;
