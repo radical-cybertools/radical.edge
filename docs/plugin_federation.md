@@ -764,10 +764,13 @@ miss, so **restart the broker after editing the module**.
   `child_endpoint` is for. Base64 in a JSON body is ~1.33× the file size
   and rides the broker frame path: fine for a few-KB input file, wrong for
   a multi-MB restart file, and capped dispatcher-side with a `413`.
-- **A member's declaration is immutable.** There is no partial update and no
-  quiesce: an identical re-POST is a no-op, a differing one is a 409, and
+- **A member's declaration is immutable, bar two fields.** There is no
+  partial update and no quiesce: an identical re-POST is a no-op, and
   changing a member's budget or size means removing and re-adding it, i.e.
-  re-joining the resource. Budget top-up is out of scope.
+  re-joining the resource. Budget top-up is out of scope. The exceptions are
+  `pilot` and `end_time` — facts about the resource rather than a
+  redeclaration of it — which a re-POST updates in place (see the upgrade
+  note below); a declaration differing in anything else is still a 409.
 - **The dispatcher's `recent_tasks` is capped at 50** per pool, which is why
   task counts come from the federation's own ledger. That ledger grows
   without bound; a `leave` drops only a resource's *terminal* entries and
@@ -790,18 +793,18 @@ miss, so **restart the broker after editing the module**.
   endpoint runs rhapsody on the allocation's head node with the `concurrent`
   backend; nothing spreads tasks across the other nodes of that allocation,
   and nothing reserves or pins a device.
-- **An operator note on upgrading to 122.** A member's declaration
-  fingerprint is `asdict(member)`, so it now includes `pilot` and
-  `end_time`, and a member's declaration is immutable (see above). A broker
-  restarted onto a **pre-122 dispatcher state dir** therefore replays a pool
-  whose stored member still says `submit` while the federation re-POSTs it
-  as `endpoint`: that re-attach answers **409**, and the member stays
-  detached and reported `lost` for as long as the stale declaration is on
-  disk. **Restart the broker with an empty dispatcher state dir** (the
-  demo's `broker.sh` does that anyway); the federation's own `state.json`
-  needs no migration, since its members are rebuilt from the join and a
-  pre-08 record's derived member is given `pilot: endpoint` when its mode is
-  `allocation`.
+- **Upgrading to 122 is transparent — no state dir has to be wiped.** Both
+  halves of the stale-declaration problem are handled on load. The
+  federation's `state.json`: an allocation-mode member stored without a
+  `pilot` key is read back as `pilot: endpoint` (its mode says what it is),
+  so the first re-POST after the upgrade does not ask for the psij child
+  again. The dispatcher's pool state: `pilot` and `end_time` are the two
+  fields a re-POST may **update in place**, so a replayed member still
+  saying `submit` is corrected rather than answering 409 — the response says
+  `{"created": false, "updated": true}`. Every other field stays immutable,
+  and a declaration differing in one of those is still a 409. The updated
+  `end_time` caps the *next* pilot's deadline; a pilot already live keeps
+  the deadline it was given.
 - **Sanity ceilings, not policy.** A declared login-mode pool is capped at
   1024 pilots, 100 000 nodes, 4096 cpus/node, 256 gpus/node and 30 days of
   walltime. These only catch a typo before it reaches a batch system; they

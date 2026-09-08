@@ -117,6 +117,15 @@ class PilotRecord:
     nodes              : int         = 0
     cpus_per_node      : int         = 0
     gpus_per_node      : int         = 0
+    # This pilot **is** an endpoint the dispatcher adopted (a
+    # ``pilot: endpoint`` member, plan 122), not a batch job it submitted.
+    # Stamped once at creation and persisted, because the two end
+    # differently -- an adopted pilot goes DONE, never FAILED, when its
+    # endpoint disappears or its member is removed -- and the distinction
+    # has to survive a restart.  Deliberately NOT inferred from a missing
+    # ``psij_job_id``: a *submitted* pilot has none either, for the window
+    # between its child endpoint name being pre-bound and psij answering.
+    adopted            : bool        = False
 
     def lag(self) -> float | None:
         '''Return the PENDING→ACTIVE duration, or ``None`` if not yet active.'''

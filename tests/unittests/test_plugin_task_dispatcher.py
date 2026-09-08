@@ -2731,6 +2731,60 @@ class TestAddMemberFingerprint:
                                      attributes={'software': ['a', 'c']}))
         assert r.status_code == 409
 
+    def test_an_identical_repost_says_it_updated_nothing(self, tmp_path):
+        plugin, client, sid = _class_session(tmp_path)
+        r = client.post(f'{plugin.namespace}/pool/{sid}/fed/members',
+                        json=_member('m_x'))
+        assert r.status_code == 200, r.text
+        assert (r.json()['created'], r.json()['updated']) == (False, False)
+
+    def test_only_the_pilot_mode_differing_updates_in_place(self, tmp_path):
+        """The upgrade path: a member replayed off a pre-122 state dir says
+        `submit` while the federation re-POSTs it as `endpoint`.  A 409 there
+        would leave the member detached until the state dir was wiped."""
+        end = time.time() + 900
+        plugin, client, sid = _class_session(tmp_path, members=[
+            _member('m_x', endpoint_name='alloc_ep')])
+        r = client.post(f'{plugin.namespace}/pool/{sid}/fed/members',
+                        json=_member('m_x', endpoint_name='alloc_ep',
+                                     pilot='endpoint', end_time=end))
+        assert r.status_code == 200, r.text
+        assert (r.json()['created'], r.json()['updated']) == (False, True)
+
+        member = _pool(plugin, sid, 'fed').config.members['m_x']
+        assert member.pilot    == 'endpoint'
+        assert member.end_time == end
+        # ... and the new mode brings its own pilot bounds with it
+        assert (member.min_pilots, member.max_pilots) == (1, 1)
+        # the update is durable: a reload sees the new declaration
+        _, plugin2 = _make_plugin(tmp_path)
+        assert _pool(plugin2, sid, 'fed').config.members['m_x'].pilot \
+            == 'endpoint'
+
+    def test_a_moved_end_time_alone_updates_in_place(self, tmp_path):
+        """A re-join reports a new allocation end; that is a fact about the
+        resource, not a redeclaration of it."""
+        plugin, client, sid = _class_session(tmp_path, members=[
+            _member('m_x', pilot='endpoint', end_time=time.time() + 60)])
+        later = time.time() + 3600
+        r = client.post(f'{plugin.namespace}/pool/{sid}/fed/members',
+                        json=_member('m_x', pilot='endpoint',
+                                     end_time=later))
+        assert r.status_code == 200, r.text
+        assert r.json()['updated'] is True
+        assert _pool(plugin, sid, 'fed').config.members['m_x'].end_time \
+            == later
+
+    def test_a_pilot_mode_change_plus_a_real_change_is_still_409(self,
+                                                                tmp_path):
+        plugin, client, sid = _class_session(tmp_path, members=[
+            _member('m_x')])
+        r = client.post(f'{plugin.namespace}/pool/{sid}/fed/members',
+                        json=_member('m_x', pilot='endpoint', queue='other'))
+        assert r.status_code == 409
+        assert _pool(plugin, sid, 'fed').config.members['m_x'].pilot \
+            == 'submit'
+
 
 # ---------------------------------------------------------------------------
 # An endpoint inside an allocation IS the pilot (plan 122)
@@ -2808,6 +2862,26 @@ class TestEndpointAdoption:
         _, rec = self._adopt(plugin, ps)
         asyncio.run(plugin._reconcile_overdue_pilots(time.time()))
         assert rec.state == PILOT_PENDING
+
+    def test_a_suspect_endpoint_is_not_activated_on_the_spot(self, tmp_path):
+        """It is still in the topology but on its way out, so the record
+        waits for the delivery that says `present` -- exactly as a submitted
+        pilot's child does."""
+        plugin, _, _, ps = self._session(tmp_path)
+        plugin._suspect_endpoints = {_ALLOC_EP}
+        _, rec = self._adopt(plugin, ps)
+        assert rec.state == PILOT_PENDING
+
+        asyncio.run(plugin.on_topology_change(_child_topo(_ALLOC_EP)))
+        assert rec.state == PILOT_ACTIVE
+
+    def test_topology_tracks_which_endpoints_are_suspect(self, tmp_path):
+        plugin, _, _, _ = self._session(tmp_path)
+        asyncio.run(plugin.on_topology_change(
+            _child_topo(_ALLOC_EP, 'suspect')))
+        assert plugin._suspect_endpoints == {_ALLOC_EP}
+        asyncio.run(plugin.on_topology_change(_child_topo(_ALLOC_EP)))
+        assert plugin._suspect_endpoints == set()
 
     def test_a_second_adoption_is_a_no_op(self, tmp_path):
         """There is one endpoint to adopt; a second record would bind a
@@ -2938,6 +3012,13 @@ class TestEndpointAdoption:
         assert member['end_time'] is None
         assert member['remaining_sec'] == pytest.approx(900, abs=5)
 
+        # a pilot past a mis-estimated deadline has nothing left rather than
+        # owing time: the summary must never report a negative runway
+        for pilot in ps.pilots.values():
+            pilot.walltime_deadline = now - 300
+        r = client.get(f'{plugin.namespace}/pool/{sid}/fed')
+        assert r.json()['members'][0]['remaining_sec'] == 0.0
+
     def test_the_floor_adopts_a_declared_endpoint_member_on_tick(self,
                                                                 tmp_path):
         """min_pilots is forced to 1, so the floor step does the adopting --
@@ -2981,6 +3062,86 @@ class TestEndpointAdoption:
             ps2.policy.on_tick(ps2, plugin2._make_submit_pilot(ps2))
         assert list(ps2.pilots) == [pid]
         assert submit.await_count == 0
+        assert back.adopted is True     # the stamp survives the reload too
+
+
+class TestInFlightSubmitIsNotAdoption:
+    """``_do_pilot_submit`` pre-binds the child endpoint name *before*
+    awaiting psij, so for the length of that submit a **submitted** record
+    carries a child name and no ``psij_job_id`` — which is why adoption is an
+    explicit stamp on the record and never inferred from those two.
+    """
+
+    def _pending(self, tmp_path, **kw):
+        _, plugin = _make_plugin(tmp_path)
+        plugin._dispatch_notify = lambda t, d: None
+        plugin._materialise_pool('A', _make_pool_cfg())
+        ps  = _pool(plugin, 'A', 'cpu')
+        rec = PilotRecord(
+            pid='p.1', pool='cpu', owning_sid='A', size_key='s',
+            rhapsody_backend='concurrent', state=PILOT_PENDING,
+            submitted_at=time.time(), child_endpoint_name='cpu__p.1',
+            walltime_deadline=time.time() + 3600, **kw)
+        ps.pilots['p.1'] = rec
+        return plugin, ps, rec
+
+    def test_a_pre_bound_record_without_a_job_id_is_not_adopted(self,
+                                                               tmp_path):
+        plugin, _, rec = self._pending(tmp_path)
+        assert rec.adopted is False
+        assert plugin._is_adopted(rec) is False
+
+    def test_the_handshake_sweep_does_not_fail_an_in_flight_submit(self,
+                                                                  tmp_path):
+        """It would read as "endpoint never connected" and kill a submission
+        that is still perfectly alive."""
+        from radical.orbit.plugin_task_dispatcher import _HANDSHAKE_TIMEOUT_SEC
+        plugin, ps, rec = self._pending(tmp_path)
+        rec.submitted_at -= _HANDSHAKE_TIMEOUT_SEC + 1
+        with patch.object(plugin, '_get_psij_client',
+                          new=AsyncMock(return_value=None)):
+            asyncio.run(plugin._reconcile_overdue_pilots(time.time()))
+        assert rec.state == PILOT_PENDING
+        assert rec.error is None
+
+    def test_cancelling_an_in_flight_submit_fails_it(self, tmp_path):
+        """DONE is the *adopted* verdict.  A submitted record may already
+        have a batch job behind it, so it fails with a reason."""
+        plugin, ps, rec = self._pending(tmp_path)
+        with patch.object(plugin, '_get_psij_client',
+                          new=AsyncMock(return_value=None)):
+            asyncio.run(plugin._do_pilot_cancel(ps, rec))
+        assert rec.state == PILOT_FAILED
+        assert rec.error == 'cancel requested'
+
+    def test_a_late_submit_result_does_not_resurrect_a_terminal_record(
+            self, tmp_path):
+        """The record went terminal under the await (member removed, session
+        closed): STARTING must not be written back, and the job that was
+        started in the meantime has to be cancelled -- it would otherwise
+        hold the allocation with nobody waiting for it."""
+        plugin, ps, rec = self._pending(tmp_path)
+        size = ps.config.pilot_sizes['s']
+
+        psij_mock = MagicMock()
+        psij_mock.cancel_job = MagicMock()
+
+        def _submit(*args, **kw):
+            # the state change that lands while psij is being called
+            plugin._mark_pilot_failed(ps, rec, 'cancel requested')
+            return {'job_id': 'jid'}
+
+        psij_mock.submit_tunneled = MagicMock(side_effect=_submit)
+        with patch.object(plugin, '_get_psij_client',
+                          new=AsyncMock(return_value=psij_mock)), \
+             patch('radical.orbit.batch_system.detect_batch_system') as bs:
+            bs.return_value.psij_executor = 'local'
+            asyncio.run(plugin._do_pilot_submit(ps, rec, size))
+
+        assert rec.state       == PILOT_FAILED
+        assert rec.error       == 'cancel requested'
+        assert rec.psij_job_id is None
+        psij_mock.cancel_job.assert_called_once_with('jid')
 
 
 class TestLegacyPilotMemberId:

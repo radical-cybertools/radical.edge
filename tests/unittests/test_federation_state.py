@@ -573,6 +573,47 @@ class TestRemainingSec:
         assert member_from_dict(m.to_wire()) == m
 
 
+class TestPilotModeMigration:
+    """A ``state.json`` written by a 121 broker has members with no ``pilot``.
+
+    Defaulting those to ``submit`` would make the first re-POST after the
+    upgrade ask for a batch job on the compute node the endpoint is already
+    sitting on — exactly the second endpoint plan 122 removed.
+    """
+
+    def _raw(self, mode, **member_kw):
+        member = {'member': 'default', 'member_id': 'alpha.default',
+                  'class': 'gpu', 'pool_name': 'fed-gpu', 'queue': 'alloc',
+                  'nodes': 2, 'cpus_per_node': 64, 'gpus_per_node': 4,
+                  'walltime_sec': 1800}
+        member.update(member_kw)
+        return {'name': 'alpha', 'endpoint': 'ep0', 'mode': mode,
+                'members': [member]}
+
+    def test_an_allocation_member_loads_as_an_adopted_endpoint(self):
+        m = record_from_dict(self._raw(MODE_ALLOCATION)).members['default']
+        assert m.pilot    == 'endpoint'
+        assert m.endpoint == 'ep0'
+
+    def test_a_login_member_keeps_submitting(self):
+        m = record_from_dict(self._raw(MODE_LOGIN)).members['default']
+        assert m.pilot == 'submit'
+
+    def test_an_explicit_pilot_is_never_overridden(self):
+        """Only a *missing* key is migrated: an operator who wrote `submit`
+        on an allocation member said what they meant."""
+        raw = self._raw(MODE_ALLOCATION, pilot='submit')
+        assert record_from_dict(raw).members['default'].pilot == 'submit'
+
+    def test_the_migration_survives_a_save_and_reload(self, tmp_path):
+        p  = tmp_path / 'state.json'
+        st = FederationState(p)
+        st.resources['alpha'] = record_from_dict(self._raw(MODE_ALLOCATION))
+        st.save()
+        back = FederationState(p).load().resources['alpha']
+        assert back.members['default'].pilot == 'endpoint'
+
+
 class TestSingleMemberDerivation:
     """A state.json written before class pools must still load."""
 

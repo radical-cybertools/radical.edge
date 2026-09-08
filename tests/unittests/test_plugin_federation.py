@@ -1874,6 +1874,30 @@ class TestRestartReattach:
         await plugin2.on_topology_change(_topo(ep0='present'))
         assert plugin2._state.resources['alpha'].liveness == LIVENESS_LOST
 
+    @pytest.mark.asyncio
+    async def test_a_pre122_state_file_re_attaches_as_an_endpoint(self,
+                                                                 tmp_path):
+        """The upgrade case: a `state.json` from a 121 broker carries no
+        `pilot` on its allocation member.  Re-POSTing that as `submit` would
+        launch the psij child again, on the compute node the endpoint already
+        owns."""
+        client, plugin, _fake = _joinable(tmp_path)
+        _join(client, plugin, _alloc_body())
+
+        raw    = json.loads(plugin._state.path.read_text())
+        member = raw['resources']['alpha']['members']['default']
+        for key in ('pilot', 'end_time', 'endpoint'):
+            member.pop(key, None)
+        plugin._state.path.write_text(json.dumps(raw))
+
+        fake2   = _FakeDispatcher()
+        plugin2 = self._restart(tmp_path, fake2)
+        await plugin2.on_topology_change(_topo(ep0='present'))
+        assert _member_decl(fake2, 'fed-cpu', 'alpha.default')['pilot'] \
+            == 'endpoint'
+        assert plugin2._state.resources['alpha'].members[
+            'default'].endpoint == 'ep0'
+
 
 class TestUpgradeFromPre08:
     """A state.json written before class pools, replayed once."""

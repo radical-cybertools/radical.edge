@@ -138,7 +138,14 @@ class SlurmBatchSystem(BatchSystem):
                 f"Cannot query runtime for job {job_id}: {exc}") from exc
         fields    = (stdout.strip().split(';') + [''])[:2]
         runtime   = _parse_slurm_time(fields[0])
-        remaining = _parse_slurm_time(fields[1])
+        try:
+            remaining = _parse_slurm_time(fields[1])
+        except RuntimeError:
+            # end_time is optional and runtime is not: a ``%L`` token this
+            # parser does not know (an odd Slurm build, an INVALID) must not
+            # take the whole allocation summary -- and with it the endpoint's
+            # federation join -- down with it.
+            remaining = None
         # An absolute instant, computed inside the allocation: a remaining
         # time is only true at the moment it was read, and the consumer of
         # this summary is on another host.

@@ -597,6 +597,12 @@ def record_from_dict(data: dict) -> ResourceRecord:
     ``members`` at all is **pre-08**: exactly one member is derived from its
     stored pool declaration (:func:`_derive_member`), so the rest of the
     federation only ever sees one shape.
+
+    Two fields are **migrated** rather than defaulted, because their
+    dataclass default would be actively wrong for an older record: a
+    member's ``endpoint`` (the resource's, since a resource has one) and, in
+    ``allocation`` mode, its ``pilot`` (``endpoint`` -- the endpoint is
+    inside the allocation, whatever a pre-122 file says).
     '''
     known = {f for f in ResourceRecord.__dataclass_fields__}
     kw    = {k: v for k, v in (data or {}).items() if k in known}
@@ -618,6 +624,14 @@ def record_from_dict(data: dict) -> ResourceRecord:
             # gets the resource's -- which is the one they were always
             # served by, since a resource has exactly one.
             m.endpoint = m.endpoint or rec.endpoint
+            # ... and one written before ``pilot`` existed defaults to
+            # ``submit``, which for an allocation-mode resource means "start
+            # a batch job on the compute node you are already sitting on" --
+            # precisely the second endpoint plan 122 removed, re-POSTed on
+            # the first restart after the upgrade.  The mode says what it
+            # is, so migrate it here, on load.
+            if rec.mode == MODE_ALLOCATION and 'pilot' not in entry:
+                m.pilot = PILOT_ENDPOINT
             rec.members[m.member] = m
     else:
         m = _derive_member(rec)

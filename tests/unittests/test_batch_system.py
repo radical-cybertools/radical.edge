@@ -243,6 +243,14 @@ class TestSlurmBackend:
         assert alloc['runtime']  == 3600
         assert alloc['end_time'] is None
 
+    def test_an_unparseable_time_left_does_not_break_the_summary(self):
+        """`end_time` is optional where `runtime` is not: a `%L` token this
+        parser does not know must not take the allocation summary -- and with
+        it the endpoint's federation join -- down with it."""
+        alloc, _ = self._alloc('01:00:00;INVALID\n')
+        assert alloc['runtime']  == 3600
+        assert alloc['end_time'] is None
+
 
 class TestParseSlurmTime:
 
