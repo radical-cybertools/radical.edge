@@ -1,6 +1,6 @@
 # 122 — An endpoint inside an allocation *is* the pilot
 
-Status: draft 2026-09-08 (post ATOMIC demo). Branch: `feature/atomic-federation`.
+Status: revised after review round 1, 2026-09-08. Branch: `feature/atomic-federation`.
 Depends on: 121 (class pools with members). Companion: ATOMIC `plans/09`.
 
 ## Problem
@@ -10,13 +10,13 @@ An allocation-mode resource (Perlmutter or Odo compute node, `atomic-join
 the task dispatcher still treats its one implicit member like a login-node
 member: it submits a *second* endpoint (`fed-gpu_odo.default_p.<id>`)
 through the first endpoint's `psij` plugin with the `local` executor, and
-only that child runs tasks. Consequences seen on 2026-09-08:
+only that child runs tasks. Seen on 2026-09-08:
 
-- the compute-node default plugin set has no `psij`, so the pilot never
-  launched until the join passed `--plugins default,psij`;
+- the compute-node default plugin set has no `psij`, so no pilot launched
+  until the join passed `--plugins default,psij`;
 - the child inherited a broker-host cert path and a broker-host tool prefix
-  (both fixed), and every such host-specific detail has to be re-derived for
-  a process the dispatcher does not need;
+  (both fixed since), and every such host-specific detail has to be
+  re-derived for a process the dispatcher does not need;
 - the UI shows a `default` member row that users read as "what is this?";
 - one extra process per resource, one extra registration, one extra
   liveness to track.
@@ -25,102 +25,154 @@ The endpoint that joined is the pilot. The dispatcher should adopt it.
 
 ## Design
 
-### Dispatcher: adopt instead of submit
+### Member flag
 
-`PoolMember` gains a boolean `pilot_is_endpoint` (wire name
-`pilot: "endpoint"` in the member declaration; default `pilot: "submit"`).
-The federation sets it for the implicit member of an allocation-mode
-resource; a declared member may set it too (a user who started an endpoint
-on an allocation by hand).
+`PoolMember` gains `pilot: "endpoint" | "submit"` (default `submit`).
+`parse_member` accepts it, `_member_fingerprint` includes it (or the
+federation's idempotent re-POST 409s after the upgrade), `PoolConfig.to_dict`
+persists it for replay. The federation sets `pilot: endpoint` on the
+implicit member of an allocation-mode resource; a declared member may set
+it too. For such a member `max_pilots` is forced to 1 (`max_pilots_total`
+stays a plain sum).
 
-In `_submit_pilot` for such a member:
+### Adopt through the existing topology path, not by hand
 
-- create the `PilotRecord` with `child_endpoint_name = member.endpoint_name`,
-  `psij_job_id = None`, `state = ACTIVE`, `active_at = now`, capacity from
-  the member's size, `walltime_deadline` from the member's `walltime_sec`
-  (which for an allocation is the time actually left, see below);
-- never call psij; log `pilot %s adopts endpoint %s`;
-- `max_pilots` is forced to 1 for such a member (the endpoint is one
-  pilot); a second `_submit_pilot` is a no-op with a warning.
+`ACTIVE` is set today by `on_topology_change` → `_reconcile_pilots_for`
+(`plugin_task_dispatcher.py` ~2469-2499): a record whose
+`child_endpoint_name` is *present* goes through `_activate_pilot` (capacity,
+`active_at`, `policy.on_pilot_state`, drain). An adopted pilot rides the
+same path:
 
-Everything downstream already keys on `child_endpoint_name` (rhapsody
-submit, staging put/get, status polls, task requeue) and works unchanged.
+- `_submit_pilot` for a `pilot: endpoint` member creates the record
+  `PENDING` with `child_endpoint_name = endpoint_name = member.endpoint_name`,
+  `psij_job_id = None`, and does **not** schedule `_do_pilot_submit`;
+- if the endpoint is in `self._connected_endpoints` right now, call
+  `_activate_pilot` immediately; otherwise leave it `PENDING` for the next
+  topology delivery;
+- a `PENDING` adoption older than `_HANDSHAKE_TIMEOUT_SEC` is failed with
+  reason `endpoint <name> not connected` (today `_reconcile_pilot` returns
+  early for records without a psij job id, so it would otherwise sit forever
+  and count as an in-flight submission in the strategy's guards and the
+  pool ceiling);
+- a second `_submit_pilot` on the member while a record is PENDING/ACTIVE
+  is a no-op with a warning.
 
-### Liveness
+Hand-setting `ACTIVE` is out: it would bypass the capacity guard and the
+policy notification.
 
-The pilot poller asks psij for job state; an adopted pilot has no job. Its
-state follows the endpoint's connection: the dispatcher already receives
-endpoint connect/disconnect notifications for child endpoints (that is how
-`ACTIVE` is set today) — the adopted pilot subscribes to the same source
-for the member's endpoint name. Disconnect → pilot `LOST` → the existing
-requeue/fail path. Reconnect within the pool's grace → the same pilot
-record resumes (same name); after it → a new adoption on the next tick.
+### Liveness, in the dispatcher's existing terms
 
-### Walltime and remaining time
+There is no `LOST` pilot state. The topology hook already handles the three
+cases for a child endpoint name, and they apply unchanged to the adopted
+name:
+
+- *suspect* (broker-side grace window): pilot paused,
+  `accepting_new_tasks = False`;
+- *lost*: `_mark_pilot_failed(... 'child endpoint lost before walltime')`,
+  or DONE if past `walltime_deadline`; queued tasks requeue. The
+  federation's `_sync_attachments` then `del_member`s the member;
+- *present again*: the federation re-adds the member; next tick,
+  `min_pilots = 1` → a fresh adoption (new pilot id).
+
+No new subscription mechanism. One change: an adopted pilot that ends
+because its member is removed (leave) or its endpoint is gone is marked
+**DONE**, not FAILED, so it does not feed the member's failure counter or
+`pilot_error` — a leave is not a failure. Independently, `_last_pilot_error`
+must stop at the newest pilot that reached ACTIVE (or `pilot_error` is
+cleared while `pilots_active > 0`), otherwise a member shows a stale error
+under an `ok` row after a lost→present cycle. That fix belongs to the
+surfacing work landing now and is a prerequisite here.
+
+### Deadline
+
+`walltime_deadline` is respected only by the *lost* branch today;
+`pick_dispatch` merely sorts by it. Add strategy config `min_remaining_sec`
+(default 120): `pick_dispatch` skips a pilot with
+`walltime_deadline - now < min_remaining_sec`, and `on_tick`'s
+`free_capacity` sum excludes it so a near-deadline pilot does not suppress
+growth. A pilot past a mis-estimated deadline stays ACTIVE until its
+endpoint disappears; that is current behaviour and acceptable.
+
+### Remaining time comes from the allocation, not the broker
 
 `_allocation_walltime` reads `SLURM_JOB_END_TIME` from the **broker's**
-environment, which is wrong for a remote allocation. The endpoint's
-`queue_info/job_allocation` runs inside the allocation and must report
-`end_time` (epoch) when the batch system exposes it (`SLURM_JOB_END_TIME`;
-PBS: `qstat -f` `Resource_List.walltime` + `stime`). The federation uses
-`end_time - now` as the member's `walltime_sec` at join and exposes
-`remaining_sec` (recomputed on read) in the member usage block. The
-dispatcher stops placing new tasks into an adopted pilot whose deadline is
-closer than the pool's `min_remaining_sec` (new strategy config, default
-120 s).
+environment; wrong for a remote allocation, and that variable needs Slurm
+≥ 23.02 anyway. Instead `queue_info/job_allocation` reports `end_time`
+(epoch) from inside the allocation: Slurm adds `%e` to the `squeue` call
+already made in `SlurmBatchSystem.job_allocation`; PBS uses
+`Walltime.Remaining` from `qstat -f` when present, else `stime +
+Resource_List.walltime`. The federation sets the member's `walltime_sec =
+end_time - now` at join (400 if ≤ 0: no 1-second pilots;
+`PilotSize.walltime_sec` must be ≥ 1) and exposes `remaining_sec`
+recomputed on every read. No `end_time` → `walltime_sec = runtime` as
+today, `remaining_sec = null`. For a submit-mode member `remaining_sec` is
+the max over its live pilots of `walltime_deadline - now` (pilot history
+carries `walltime_deadline`), null when it has none.
+
+### Payload: add, never rename
+
+Existing wire names stay: `member` (short name), `pool_name`, `walltime_sec`,
+`attributes.mem_gb_per_node`, `usage.*`; `mode` and `endpoint` exist at the
+resource level. New per member: `endpoint` (the member's endpoint name),
+`pilot` (`endpoint`/`submit`), `remaining_sec`, and the state value `idle`.
+`shape` may be added as an alias of `member`, never as a replacement —
+`federation.js`, ATOMIC's `atomic_campaign.js`, `smoke.py` and their tests
+read `member`.
+
+State per member: `lost`, `failing`, `stale`, `idle` (ok, `pilots_active ==
+0`, no failure; submit-mode only — an adopted member with a live endpoint
+and no ACTIVE pilot is `failing`), `ok`. Resource state: the worst of its
+members' (lost > failing > stale > idle > ok); task counts summed.
+`federation.js` gets CSS for `idle` (ATOMIC's `statusCell` maps unknown
+values to "unknown", so the alias must land on both sides together).
+
+### Restart
+
+`_replay_state` reloads the ACTIVE adopted record with its absolute
+`walltime_deadline`; the first topology delivery reconciles it;
+`_replay_attachments` re-POSTs the member (no-op) and `live_pilots_for`
+already counts 1, so `min_pilots = 1` does not double-adopt; `active_at` is
+kept, node-hour charging is continuous. Test it.
 
 ### Teardown
 
-Removing an adopted member (leave, or endpoint gone) must not kill the
-endpoint — nothing to kill. `del_member` skips the pilot cancel for
-`pilot_is_endpoint`; the federation's leave stops the endpoint as today.
-
-### Federation payload (contract for the UI, see ATOMIC plan 09)
-
-Per member in `resources`/`resource`:
-
-```
-endpoint        "ep_odo"
-shape           "default" | "cpu" | "gpu"      (member short name)
-pilot           "endpoint" | "submit"
-class, pool     "gpu", "fed-gpu"
-nodes, cpus_per_node, gpus_per_node, mem_gb_per_node
-walltime_sec, remaining_sec                    (remaining_sec null for submit-mode members without a live pilot)
-usage: tasks_running, tasks_done, tasks_failed, node_hours_used, node_hours_remaining,
-       pilots_active, pilot_error, pilot_failures, paused_until
-state           ok | idle | failing | stale | lost
-```
-
-`idle`: a submit-mode member with no live pilot and no failures. Resource
-level: `state` is the worst of its members' states (lost > failing > stale >
-idle > ok), task counts summed.
+`_do_pilot_cancel` already skips psij for a record without a job id;
+`del_member` needs no special case beyond the DONE-not-FAILED stamping
+above. The federation's leave stops the endpoint, as today.
 
 ## Non-goals
 
-Multi-node use of an adopted allocation (the rhapsody backend inside the
-endpoint stays `concurrent` on the head node); reservation/pinning (still
-deferred, see 120 notes).
+Multi-node use of an adopted allocation (rhapsody stays `concurrent` on the
+head node); reservation/pinning (still deferred, see 120 notes).
 
 ## Tests
 
-- adoption: allocation member → one ACTIVE pilot immediately, no psij call
-  (fake psij records zero submits), tasks run through the endpoint's fake
-  rhapsody, staging put goes to the endpoint's staging plugin;
-- second `_submit_pilot` on the member is a no-op;
-- endpoint disconnect → pilot LOST, queued tasks requeued; reconnect →
-  re-adoption;
-- deadline: no new placement within `min_remaining_sec` of the end;
-- `del_member` on an adopted member cancels nothing;
-- federation: `_class_pool_decls` marks the implicit member `pilot:
-  endpoint`; payload fields present; `remaining_sec` from
-  `job_allocation.end_time`; resource state is the worst member state;
-- Explorer federation tab render test on the new payload (node harness).
+- adoption: allocation member with a connected endpoint → ACTIVE at once
+  through `_activate_pilot`, zero psij submits (fake psij counts), tasks run
+  through the endpoint's fake rhapsody, staging put goes to the endpoint's
+  staging plugin; endpoint not connected → PENDING, then ACTIVE on topology
+  delivery; still absent after `_HANDSHAKE_TIMEOUT_SEC` → FAILED with the
+  reason;
+- second `_submit_pilot` is a no-op; `max_pilots` forced to 1;
+- suspect → paused; lost → requeue + DONE-or-FAILED per deadline; member
+  re-add → new adoption;
+- leave → pilot DONE, no failure counted, `pilot_error` null;
+- `min_remaining_sec`: no placement and no capacity credit near the end;
+- `job_allocation.end_time` on Slurm (`%e` parsing, fixture) and PBS
+  (`Walltime.Remaining` and the fallback); join 400 when ≤ 0;
+  `remaining_sec` decreases between two reads; submit-mode max-over-pilots;
+- payload: new fields present, old names unchanged (assert `member` and
+  `pool_name` still there), `idle` derivation, resource worst-of;
+- `parse_member` accepts `pilot`; fingerprint and `to_dict` round-trip;
+- replay of an adopted ACTIVE pilot after a plugin reload;
+- Explorer federation tab render on the new payload (node harness),
+  including the `idle` style.
 
 ## Rollout
 
-1. Dispatcher adoption + tests (largest piece).
-2. queue_info `end_time` + federation walltime/remaining.
-3. Federation payload fields + `federation.js` layout (ATOMIC plan 09 does
-   `atomic-resources` on the same payload).
+1. Dispatcher adoption + deadline + tests.
+2. `job_allocation.end_time` (Slurm, PBS) + federation walltime/remaining.
+3. Payload fields + `federation.js` layout (ATOMIC plan 09 does
+   `atomic-resources` and `atomic_campaign.js` on the same payload).
 4. ATOMIC demo: drop `--plugins default,psij` from the allocation joins once
    1 is in the pinned branch.
