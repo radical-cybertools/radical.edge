@@ -1,0 +1,1 @@
+- 2026-09-08 17:20 Orbit explorer dispatcher tab rendered the `fed` session group as a bogus legacy pool card (GET /pools is grouped by session). Fixed on feature/atomic-federation (75db22d): per-session cards, verbose class pools. Perlmutter: python3 is 3.6 on compute nodes -> env.sh loads python/3.12-26.1.0 (2ad9d5d).
