@@ -2652,8 +2652,16 @@ class PluginTaskDispatcher(Plugin):
         }
         if pool_state.config.multi_member:
             env['RADICAL_ORBIT_MEMBER'] = record.member_id
-        cert = os.environ.get('RADICAL_ORBIT_BROKER_CERT')
-        if cert:
+        # The broker's cert path is a path on the BROKER host.  A member
+        # that shares the filesystem sees the same file; a non-shared
+        # member runs elsewhere, where that path (e.g. the broker user's
+        # $HOME) need not exist -- shipping it made every remote pilot
+        # fail TLS silently.  Such a pilot inherits its endpoint's own
+        # RADICAL_ORBIT_BROKER_CERT, or falls back to the endpoint's
+        # default ~/.radical/orbit/broker_cert.pem on its host.
+        shared = member is None or member.shared_fs
+        cert   = os.environ.get('RADICAL_ORBIT_BROKER_CERT')
+        if cert and shared:
             env['RADICAL_ORBIT_BROKER_CERT'] = cert
         return env
 

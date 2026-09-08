@@ -143,8 +143,11 @@ class _FakePsij(Plugin):
         super().__init__(app, instance_name)
         self.add_route_post('submit_tunneled/{sid}', self._submit_tunneled)
 
+    submitted: list = []           # every job spec the dispatcher sent
+
     async def _submit_tunneled(self, request):
         data = await request.json()
+        _FakePsij.submitted.append(data)
         return {'job_id':        'j.1',
                 'native_id':     'n.1',
                 'echo_tunnel':   data.get('tunnel'),
@@ -658,3 +661,36 @@ def test_real_staging_refuses_a_scratch_outside_the_allow_list(
     assert fed.wait(lambda: task.state == 'FAILED')
     assert task.error.startswith('could not place inputs on the pilot:')
     assert _FakeRhapsody.received == []
+
+
+def test_broker_cert_path_travels_only_to_shared_members(
+        harness, tmp_path, monkeypatch):
+    """The broker cert path is a path on the BROKER host.  A shared member
+    can use it; a non-shared member runs on another machine where that
+    path (the broker user's $HOME) need not exist -- shipping it made every
+    remote pilot fail TLS silently.  Such a pilot keeps its endpoint's own
+    setting, or the default ~/.radical/orbit/broker_cert.pem on its host."""
+
+    monkeypatch.setenv('RADICAL_ORBIT_BROKER_CERT',
+                       '/home/broker/.radical/orbit/broker_cert.pem')
+    monkeypatch.setenv('RADICAL_ORBIT_SCRATCH_BASE', str(tmp_path))
+
+    fed = _Fed(harness, [_member('m_shared', ['x']),
+                         _member('m_remote', ['y'], shared_fs=False,
+                                 scratch_base='/pscratch/u/atomic')],
+               tmp_path)
+
+    _FakePsij.submitted.clear()
+    for mid in ('m_shared', 'm_remote'):
+        pid = fed.on_loop(
+            lambda mid=mid: fed.td._submit_pilot(fed.ps, None, member_id=mid))
+        assert fed.wait(lambda pid=pid: fed.ps.pilots[pid].child_endpoint_name)
+
+    assert fed.wait(lambda: len(_FakePsij.submitted) == 2)
+    envs = {d['job_spec']['environment'].get('RADICAL_ORBIT_MEMBER'):
+            d['job_spec']['environment'] for d in _FakePsij.submitted}
+
+    assert envs['m_shared']['RADICAL_ORBIT_BROKER_CERT'] \
+        == '/home/broker/.radical/orbit/broker_cert.pem'
+    assert 'RADICAL_ORBIT_BROKER_CERT' not in envs['m_remote']
+    assert envs['m_remote']['RADICAL_ORBIT_SCRATCH_BASE'] == '/pscratch/u/atomic'
