@@ -70,6 +70,7 @@ class DispatchPolicy:
     def max_requeues(self) -> int: ...           # default 1
 
     def on_pilot_state(self, pilot, old_state, new_state) -> None: ...
+    def member_health(self, member_id) -> dict: ...  # see below
     def on_tick(self, pool_state, submit_pilot) -> None: ...
     def pick_dispatch(self, pool_state) \
             -> tuple[TaskRecord, PilotRecord] | None: ...
@@ -105,6 +106,12 @@ pilots expire at walltime.
 - ``max_requeues`` is read by the dispatcher when a pilot loss re-queues a
   task.  Past the cap the task is failed with ``requeued too often (pilot
   lost)`` instead of bouncing forever.
+- ``member_health(member_id)`` is read by the dispatcher's per-member
+  summary and must answer ``{'consecutive_pilot_failures': int,
+  'paused_until': float | None}`` — what the policy holds against that
+  member, so a paused member says so on the wire instead of only in the
+  broker log.  The default reports a healthy member; the conservative
+  policy reports its own failure counter and backoff deadline.
 
 ### The pool handle
 

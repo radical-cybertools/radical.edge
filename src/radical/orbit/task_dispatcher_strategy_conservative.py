@@ -179,6 +179,22 @@ class ConservativePolicy(DispatchPolicy):
                     "member %r; pausing submissions for %.0fs",
                     self._pool.name, fails, mid, self._failure_backoff_sec)
 
+    def member_health(self, member_id: str) -> dict:
+        '''Report this member's failure counter and backoff deadline.
+
+        The two numbers behind the "N consecutive pilot failures on member
+        …; pausing submissions" warning, so a summary can show what the log
+        line said.  ``paused_until`` is ``None`` outside the window — a
+        deadline already in the past is not a pause any more, and reading
+        it as one would leave a healthy member marked forever.
+        '''
+        mid   = member_id or IMPLICIT_MEMBER
+        until = self._backoff_until.get(mid, 0.0)
+        return {'consecutive_pilot_failures':
+                    int(self._consecutive_failures.get(mid, 0)),
+                'paused_until':
+                    until if until > self._now() else None}
+
     # -- member helpers --------------------------------------------------
 
     def _in_backoff(self, mid: str, now_ts: float) -> bool:

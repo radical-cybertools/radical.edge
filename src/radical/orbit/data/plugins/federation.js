@@ -14,6 +14,11 @@
  * A record without `members` (a broker that predates class pools) renders
  * exactly as it did before: one row, no sub-rows.
  *
+ * The state column shows the record's derived `state` (`ok` / `suspect` /
+ * `lost` / `failing`), falling back to `liveness` for an older broker.  A
+ * `failing` member — reachable, but its pilots die at submit — gets a red
+ * badge and one monospace line underneath carrying what psij said.
+ *
  * All federation routes ride the reserved `default` session, so this module
  * never registers one of its own.
  */
@@ -82,6 +87,26 @@ export function css() {
     .fed-live-ok      { color: var(--success, #2e7d32); font-weight: 600; }
     .fed-live-suspect { color: var(--warning, #b26a00); font-weight: 600; }
     .fed-live-lost    { color: var(--danger,  #c62828); font-weight: 600; }
+    /* reachable, but nothing it is asked to start survives */
+    .fed-live-failing {
+      display: inline-block;
+      padding: 1px 7px;
+      border-radius: 9px;
+      font-size: 0.72rem;
+      font-weight: 600;
+      color: #fff;
+      background: var(--danger, #c62828);
+    }
+    /* the psij/batch-system reason, under the member row that owns it.
+       The text is truncated in JS (the full reason is the title), so the
+       cell only has to stay on one line. */
+    .fed-error td {
+      padding: 0 8px 6px 26px;
+      border-bottom: 1px solid var(--border, #eee);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.72rem;
+      color: var(--danger, #c62828);
+    }
     .fed-stale { color: var(--muted); font-style: italic; }
     .fed-bar {
       position: relative;
@@ -159,7 +184,8 @@ function renderTable(resources, api) {
   const rows = resources.map(r => {
     const members = Array.isArray(r.members) ? r.members : [];
     return renderResourceRow(r, members, api)
-         + members.map(m => renderMemberRow(r, m, api)).join('');
+         + members.map(m => renderMemberRow(r, m, api)
+                          + renderPilotError(m, api)).join('');
   }).join('');
   return `
     <div class="card">
@@ -182,7 +208,9 @@ function renderResourceRow(r, members, api) {
   const caps  = r.capabilities || {};
   const usage = r.usage || {};
   const soft  = (caps.software || []).map(s => api.escHtml(s)).join(', ');
-  const live  = r.liveness || 'lost';
+  /* `state` is the derived word (liveness + `failing`); an older broker
+   * sends only `liveness`, which is exactly what it used to show. */
+  const live  = r.state || r.liveness || 'lost';
 
   return `<tr>
     <td class="fed-name">${api.escHtml(r.name || '?')}</td>
@@ -207,7 +235,7 @@ function renderMemberRow(r, m, api) {
   const attrs = m.attributes || {};
   const cls   = m['class'] || m.cls || '?';
   const soft  = (m.software || []).map(s => api.escHtml(s)).join(', ');
-  const live  = m.liveness || r.liveness || 'lost';
+  const live  = m.state || m.liveness || r.liveness || 'lost';
 
   return `<tr class="fed-member">
     <td>└ ${api.escHtml(m.member || '?')}</td>
@@ -220,6 +248,27 @@ function renderMemberRow(r, m, api) {
     <td>${usage.pilots_active ?? 0} active</td>
     <td>${renderTasks(usage)}</td>
     <td class="fed-live-${api.escHtml(live)}">${api.escHtml(live)}</td>
+  </tr>`;
+}
+
+/* The row under a member whose pilots are dying: what the batch system or
+ * psij actually said, plus how long submissions stay paused.  Nothing at
+ * all for a member with no error — this is the line that was missing when
+ * a site failed every submit for half an hour and the table said `ok`. */
+function renderPilotError(m, api) {
+  const usage = m.usage || {};
+  const err   = usage.pilot_error;
+  if (!err) return '';
+  const text  = String(err);
+  const short = text.length > 140 ? text.slice(0, 137) + '…' : text;
+  const n     = usage.pilot_failures || 0;
+  const until = usage.paused_until
+              ? ` (paused until ${new Date(usage.paused_until * 1000)
+                                  .toLocaleTimeString()})` : '';
+  const count = n > 1 ? ` ×${n}` : '';
+  return `<tr class="fed-error">
+    <td colspan="12" title="${api.escHtml(text)}">! pilot${
+      api.escHtml(count)}: ${api.escHtml(short)}${api.escHtml(until)}</td>
   </tr>`;
 }
 

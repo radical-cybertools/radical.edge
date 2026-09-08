@@ -287,3 +287,130 @@ def test_verbose_class_pool_shows_member_sizes_and_node_hours(render_pools):
     # the member's own size table is nested under its row
     assert "td-member-sizes" in html
     assert "gpu4" in html
+
+
+# ── federation.js: resource / member rendering (node) ──────────────────────
+
+_FED_MODULE = (pathlib.Path(__file__).resolve().parents[2]
+               / "src" / "radical" / "orbit" / "data" / "plugins"
+               / "federation.js")
+
+_FED_DRIVER = r"""
+const fs = require('fs');
+const vm = require('vm');
+
+let src = fs.readFileSync(process.argv[2], 'utf8').replace(/^export\s+/gm, '');
+
+const api = {
+  escHtml: s => String(s === null || s === undefined ? '' : s)
+                .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;').replace(/"/g, '&quot;'),
+  flash: () => {},
+};
+
+const resources = JSON.parse(fs.readFileSync(process.argv[3], 'utf8'));
+const ctx = vm.createContext({api: api, resources: resources, out: '',
+                              Date: Date});
+vm.runInContext(src + '\nout = renderTable(resources, api);', ctx);
+process.stdout.write(ctx.out);
+"""
+
+
+@pytest.fixture(scope="module")
+def render_resources(tmp_path_factory):
+    """Render a `GET resources/default` resource list to HTML via node."""
+    if not _NODE:
+        pytest.skip("node not installed")
+
+    d      = tmp_path_factory.mktemp("federation")
+    driver = d / "render_resources.js"
+    driver.write_text(_FED_DRIVER)
+
+    def _render(resources):
+        payload = d / "resources.json"
+        payload.write_text(json.dumps(resources))
+        r = subprocess.run([_NODE, str(driver), str(_FED_MODULE),
+                            str(payload)], capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr
+        return r.stdout
+
+    return _render
+
+
+def _fed_member(name="default", state="ok", usage=None):
+    return {"member": name, "member_id": "perlmutter." + name,
+            "class": "cpu", "pool_name": "fed-cpu", "queue": "regular",
+            "nodes": 1, "cpus_per_node": 128, "gpus_per_node": 0,
+            "software": [], "attributes": {"site": "NERSC"},
+            "budget": {}, "liveness": "ok", "state": state,
+            "usage": usage or {}}
+
+
+def _fed_resource(members, state="ok"):
+    return {"name": "perlmutter", "endpoint": "ep_perlmutter",
+            "mode": "login", "site": "NERSC",
+            "capabilities": {"cores": 128, "gpus": 0, "software": []},
+            "budget": {}, "usage": {}, "liveness": "ok", "state": state,
+            "members": members}
+
+
+def test_fed_healthy_member_renders_its_state_and_no_error_row(
+        render_resources):
+    html = render_resources([_fed_resource([_fed_member()])])
+
+    assert "fed-live-ok" in html
+    assert "fed-live-failing" not in html
+    assert "fed-error" not in html
+    assert "! pilot" not in html
+
+
+def test_fed_failing_member_gets_the_badge_and_the_reason(render_resources):
+    # the demo case: reachable, no pilots, every submit killed by a quota
+    err    = "psij error: submit_tunneled failed: [Errno 122] Disk quota " \
+             "exceeded"
+    member = _fed_member(state="failing",
+                         usage={"pilots_active": 0, "pilot_error": err,
+                                "pilot_failures": 7})
+    html   = render_resources([_fed_resource([member], state="failing")])
+
+    # the state word, distinctly, on the member row AND the resource row
+    assert html.count('class="fed-live-failing"') == 2
+    assert ">failing<" in html
+    # and the reason underneath, with the full text as the tooltip
+    assert 'class="fed-error"' in html
+    assert "Disk quota exceeded" in html
+    assert 'title="%s"' % err in html
+    assert "! pilot ×7:" in html
+
+
+def test_fed_long_reason_is_truncated_but_kept_in_the_title(render_resources):
+    err    = "psij error: " + "x" * 400
+    member = _fed_member(state="failing",
+                         usage={"pilot_error": err, "pilot_failures": 3})
+    html   = render_resources([_fed_resource([member], state="failing")])
+
+    assert "…" in html                           # the ellipsis
+    assert 'title="%s"' % err in html            # nothing lost
+    assert html.count("x" * 400) == 1            # only in the title
+
+
+def test_fed_paused_member_says_until_when(render_resources):
+    member = _fed_member(state="failing",
+                         usage={"pilot_error": "psij error: boom",
+                                "pilot_failures": 3,
+                                "paused_until": 1757000000})
+    html   = render_resources([_fed_resource([member], state="failing")])
+
+    assert "paused until" in html
+
+
+def test_fed_record_without_state_still_shows_its_liveness(render_resources):
+    # an older broker sends no `state`: the column reads exactly as before
+    member = _fed_member()
+    member.pop("state")
+    rec = _fed_resource([member])
+    rec.pop("state")
+    html = render_resources([rec])
+
+    assert "fed-live-ok" in html
+    assert "fed-live-failing" not in html

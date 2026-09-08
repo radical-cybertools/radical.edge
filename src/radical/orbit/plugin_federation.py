@@ -1767,6 +1767,11 @@ class PluginFederation(Plugin):
         to this member's own slice of the pool history.  Task counts come
         from the federation's own ledger, because the dispatcher keeps only
         the 50 most recent tasks per pool.
+
+        The pilot-failure fields (``pilot_error``, ``pilot_failures``,
+        ``paused_until``) come from the same per-member block and are
+        **cleared** when it reports none: a member that has just produced a
+        healthy pilot must not keep wearing the last failure.
         '''
         usage = member.usage
         if detail is None:
@@ -1787,6 +1792,10 @@ class PluginFederation(Plugin):
                     summary.get('node_hours_used') or 0.0)
                 usage.pilots_active = int(summary.get('pilots_active') or 0)
                 remaining = summary.get('node_hours_remaining')
+                usage.pilot_error    = summary.get('last_pilot_error') or None
+                usage.pilot_failures = int(
+                    summary.get('consecutive_pilot_failures') or 0)
+                usage.paused_until   = summary.get('paused_until') or None
             else:
                 history = [e for e in (detail.get('pilot_history') or [])
                            if isinstance(e, dict)
@@ -1798,6 +1807,11 @@ class PluginFederation(Plugin):
                      if isinstance(p, dict)
                      and p.get('member_id') == member.member_id])
                 remaining = None
+                # no per-member block: nothing is known about failures,
+                # and "unknown" must read as "nothing held against it"
+                usage.pilot_error    = None
+                usage.pilot_failures = 0
+                usage.paused_until   = None
 
             budget = member.budget_node_hours()
             if remaining is None:
@@ -1821,6 +1835,11 @@ class PluginFederation(Plugin):
         Task counts are **not** summed: a task the dispatcher has not placed
         yet belongs to no member, so it would vanish.  They come from the
         ledger by resource, which counts it.
+
+        The pilot-failure fields are not summed either — they are a
+        *report*, not a quantity.  The resource row shows the worst of its
+        members: the first error text there is one, the highest failure
+        count and the furthest pause.
         '''
         members = rec.member_list()
         usage   = rec.usage
@@ -1831,6 +1850,14 @@ class PluginFederation(Plugin):
         usage.pilots_active        = sum(m.usage.pilots_active
                                          for m in members)
         usage.stale                = any(m.usage.stale for m in members)
+        usage.pilot_error          = next(
+            (m.usage.pilot_error for m in members if m.usage.pilot_error),
+            None)
+        usage.pilot_failures       = max(
+            [m.usage.pilot_failures for m in members] or [0])
+        usage.paused_until         = max(
+            [m.usage.paused_until for m in members
+             if m.usage.paused_until] or [0.0]) or None
         (usage.tasks_running,
          usage.tasks_done,
          usage.tasks_failed) = self._state.task_counts(rec.name)

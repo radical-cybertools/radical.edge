@@ -62,7 +62,7 @@ from .task_dispatcher_state             import (
     PilotRecord, TaskRecord, PoolStore, node_hours,
     records_from, read_json, write_json_atomic,
     PILOT_PENDING, PILOT_STARTING, PILOT_ACTIVE,
-    PILOT_DONE, PILOT_FAILED, PILOT_LIVE_STATES,
+    PILOT_DONE, PILOT_FAILED, PILOT_LIVE_STATES, PILOT_ERROR_MAX,
     TASK_QUEUED, TASK_RUNNING, TASK_DONE, TASK_FAILED, TASK_CANCELED,
     TASK_TERMINAL_STATES,
 )
@@ -2866,9 +2866,16 @@ class PluginTaskDispatcher(Plugin):
         also protects the pre-existing pilot-loss path from an infinite
         bounce.  Its input spool deliberately survives: the task is about
         to be dispatched somewhere else.
+
+        A FAILED pilot also keeps *why* on its record (``error``), so the
+        reason travels with every ``pilot_history`` entry instead of living
+        only in the broker log.  A DONE pilot's reason is not an error and
+        is not stamped.
         '''
         old_state = record.state
         record.state = new_state
+        if new_state == PILOT_FAILED and reason:
+            record.error = str(reason)[:PILOT_ERROR_MAX]
         if record.finished_at is None:
             record.finished_at = time.time()
         self._dispatch_notify('pilot_status', {
@@ -3523,6 +3530,47 @@ class PluginTaskDispatcher(Plugin):
             ] if cfg.multi_member else []
         return summary
 
+    @staticmethod
+    def _last_pilot_error(history: list[dict]) -> str | None:
+        '''Return the ``error`` of the most recent FAILED pilot, or ``None``.
+
+        *history* is oldest first, so the newest failure is found by walking
+        it backwards.  The walk stops at the newest pilot that reached
+        ACTIVE (``active_at`` set): a failure older than a healthy pilot is
+        history, not the member's current problem -- otherwise a lost-and-
+        re-added member would show "child endpoint lost" under an ``ok``
+        row forever.  A FAILED pilot written before this field existed
+        carries no error and is skipped rather than reported as a healthy
+        member: an older failure that *does* say why is the better answer.
+        '''
+        for entry in reversed(history or []):
+            if not isinstance(entry, dict):
+                continue
+            if entry.get('active_at'):
+                return None
+            if entry.get('state') == PILOT_FAILED and entry.get('error'):
+                return str(entry['error'])[:PILOT_ERROR_MAX]
+        return None
+
+    def _member_health(self, ps: PoolState, mid: str) -> dict:
+        '''Return the policy's health view of one member, defensively.
+
+        The count and the pause live in the policy (the conservative one
+        tracks both); a policy that does not implement ``member_health``,
+        or raises, must not break a summary route.
+        '''
+        try:
+            health = ps.policy.member_health(mid) or {}
+        except Exception as e:
+            log.warning('[%s] member_health(%s) raised: %s',
+                        self.instance_name, mid, e)
+            return {'consecutive_pilot_failures': 0, 'paused_until': None}
+        return {
+            'consecutive_pilot_failures':
+                int(health.get('consecutive_pilot_failures') or 0),
+            'paused_until': health.get('paused_until') or None,
+        }
+
     def _member_dict(self, ps: PoolState, m: PoolMember,
                      now: float) -> dict:
         '''Return the verbose per-member block (frozen contract, §9).'''
@@ -3530,6 +3578,7 @@ class PluginTaskDispatcher(Plugin):
         history = ps.pilot_history(m.member_id)
         used    = node_hours(history, now=now)
         total   = (m.budget or {}).get('node_hours')
+        health  = self._member_health(ps, m.member_id)
         return {
             'member_id'           : m.member_id,
             'endpoint_name'       : m.endpoint_name,
@@ -3548,6 +3597,15 @@ class PluginTaskDispatcher(Plugin):
             'node_hours_used'     : used,
             'node_hours_remaining': (total - used) if total else None,
             'pilot_history'       : history,
+            # -- why this member is not producing pilots ------------------
+            # The reason the most recent pilot of this member died, plus
+            # what the policy holds against it.  Without these a member
+            # whose every submit fails is indistinguishable from an idle
+            # one: `live_pilots` is 0 either way.
+            'last_pilot_error'          : self._last_pilot_error(history),
+            'consecutive_pilot_failures':
+                health['consecutive_pilot_failures'],
+            'paused_until'              : health['paused_until'],
         }
 
     # -- session-close teardown (owner lost / ttl / cancel_all) ---------

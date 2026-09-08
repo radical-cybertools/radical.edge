@@ -69,6 +69,12 @@ TASK_STATES          = {TASK_QUEUED, TASK_RUNNING, TASK_DONE,
                         TASK_FAILED, TASK_CANCELED}
 TASK_TERMINAL_STATES = {TASK_DONE, TASK_FAILED, TASK_CANCELED}
 
+# How much of a pilot's failure reason is kept on its record.  A psij
+# traceback can be kilobytes and the record rides in the ``pilot_history``
+# of every verbose summary, so it is truncated to something a table row
+# and a tooltip can carry.
+PILOT_ERROR_MAX = 300
+
 
 # ---------------------------------------------------------------------------
 # Records
@@ -93,6 +99,11 @@ class PilotRecord:
     walltime_deadline  : float       = 0.0
     accepting_new_tasks: bool        = True    # flipped False by drain
     finished_at        : float | None = None   # terminal-state timestamp
+    # Why this pilot went FAILED, truncated to ``PILOT_ERROR_MAX``.  A
+    # submit-side failure ('psij error: … Disk quota exceeded') is
+    # otherwise visible only in the broker log, while every consumer of
+    # this record sees a pilot that simply is not there.
+    error              : str | None  = None
     # -- capability-class fields ------------------------------------------
     # ``member_id`` is the pool member this pilot was submitted for; ``''``
     # means the implicit member of a legacy pool.  ``attributes`` and the

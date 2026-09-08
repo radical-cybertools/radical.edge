@@ -2429,6 +2429,102 @@ class TestClassPoolSummary:
         assert s['node_hours_used'] == pytest.approx(1.0, abs=0.01)
 
 
+class TestPilotFailureIsVisible:
+    """A member whose every submit fails must not read as a healthy idle one.
+
+    The demo case: psij answered ``[Errno 122] Disk quota exceeded`` for half
+    an hour, the pilots went FAILED, and every summary showed the member with
+    0 pilots and nothing else — the reason lived only in the broker log.
+    """
+
+    QUOTA = 'OSError: [Errno 122] Disk quota exceeded'
+
+    def _submit(self, plugin, ps, pid, exc):
+        size   = ps.config.member('m_x').pilot_sizes['d']
+        record = PilotRecord(
+            pid=pid, pool='fed', owning_sid='A', size_key='d',
+            rhapsody_backend='concurrent', state=PILOT_PENDING,
+            member_id='m_x', submitted_at=time.time())
+        ps.pilots[pid] = record
+        psij_mock = MagicMock()
+        psij_mock.submit_tunneled = MagicMock(side_effect=exc)
+        with patch.object(plugin, '_get_psij_client',
+                          new=AsyncMock(return_value=psij_mock)), \
+             patch('radical.orbit.batch_system.detect_batch_system') as bs:
+            bs.return_value.psij_executor = 'local'
+            asyncio.run(plugin._do_pilot_submit(ps, record, size))
+        return record
+
+    def test_a_failed_submit_is_kept_on_the_pilot_record(self, tmp_path):
+        plugin, _client, sid = _class_session(tmp_path)
+        ps     = _pool(plugin, sid, 'fed')
+        record = self._submit(plugin, ps, 'p.1', OSError(self.QUOTA))
+
+        assert record.state == PILOT_FAILED
+        assert 'psij error' in record.error
+        assert 'Disk quota exceeded' in record.error
+        # and it travels in the history, which is what the summaries carry
+        entry = ps.pilot_history('m_x')[0]
+        assert entry['error'] == record.error
+
+    def test_the_error_is_truncated(self, tmp_path):
+        plugin, _client, sid = _class_session(tmp_path)
+        ps     = _pool(plugin, sid, 'fed')
+        record = self._submit(plugin, ps, 'p.1', OSError('x' * 5000))
+        assert len(record.error) == 300
+
+    def test_a_done_pilot_carries_no_error(self, tmp_path):
+        plugin, _client, sid = _class_session(tmp_path)
+        ps = _pool(plugin, sid, 'fed')
+        rec = PilotRecord(pid='p.9', pool='fed', owning_sid=sid,
+                          size_key='d', rhapsody_backend='concurrent',
+                          state=PILOT_ACTIVE, member_id='m_x')
+        ps.pilots['p.9'] = rec
+        plugin._mark_pilot_done(ps, rec, 'walltime reached')
+        assert rec.state == PILOT_DONE
+        assert rec.error is None
+
+    def test_the_member_block_reports_the_error_and_the_pause(self, tmp_path):
+        plugin, _client, sid = _class_session(tmp_path)
+        ps = _pool(plugin, sid, 'fed')
+        for n in range(3):
+            self._submit(plugin, ps, 'p.%d' % n, OSError(self.QUOTA))
+
+        m = plugin._summarize_pool(ps, verbose=True)['members'][0]
+        assert m['member_id'] == 'm_x'
+        assert m['live_pilots'] == 0            # what used to be the whole
+        assert 'Disk quota exceeded' in m['last_pilot_error']
+        assert m['consecutive_pilot_failures'] == 3
+        # the conservative policy's backoff, read off the policy itself
+        assert m['paused_until'] > time.time()
+
+    def test_a_healthy_member_reports_nothing_held_against_it(self, tmp_path):
+        plugin, _client, sid = _class_session(tmp_path)
+        m = plugin._summarize_pool(_pool(plugin, sid, 'fed'),
+                                   verbose=True)['members'][0]
+        assert m['last_pilot_error']           is None
+        assert m['consecutive_pilot_failures'] == 0
+        assert m['paused_until']               is None
+
+    def test_the_newest_failure_wins(self, tmp_path):
+        plugin, _client, sid = _class_session(tmp_path)
+        ps = _pool(plugin, sid, 'fed')
+        self._submit(plugin, ps, 'p.0', OSError('older failure'))
+        self._submit(plugin, ps, 'p.1', OSError(self.QUOTA))
+        m = plugin._summarize_pool(ps, verbose=True)['members'][0]
+        assert 'Disk quota exceeded' in m['last_pilot_error']
+
+    def test_a_policy_without_member_health_does_not_break_a_summary(
+            self, tmp_path):
+        plugin, _client, sid = _class_session(tmp_path)
+        ps = _pool(plugin, sid, 'fed')
+        with patch.object(type(ps.policy), 'member_health',
+                          side_effect=RuntimeError('boom')):
+            m = plugin._summarize_pool(ps, verbose=True)['members'][0]
+        assert m['consecutive_pilot_failures'] == 0
+        assert m['paused_until'] is None
+
+
 # ---------------------------------------------------------------------------
 # Review round 2 (plan 121 Implementation notes)
 # ---------------------------------------------------------------------------
@@ -2646,3 +2742,16 @@ class TestLegacyPilotMemberId:
         # ...and it still resolves to the implicit member
         assert ps.member(ps.pilots[pid].member_id).member_id == '_'
         assert ps.live_pilots_for('_') == [ps.pilots[pid]]
+
+
+def test_last_pilot_error_stops_at_the_newest_healthy_pilot():
+    # a failure older than a pilot that reached ACTIVE is history, not the
+    # member's current problem (a lost-and-re-added member would otherwise
+    # show "child endpoint lost" under an ok row forever)
+    from radical.orbit.plugin_task_dispatcher import PluginTaskDispatcher as P
+    failed = {'state': 'FAILED', 'error': 'quota exceeded', 'active_at': None}
+    active = {'state': 'ACTIVE', 'error': None, 'active_at': 1.0}
+    assert P._last_pilot_error([failed]) == 'quota exceeded'
+    assert P._last_pilot_error([failed, active]) is None
+    assert P._last_pilot_error([active, failed]) == 'quota exceeded'
+    assert P._last_pilot_error([]) is None

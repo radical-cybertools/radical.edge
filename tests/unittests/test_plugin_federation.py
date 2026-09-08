@@ -1001,6 +1001,116 @@ class TestResources:
         assert body['usage']['node_hours_used'] == 2.5      # not zeroed
         assert body['usage']['node_hours_remaining'] == 1.5
 
+    def test_pilot_failures_surface_and_flip_the_state_to_failing(
+            self, tmp_path):
+        # the demo case: the endpoint answers topology fine (liveness `ok`)
+        # while every pilot it is asked to submit dies at submit time
+        client, plugin, fake = _joinable(tmp_path)
+        _join(client, plugin, _members_body())
+        paused = time.time() + 60
+        fake.details['fed-cpu'] = _pool_summary([
+            {'member_id': 'local_b.cpu', 'node_hours_used': 0.0,
+             'node_hours_remaining': 20.0, 'pilots_active': 0,
+             'last_pilot_error': 'psij error: [Errno 122] Disk quota '
+                                 'exceeded',
+             'consecutive_pilot_failures': 4, 'paused_until': paused}])
+        fake.details['fed-gpu'] = _pool_summary([
+            {'member_id': 'local_b.gpu', 'node_hours_used': 1.0,
+             'node_hours_remaining': 7.0, 'pilots_active': 1}])
+        plugin._state.resources['local_b'].usage.updated_at = 0.0
+        plugin._detail_cache.clear()
+
+        rec = client.get(
+            f'{plugin.namespace}/resource/default/local_b').json()
+        cpu, gpu = rec['members']
+        assert 'Disk quota exceeded' in cpu['usage']['pilot_error']
+        assert cpu['usage']['pilot_failures'] == 4
+        assert cpu['usage']['paused_until']   == paused
+        # liveness is untouched -- it still means "can we reach it", and the
+        # routing policy is written against it
+        assert cpu['liveness'] == 'ok'
+        assert cpu['state']    == 'failing'
+        # the healthy sibling stays healthy, and says nothing
+        assert gpu['usage']['pilot_error'] is None
+        assert gpu['state'] == 'ok'
+        # one failing member is enough for the resource row to say so
+        assert rec['liveness'] == 'ok'
+        assert rec['state']    == 'failing'
+        assert 'Disk quota exceeded' in rec['usage']['pilot_error']
+
+    def test_a_member_that_still_holds_a_pilot_is_not_failing(self, tmp_path):
+        # pilots are running: whatever failed, the site is producing work
+        client, plugin, fake = _joinable(tmp_path)
+        _join(client, plugin, _members_body())
+        fake.details['fed-cpu'] = _pool_summary([
+            {'member_id': 'local_b.cpu', 'pilots_active': 1,
+             'last_pilot_error': 'psij error: transient',
+             'consecutive_pilot_failures': 5}])
+        plugin._state.resources['local_b'].usage.updated_at = 0.0
+        plugin._detail_cache.clear()
+
+        rec = client.get(
+            f'{plugin.namespace}/resource/default/local_b').json()
+        assert rec['members'][0]['state'] == 'ok'
+        assert rec['state'] == 'ok'
+
+    def test_two_failures_are_not_yet_failing(self, tmp_path):
+        # below the threshold, and not paused: a blip is not a verdict
+        client, plugin, fake = _joinable(tmp_path)
+        _join(client, plugin, _members_body())
+        fake.details['fed-cpu'] = _pool_summary([
+            {'member_id': 'local_b.cpu', 'pilots_active': 0,
+             'last_pilot_error': 'psij error: transient',
+             'consecutive_pilot_failures': 2}])
+        plugin._state.resources['local_b'].usage.updated_at = 0.0
+        plugin._detail_cache.clear()
+
+        rec = client.get(
+            f'{plugin.namespace}/resource/default/local_b').json()
+        cpu = rec['members'][0]
+        assert cpu['usage']['pilot_failures'] == 2
+        assert cpu['state'] == 'ok'          # but the error is still there
+        assert 'transient' in cpu['usage']['pilot_error']
+
+    def test_a_recovered_member_drops_the_error(self, tmp_path):
+        client, plugin, fake = _joinable(tmp_path)
+        _join(client, plugin, _members_body())
+        member = plugin._state.resources['local_b'].members['cpu']
+        member.usage.pilot_error    = 'psij error: old news'
+        member.usage.pilot_failures = 3
+        fake.details['fed-cpu'] = _pool_summary([
+            {'member_id': 'local_b.cpu', 'pilots_active': 1}])
+        plugin._state.resources['local_b'].usage.updated_at = 0.0
+        plugin._detail_cache.clear()
+
+        rec = client.get(
+            f'{plugin.namespace}/resource/default/local_b').json()
+        cpu = rec['members'][0]
+        assert cpu['usage']['pilot_error']    is None
+        assert cpu['usage']['pilot_failures'] == 0
+        assert cpu['state'] == 'ok'
+
+    def test_a_lost_member_stays_lost(self, tmp_path):
+        # an unreachable endpoint is lost; that its last pilot also failed
+        # is not the headline
+        client, plugin, fake = _joinable(tmp_path)
+        _join(client, plugin, _members_body())
+        rec_state = plugin._state.resources['local_b']
+        for member in rec_state.member_list():
+            member.liveness = 'lost'
+        rec_state.liveness = 'lost'
+        fake.details['fed-cpu'] = _pool_summary([
+            {'member_id': 'local_b.cpu', 'pilots_active': 0,
+             'last_pilot_error': 'psij error: gone',
+             'consecutive_pilot_failures': 9}])
+        rec_state.usage.updated_at = 0.0
+        plugin._detail_cache.clear()
+
+        rec = client.get(
+            f'{plugin.namespace}/resource/default/local_b').json()
+        assert rec['members'][0]['state'] == 'lost'
+        assert rec['state'] == 'lost'
+
     def test_task_counts_come_from_the_ledger(self, tmp_path):
         client, plugin, _ = _joinable(tmp_path)
         _join(client, plugin, _members_body())

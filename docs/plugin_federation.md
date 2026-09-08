@@ -115,8 +115,8 @@ and `mem_gb_per_node` are conventions, not schema — and it is what a task's
 federation vocabulary.
 
 Server-filled on the returned record: `joined_at`, `dispatcher_sid`
-(always `fed`), `pool_name`, `usage`, `liveness`, and per member
-`member_id`, `class`, `pool_name`, `usage`, `liveness`.
+(always `fed`), `pool_name`, `usage`, `liveness`, `state`, and per member
+`member_id`, `class`, `pool_name`, `usage`, `liveness`, `state`.
 
 **The resource-level view is an aggregate.** `capabilities.cores` = Σ
 `nodes × cpus_per_node`, `capabilities.gpus` = Σ `nodes × gpus_per_node`,
@@ -251,13 +251,31 @@ with a 3 s timeout. A refresh that cannot reach the dispatcher keeps the
 previous numbers and sets `"stale": true` — a member must not blink to zero
 because one poll timed out.
 
-### Liveness
+A member's `usage` also carries **why it has no pilots**, straight off the
+dispatcher's per-member block: `pilot_error` (the reason its most recent
+pilot went FAILED, e.g. `psij error: … [Errno 122] Disk quota exceeded`,
+truncated to 300 chars), `pilot_failures` (how many died in a row) and
+`paused_until` (epoch, or `null` — the policy's failure backoff). The
+resource row shows the worst of its members: the first error there is one,
+the highest count, the furthest pause. All three clear as soon as the
+member produces a healthy pilot again.
+
+### Liveness and state
 
 A resource and every one of its members inherit the endpoint's topology
 liveness: `present` → `ok`, `suspect` → `suspect`, anything else → `lost`.
 The default policy routes to `ok` members only — a `suspect` endpoint may be
 seconds from `lost`, and a task sent there would sit behind a member nobody
 is serving.
+
+Alongside `liveness` every record carries a derived **`state`**: the same
+word, except `failing` for a member that is reachable (`ok`) but holds no
+pilot while `paused_until` is in the future or `pilot_failures >= 3`, and
+`failing` for a resource with at least one such member. `liveness` is
+deliberately left alone — it means "can we reach the endpoint", the routing
+policy is written against it, and a site whose quota is full is not gone.
+`state` is what a human is shown; a client that knows only `liveness` sees
+exactly what it always did.
 
 Attachment is tracked **per member**, so a resource whose two members live
 behind one endpoint has each tracked separately (and one can fail to attach
@@ -625,8 +643,11 @@ endpoint, mode, site, cores/gpus/mem, software, node-hours used and
 remaining, active pilots, task counts, liveness — each followed by one
 indented row per member: its short name, `class/pool`, queue, site, pilot
 size (`1x128c+4g`), software, its own node-hours, pilots and tasks, and its
-liveness. A record without `members` renders exactly as it did before, one
-row and no sub-rows. It polls `resources/default` every 3 s. The gateway
+state. A record without `members` renders exactly as it did before, one
+row and no sub-rows. The last column shows the derived `state`, so a
+`failing` member gets a red badge and one monospace line underneath with
+its `pilot_error` (truncated, full text in the tooltip) and, when the
+dispatcher has paused submissions, until when. It polls `resources/default` every 3 s. The gateway
 caches plugin JS until a miss, so **restart the broker after editing the
 module**.
 

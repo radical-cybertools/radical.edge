@@ -36,6 +36,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import time
 
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
@@ -65,6 +66,21 @@ MODES           = (MODE_ALLOCATION, MODE_LOGIN)
 LIVENESS_OK      = 'ok'
 LIVENESS_SUSPECT = 'suspect'
 LIVENESS_LOST    = 'lost'
+
+# The **derived** state word, reported alongside ``liveness`` as ``state``
+# (see :meth:`MemberRecord.state`).  It is every liveness value plus
+# ``failing``: an endpoint that answers topology perfectly well while every
+# pilot it is asked to submit dies.  ``liveness`` itself is left alone —
+# it means "can we reach the endpoint", the routing policy is written
+# against it, and a member whose site is merely full must not read as gone.
+STATE_FAILING = 'failing'
+
+# How many consecutive pilot failures make a member read as ``failing``.
+# Mirrors the conservative policy's ``max_consecutive_failures`` default —
+# the point at which that policy stops submitting — but the federation
+# does not (and must not) read the dispatcher's strategy config, so a
+# member paused by *any* backoff counts as failing whatever its count.
+FAILING_PILOT_FAILURES = 3
 
 # Resource names ride in URLs and in a member id, so they are restricted to
 # a conservative, path-safe alphabet.  A resource name **may** contain dots.
@@ -106,6 +122,12 @@ class ResourceUsage:
     ``stale`` marks a refresh that could not reach the dispatcher: the
     previous values are kept (a resource does not blink to zero because one
     poll timed out) and the flag says so.
+
+    ``pilot_error`` / ``pilot_failures`` / ``paused_until`` are the
+    dispatcher's answer to "why are there no pilots here": the reason the
+    last pilot of this member died, how many died in a row, and until when
+    the dispatcher has stopped trying.  All three are ``0``/``None`` for a
+    member that is simply idle.
     '''
     node_hours_used     : float = 0.0
     node_hours_remaining: float = 0.0
@@ -115,6 +137,9 @@ class ResourceUsage:
     tasks_failed        : int   = 0
     stale               : bool  = False
     updated_at          : float = 0.0
+    pilot_error         : str | None   = None
+    pilot_failures      : int           = 0
+    paused_until        : float | None  = None
 
 
 @dataclass
@@ -221,10 +246,41 @@ class MemberRecord:
         attrs['software'] = list(self.software or [])
         return attrs
 
+    def state(self) -> str:
+        '''Return the derived state word: ``liveness``, or ``failing``.
+
+        A member is ``failing`` when its endpoint is reachable (so liveness
+        says ``ok``) but it is holding no pilot and the dispatcher has
+        either paused submissions to it or watched
+        :data:`FAILING_PILOT_FAILURES` of its pilots die in a row.  That is
+        the case the demo hit: a member reported ``ok`` with 0 pilots for
+        half an hour while every submit failed on a disk quota.
+
+        Anything other than ``ok`` is passed through untouched — a lost
+        endpoint is lost, and the fact that its last pilot also failed is
+        not the headline.
+        '''
+        if self.liveness != LIVENESS_OK:
+            return self.liveness
+        usage = self.usage
+        if usage.pilots_active:
+            return self.liveness
+        if usage.paused_until and usage.paused_until > time.time():
+            return STATE_FAILING
+        if (usage.pilot_failures or 0) >= FAILING_PILOT_FAILURES:
+            return STATE_FAILING
+        return self.liveness
+
     def to_wire(self) -> dict:
-        '''Return the client-facing view, with ``cls`` renamed to ``class``.'''
+        '''Return the client-facing view, with ``cls`` renamed to ``class``.
+
+        ``state`` rides alongside ``liveness`` rather than replacing it:
+        ``liveness`` is what the topology says and what the routing policy
+        is written against, ``state`` is what a human should be shown.
+        '''
         out = asdict(self)
         out['class'] = out.pop('cls')
+        out['state'] = self.state()
         return out
 
 
@@ -349,17 +405,33 @@ class ResourceRecord:
         '''Return the full persisted view of this record.'''
         return asdict(self)
 
+    def state(self) -> str:
+        '''Return the derived state word for the resource row.
+
+        ``failing`` as soon as **one** member is failing while the resource
+        itself looks reachable: the resource row is what a reader scans
+        first, and a machine on which half the shapes cannot start a pilot
+        is not ``ok``.  The member rows say which one.
+        '''
+        if self.liveness != LIVENESS_OK:
+            return self.liveness
+        for member in self.member_list():
+            if member.state() == STATE_FAILING:
+                return STATE_FAILING
+        return self.liveness
+
     def to_wire(self) -> dict:
         '''Return the client-facing view: everything except ``pool_config``.
 
         The resolved pool declaration is an implementation detail of how the
         federation drives the dispatcher; a client sees the resource, its
         ``members`` (as a **list**, each with its wire ``class``), its
-        ``pool_name``, and its ``dispatcher_sid``.
+        ``pool_name``, its ``dispatcher_sid`` and its derived ``state``.
         '''
         out = asdict(self)
         out.pop('pool_config', None)
         out['members'] = [m.to_wire() for m in self.member_list()]
+        out['state']   = self.state()
         return out
 
 
