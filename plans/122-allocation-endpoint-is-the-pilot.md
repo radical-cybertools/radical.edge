@@ -148,9 +148,11 @@ ACTIVE yet -- the join→first-tick window and `_activate_pilot`'s
 zero-capacity return would otherwise flash `failing`. `MemberRecord` gains
 `pilot`, `endpoint` and `end_time` (touch `member_from_dict`,
 `_derive_member`, `_implicit_member`, `_declared_member`, `_member_decl`,
-`to_wire`). Resource state: the worst of its members' (lost > failing >
-stale > idle > ok); the resource row keeps the record's own task counts
-(they include unplaced tasks; member counts are placed only).
+`to_wire`). Resource state: the worst of its members' with `idle` ranked *below*
+`ok` -- lost > failing > suspect > stale > ok > idle -- so a resource with
+one busy shape and one idle shape is `ok`, and `idle` at resource level
+means every member is idle; the resource row keeps the record's own task
+counts (they include unplaced tasks; member counts are placed only).
 `federation.js` gets CSS for `idle` (ATOMIC's `statusCell` maps unknown
 values to "unknown", so the alias must land on both sides together).
 
