@@ -6,17 +6,28 @@ imports and these tests load into a quickjs context.  Only pure logic (no DOM /
 fetch / SSE) is exercised here; end-to-end UI coverage would need a browser
 harness (e.g. pytest-playwright) and is out of scope.
 
-quickjs is a ``[test]`` / ``[dev]`` extra; the whole module skips where it is
-not installed so the suite stays green.
+quickjs is a ``[test]`` / ``[dev]`` extra; those tests skip where it is not
+installed so the suite stays green.
+
+The task-dispatcher plugin's pool rendering is pure string building, too, but
+needs template literals and modern syntax, so it is exercised through ``node``
+(also skipped where absent): the module's ``export`` keywords are stripped and
+the declarations are evaluated in a ``vm`` context, exactly the trick the
+quickjs helper below uses.
 """
 
 import json
 import pathlib
 import re
+import shutil
+import subprocess
 
 import pytest
 
-quickjs = pytest.importorskip("quickjs")
+try:
+    import quickjs
+except ImportError:
+    quickjs = None
 
 
 _MODULE = (pathlib.Path(__file__).resolve().parents[2]
@@ -49,6 +60,8 @@ def _run(ctx, expr):
 
 @pytest.fixture(scope="module")
 def ctx():
+    if quickjs is None:
+        pytest.skip("quickjs not installed")
     return _context()
 
 
@@ -122,3 +135,155 @@ def test_swap_sid_replaces_stale_segment(ctx):
 def test_swap_sid_no_op_when_absent(ctx):
     got = _run(ctx, "swapSid('/ep/psij/status/sid-x/j', 'sid-old', 'sid-new')")
     assert got == "/ep/psij/status/sid-x/j"
+
+
+# ── task_dispatcher.js: pool rendering (node) ──────────────────────────────
+
+_NODE = shutil.which("node")
+
+_TD_MODULE = (pathlib.Path(__file__).resolve().parents[2]
+              / "src" / "radical" / "orbit" / "data" / "plugins"
+              / "task_dispatcher.js")
+
+# Driver: load the plugin as a script (export keywords stripped), then render
+# the `GET /pools` payload handed in as JSON and print the resulting HTML.
+_TD_DRIVER = r"""
+const fs = require('fs');
+const vm = require('vm');
+
+let src = fs.readFileSync(process.argv[2], 'utf8').replace(/^export\s+/gm, '');
+
+const api = {
+  escHtml: s => String(s === null || s === undefined ? '' : s)
+                .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;').replace(/"/g, '&quot;'),
+  flash: () => {},
+};
+
+const pools = JSON.parse(fs.readFileSync(process.argv[3], 'utf8'));
+const ctx = vm.createContext({api: api, pools: pools, out: ''});
+vm.runInContext(src + '\nout = renderEntries(flattenPools(pools), api);', ctx);
+process.stdout.write(ctx.out);
+"""
+
+
+@pytest.fixture(scope="module")
+def render_pools(tmp_path_factory):
+    """Render a `GET /pools` payload's `pools` value to HTML via node."""
+    if not _NODE:
+        pytest.skip("node not installed")
+
+    d      = tmp_path_factory.mktemp("task_dispatcher")
+    driver = d / "render_pools.js"
+    driver.write_text(_TD_DRIVER)
+
+    def _render(pools):
+        payload = d / "pools.json"
+        payload.write_text(json.dumps(pools))
+        r = subprocess.run([_NODE, str(driver), str(_TD_MODULE), str(payload)],
+                           capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr
+        return r.stdout
+
+    return _render
+
+
+def _card_names(html):
+    """The pool name shown on each rendered card, in order."""
+    return re.findall(r'class="td-pool-name">([^<]*)<', html)
+
+
+def _size(nodes=1, gpus=0):
+    return {"nodes": nodes, "cpus_per_node": 64, "gpus_per_node": gpus,
+            "walltime_sec": 3600, "rhapsody_backend": "psij"}
+
+
+def _class_pool(name="fed-gpu", members=("r3_default",)):
+    return {"name": name, "endpoint_name": "fed", "queue": None,
+            "account": None, "default_size": "small",
+            "pilot_sizes": {"small": _size(gpus=4)},
+            "live_pilots": 1, "pending_tasks": 2,
+            "min_pilots": 0, "max_pilots": 1,
+            "pool_class": "gpu", "multi_member": True,
+            "member_ids": list(members), "max_pilots_total": 4}
+
+
+def test_pools_grouped_by_session_render_one_card_per_pool(render_pools):
+    # `GET /pools` answers `{sid: {pool name: summary}}` -- the session is a
+    # grouping key, never a pool of its own.
+    html = render_pools({"fed": {"fed-gpu": _class_pool()}})
+
+    assert html.count('data-td-card=') == 1
+    assert _card_names(html) == ["fed-gpu"]
+    assert "session fed" in html
+    # the class pool renders member rows, not the legacy queue/account meta
+    assert "<strong>queue</strong>" not in html
+    assert "No sizes defined." not in html
+    assert "r3_default" in html
+
+
+def test_pools_grouped_across_sessions_render_every_pool(render_pools):
+    html = render_pools({
+        "fed":  {"fed-gpu": _class_pool(),
+                 "fed-cpu": _class_pool("fed-cpu", ["r3_cpu"])},
+        "s2":   {"default": {"name": "default", "queue": "debug",
+                             "account": "acct", "min_pilots": 1,
+                             "max_pilots": 3, "live_pilots": 0,
+                             "pending_tasks": 0, "default_size": "small",
+                             "pilot_sizes": {"small": _size()},
+                             "multi_member": False, "member_ids": []}},
+    })
+
+    assert html.count('data-td-card=') == 3
+    assert sorted(_card_names(html)) == ["default", "fed-cpu", "fed-gpu"]
+    assert "session fed" in html
+    assert "session s2" in html
+    # the single-site pool keeps its legacy meta line
+    assert "<strong>queue</strong>" in html
+
+
+def test_pools_empty_renders_placeholder(render_pools):
+    assert "No pools configured." in render_pools({})
+    # a session that owns no pool is not a pool either
+    assert "No pools configured." in render_pools({"fed": {}})
+
+
+def test_pools_legacy_flat_listing_still_renders(render_pools):
+    # An older broker answered `{pool name: summary}` with no session level.
+    html = render_pools({"default": {"name": "default", "queue": "debug",
+                                     "account": None, "min_pilots": 0,
+                                     "max_pilots": 2, "live_pilots": 0,
+                                     "pending_tasks": 0,
+                                     "default_size": "small",
+                                     "pilot_sizes": {"small": _size()},
+                                     "multi_member": False,
+                                     "member_ids": []}})
+
+    assert html.count('data-td-card=') == 1
+    assert _card_names(html) == ["default"]
+    assert "session " not in html
+    assert "<strong>queue</strong>" in html
+
+
+def test_verbose_class_pool_shows_member_sizes_and_node_hours(render_pools):
+    # The shape of the verbose `pool/{sid}/{name}` re-render: `members`
+    # objects carry per-member sizes and node-hours.
+    pool = _class_pool()
+    pool["members"] = [{
+        "member_id": "r3_default", "endpoint_name": "r3", "queue": "gpu",
+        "account": "m1234", "attributes": {"site": "NERSC",
+                                           "software": ["lammps", "pytorch"]},
+        "min_pilots": 0, "max_pilots": 4, "live_pilots": 1,
+        "pilot_sizes": {"gpu4": _size(nodes=2, gpus=4)},
+        "default_size": "gpu4",
+        "node_hours_used": 1.5, "node_hours_remaining": 98.5,
+    }]
+    html = render_pools({"fed": {"fed-gpu": pool}})
+
+    assert _card_names(html) == ["fed-gpu"]
+    assert "1.50 / 98.50" in html
+    assert "site=NERSC" in html
+    assert "software: lammps, pytorch" in html
+    # the member's own size table is nested under its row
+    assert "td-member-sizes" in html
+    assert "gpu4" in html
