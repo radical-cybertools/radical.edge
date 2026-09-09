@@ -19,6 +19,9 @@ State machines
 Pilot:  ``PENDING → STARTING → ACTIVE → (DONE | FAILED)``
         (``ACTIVE`` may be entered from any earlier state on handshake,
         skipping ``STARTING`` if the pilot came up faster than expected.)
+        Three timestamps bracket that walk — ``submitted_at``, ``active_at``
+        and ``finished_at`` — so a terminal pilot still carries the interval
+        it actually held the allocation (see :meth:`PilotRecord.uptime`).
 
 Task:   ``QUEUED → RUNNING → (DONE | FAILED | CANCELED)``
 '''
@@ -66,6 +69,12 @@ TASK_STATES          = {TASK_QUEUED, TASK_RUNNING, TASK_DONE,
                         TASK_FAILED, TASK_CANCELED}
 TASK_TERMINAL_STATES = {TASK_DONE, TASK_FAILED, TASK_CANCELED}
 
+# How much of a pilot's failure reason is kept on its record.  A psij
+# traceback can be kilobytes and the record rides in the ``pilot_history``
+# of every verbose summary, so it is truncated to something a table row
+# and a tooltip can carry.
+PILOT_ERROR_MAX = 300
+
 
 # ---------------------------------------------------------------------------
 # Records
@@ -90,6 +99,11 @@ class PilotRecord:
     walltime_deadline  : float       = 0.0
     accepting_new_tasks: bool        = True    # flipped False by drain
     finished_at        : float | None = None   # terminal-state timestamp
+    # Why this pilot went FAILED, truncated to ``PILOT_ERROR_MAX``.  A
+    # submit-side failure ('psij error: … Disk quota exceeded') is
+    # otherwise visible only in the broker log, while every consumer of
+    # this record sees a pilot that simply is not there.
+    error              : str | None  = None
     # -- capability-class fields ------------------------------------------
     # ``member_id`` is the pool member this pilot was submitted for; ``''``
     # means the implicit member of a legacy pool.  ``attributes`` and the
@@ -103,12 +117,33 @@ class PilotRecord:
     nodes              : int         = 0
     cpus_per_node      : int         = 0
     gpus_per_node      : int         = 0
+    # This pilot **is** an endpoint the dispatcher adopted (a
+    # ``pilot: endpoint`` member, plan 122), not a batch job it submitted.
+    # Stamped once at creation and persisted, because the two end
+    # differently -- an adopted pilot goes DONE, never FAILED, when its
+    # endpoint disappears or its member is removed -- and the distinction
+    # has to survive a restart.  Deliberately NOT inferred from a missing
+    # ``psij_job_id``: a *submitted* pilot has none either, for the window
+    # between its child endpoint name being pre-bound and psij answering.
+    adopted            : bool        = False
 
     def lag(self) -> float | None:
         '''Return the PENDING→ACTIVE duration, or ``None`` if not yet active.'''
         if self.active_at is None:
             return None
         return self.active_at - self.submitted_at
+
+    def uptime(self, now: float) -> float:
+        '''Return the ACTIVE duration in seconds (0 for a pilot never ACTIVE).
+
+        A pilot still live is measured against *now*; a finalised one against
+        its ``finished_at``.  The accounting primitive behind node-hour usage:
+        a consumer multiplies this by the pilot's node count.
+        '''
+        if self.active_at is None:
+            return 0.0
+        end = self.finished_at if self.finished_at is not None else now
+        return max(0.0, end - self.active_at)
 
     def is_terminal(self) -> bool:
         '''Return whether this pilot is in a terminal (DONE/FAILED) state.'''
@@ -209,8 +244,13 @@ def node_hours(history: list[dict] | None,
     form a summary carries, and is optional precisely because the snapshot
     makes it unnecessary for anything written by this version.
 
+    A malformed entry — not a dict, or carrying an unparseable timestamp —
+    is skipped rather than raising: the history is read back off a wire
+    summary, and one bad record must not zero the whole usage figure.
+
     This lives here, not in the federation, because the dispatcher needs it
-    for its own per-member summary and must not import a federation module.
+    for its own per-member summary and must not import a federation module;
+    ``federation_state.node_hours_from_history`` is an alias for it.
     '''
     if not history:
         return 0.0
@@ -219,6 +259,8 @@ def node_hours(history: list[dict] | None,
 
     total = 0.0
     for entry in history:
+        if not isinstance(entry, dict):
+            continue
         nodes = entry.get('nodes') or 0
         if not nodes and pilot_sizes:
             size = pilot_sizes.get(entry.get('size_key') or '')
@@ -234,11 +276,20 @@ def node_hours(history: list[dict] | None,
         # nothing.  (Falling back to ``submitted_at`` would both bill queue
         # time and charge a never-started record from the epoch to `now`.)
         # This matches the federation's node_hours_from_history semantics.
+        # Both timestamps are tested against ``None``, not truthiness: a
+        # ``0.0`` is the epoch, which is a legitimate (if odd) instant and
+        # must not read as "absent".
         start = entry.get('active_at')
-        if not start:
+        if start is None:
             continue
-        end = entry.get('finished_at') or now
-        total += nodes * max(0.0, float(end) - float(start)) / 3600.0
+        end = entry.get('finished_at')
+        if end is None:
+            end = now
+        try:
+            total += (float(nodes) * max(0.0, float(end) - float(start))
+                      / 3600.0)
+        except (TypeError, ValueError):
+            continue
 
     return total
 
