@@ -3266,7 +3266,10 @@ class PluginTaskDispatcher(Plugin):
                 elif task.task_dict is None:
                     marker = spool / _CWD_MARKER
                     marker.parent.mkdir(parents=True, exist_ok=True)
-                    marker.touch()
+                    # one byte, not zero: a staging plugin older than the
+                    # empty-put fix answers 400 "Missing 'content'" to an
+                    # empty file (seen on Perlmutter, 2026-09-09)
+                    marker.write_bytes(b'\n')
                     await asyncio.to_thread(
                         stg.put, str(marker),
                         str(Path(task.cwd) / _CWD_MARKER), True)
